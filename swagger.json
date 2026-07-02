@@ -1,0 +1,697 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "HP PrintOS Site Flow API",
+    "description": "API for managing print orders, including validation, submission, and status tracking.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "HP Developer Portal",
+      "url": "https://developers.hp.com/"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://printos.api.hp.com/siteflow",
+      "description": "Production server (for existing PrintOS customers)"
+    },
+    {
+      "url": "https://stage.printos.api.hp.com/siteflow",
+      "description": "Staging server (for 3rd parties)"
+    }
+  ],
+  "paths": {
+    "/api/order/validate": {
+      "post": {
+        "summary": "Validate an Order",
+        "description": "Submits an order for validation without actually creating it.",
+        "operationId": "validateOrder",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderValidationRequest"
+              },
+              "example": {
+                "destination": {
+                  "name": "accountName"
+                },
+                "orderData": {
+                  "sourceOrderId": "1234512345",
+                  "items": [
+                    {
+                      "sku": "Business Cards",
+                      "components": [
+                        {
+                          "code": "Content",
+                          "fetch": true,
+                          "path": "http://www.w2psite.com/businessCard.pdf"
+                        }
+                      ]
+                    }
+                  ],
+                  "shipments": [
+                    {
+                      "shipTo": {
+                        "name": "John Doe",
+                        "companyName": "Acme",
+                        "address1": "1234 Main St.",
+                        "town": "Capitol",
+                        "postcode": "12345",
+                        "isoCountry": "US"
+                      },
+                      "carrier": {
+                        "code": "fedex",
+                        "service": "ground"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Validation successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderValidationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/order": {
+      "post": {
+        "summary": "Submit an Order",
+        "description": "Submits a new print order.",
+        "operationId": "submitOrder",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderSubmissionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Order submitted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderSubmissionResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Get All Orders",
+        "description": "Retrieves a paginated list of orders.",
+        "operationId": "getAllOrders",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "The page number to return.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "pagesize",
+            "in": "query",
+            "description": "Number of orders per page.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of orders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrdersListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/order/{orderId}": {
+      "get": {
+        "summary": "Get an Order",
+        "description": "Retrieves detailed information for a specific order by its ID.",
+        "operationId": "getOrderById",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "description": "The unique identifier of the order.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderDetailsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/order/{sourceAccount}/{sourceOrderId}/cancel": {
+      "put": {
+        "summary": "Cancel Order",
+        "description": "Cancels an existing order using the source account and source order ID.",
+        "operationId": "cancelOrder",
+        "parameters": [
+          {
+            "name": "sourceAccount",
+            "in": "path",
+            "description": "The source.name of the account.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sourceOrderId",
+            "in": "path",
+            "description": "The user-generated sourceOrderId.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order cancelled successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelledOrderResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/file/getpreupload": {
+      "get": {
+        "summary": "Get File Upload URLs",
+        "description": "Retrieves pre-signed URLs for uploading a local file to cloud storage.",
+        "operationId": "getFileUploadUrls",
+        "parameters": [
+          {
+            "name": "MIME Type of file to upload (i.e. application/pdf)",
+            "in": "query",
+            "description": "The MIME type of the file to be uploaded.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "application/pdf"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "URLs for upload and fetch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileUploadUrlsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/product": {
+      "get": {
+        "summary": "Get Products",
+        "description": "Retrieves a list of available products, including their components and attributes.",
+        "operationId": "getProducts",
+        "responses": {
+          "200": {
+            "description": "List of products",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sku": {
+      "get": {
+        "summary": "Get SKUs",
+        "description": "Retrieves a list of available SKUs.",
+        "operationId": "getSkus",
+        "responses": {
+          "200": {
+            "description": "List of SKUs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkusListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "OrderValidationRequest": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "orderData": {
+            "$ref": "#/components/schemas/OrderData"
+          }
+        }
+      },
+      "OrderSubmissionRequest": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "orderData": {
+            "$ref": "#/components/schemas/OrderData"
+          }
+        }
+      },
+      "OrderData": {
+        "type": "object",
+        "properties": {
+          "sourceOrderId": {
+            "type": "string"
+          },
+          "postbackAddress": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderItem"
+            }
+          },
+          "shipments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Shipment"
+            }
+          }
+        }
+      },
+      "OrderItem": {
+        "type": "object",
+        "properties": {
+          "sku": {
+            "type": "string"
+          },
+          "sourceItemId": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "printQuantity": {
+            "type": "integer"
+          },
+          "unitPrice": {
+            "type": "number"
+          },
+          "unitCost": {
+            "type": "number"
+          },
+          "unitWeight": {
+            "type": "number"
+          },
+          "productDescription": {
+            "type": "string"
+          },
+          "totalPages": {
+            "type": "integer"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Component"
+            }
+          }
+        }
+      },
+      "Component": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "fetch": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "pages": {
+            "type": "integer"
+          },
+          "paperId": {
+            "type": "string"
+          },
+          "attributes": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "colour": {
+            "type": "object",
+            "properties": {
+              "side1": {
+                "type": "string"
+              },
+              "side2": {
+                "type": "string"
+              }
+            }
+          },
+          "finish": {
+            "type": "object",
+            "properties": {
+              "side1": {
+                "type": "string"
+              },
+              "side2": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "Shipment": {
+        "type": "object",
+        "properties": {
+          "shipTo": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "carrier": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              },
+              "serviceId": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "Address": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "companyName": {
+            "type": "string"
+          },
+          "address1": {
+            "type": "string"
+          },
+          "town": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "postcode": {
+            "type": "string"
+          },
+          "isoCountry": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          }
+        }
+      },
+      "OrderValidationResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "order": {
+            "type": "object"
+          }
+        }
+      },
+      "OrderSubmissionResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "order": {
+            "$ref": "#/components/schemas/FullOrder"
+          }
+        }
+      },
+      "FullOrder": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string"
+          },
+          "__v": {
+            "type": "integer"
+          },
+          "destination": {
+            "type": "object"
+          },
+          "source": {
+            "type": "object"
+          },
+          "orderData": {
+            "type": "object"
+          },
+          "logs": {
+            "type": "array"
+          },
+          "files": {
+            "type": "array"
+          }
+        }
+      },
+      "OrdersListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "pages": {
+            "type": "integer"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderSummary"
+            }
+          }
+        }
+      },
+      "OrderSummary": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "object"
+          },
+          "source": {
+            "type": "object"
+          },
+          "orderData": {
+            "type": "object"
+          }
+        }
+      },
+      "OrderDetailsResponse": {
+        "type": "object"
+      },
+      "CancelledOrderResponse": {
+        "type": "object"
+      },
+      "FileUploadUrlsResponse": {
+        "type": "object",
+        "properties": {
+          "upload": {
+            "type": "string",
+            "description": "URL to upload the file to (e.g., Amazon S3)"
+          },
+          "fetch": {
+            "type": "string",
+            "description": "URL to be used in the order JSON for file retrieval"
+          }
+        }
+      },
+      "ProductsListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "pages": {
+            "type": "integer"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            }
+          }
+        }
+      },
+      "Product": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string"
+          },
+          "productCode": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "SkusListResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "pages": {
+            "type": "integer"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Sku"
+            }
+          }
+        }
+      },
+      "Sku": {
+        "type": "object",
+        "properties": {
+          "_id": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "productId": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "unitPrice": {
+            "type": "number"
+          },
+          "unitCost": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  }
+}

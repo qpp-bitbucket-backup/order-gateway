@@ -44,3 +44,5 @@ htmlcov/
 # 其他
 .DS_Store
 Thumbs.db
+*.bat
+*.exe
