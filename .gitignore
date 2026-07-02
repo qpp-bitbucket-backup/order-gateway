@@ -1,0 +1,46 @@
+# .gitignore
+
+# Python 緩存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虛擬環境
+venv/
+env/
+ENV/
+lienv/
+.venv/
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Alembic 相關
+alembic/__pycache__/
+alembic/versions/__pycache__/
+
+# 數據庫文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 日誌文件
+*.log
+
+# 環境變量
+.env
+.env.local
+.env.*.local
+
+# 測試覆蓋率
+.coverage
+htmlcov/
+.pytest_cache/
+
+# 其他
+.DS_Store
+Thumbs.db
