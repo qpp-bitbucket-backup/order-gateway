@@ -154,7 +154,7 @@ def submit_order(
                 "submitted_at": datetime.now(timezone.utc).isoformat()
             },
             order_data=request.orderData.model_dump(),
-            status=OrderStatus.SUBMITTED,
+            status=OrderStatus.RECEIVED,
             version=0,
             store_id=store_id  # Associate order with client's store
         )
@@ -360,7 +360,7 @@ def cancel_order(
                 )
 
         # Check if order can be cancelled
-        if order.status in [OrderStatus.COMPLETED, OrderStatus.SHIPPED, OrderStatus.DELIVERED]:
+        if order.status in [OrderStatus.PRINTREADY,OrderStatus.PRINTED, OrderStatus.SHIPPED]:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Cannot cancel order with status '{order.status.value}'"
