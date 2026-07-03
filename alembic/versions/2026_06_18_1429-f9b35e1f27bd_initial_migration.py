@@ -48,7 +48,7 @@ def upgrade() -> None:
     sa.Column('destination', sa.JSON(), nullable=True),
     sa.Column('source', sa.JSON(), nullable=True),
     sa.Column('order_data', sa.JSON(), nullable=True),
-    sa.Column('status', sa.Enum('PENDING', 'VALIDATED', 'SUBMITTED', 'IN_PRODUCTION', 'COMPLETED', 'SHIPPED', 'DELIVERED', 'CANCELLED', 'FAILED', name='orderstatus'), nullable=False),
+    sa.Column('status', sa.Enum('RECEIVED', 'PENDING', 'VALIDATED', 'PRINTREADY', 'PRINTED', 'CANCELLED', 'FAILED', 'ERRORED', 'SHIPPED', name='orderstatus'), nullable=False),
     sa.Column('logs', sa.JSON(), nullable=True),
     sa.Column('files', sa.JSON(), nullable=True),
     sa.Column('version', sa.Integer(), nullable=False),
