@@ -8,28 +8,66 @@ from app.models.base import BaseModel
 
 class OrderStatus(str, Enum):
     """Order status enumeration."""
+    RECEIVED = "received"
     PENDING = "pending"
     VALIDATED = "validated"
-    SUBMITTED = "submitted"
-    IN_PRODUCTION = "in_production"
-    COMPLETED = "completed"
-    SHIPPED = "shipped"
-    DELIVERED = "delivered"
+    PRINTREADY = "printready"
+    PRINTED = "printed"
     CANCELLED = "cancelled"
     FAILED = "failed"
+    ERRORED = "errored"
+    SHIPPED = "shipped"
 
 
 # Order state machine - defines valid status transitions
 ORDER_STATE_TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
-    OrderStatus.PENDING: [OrderStatus.VALIDATED, OrderStatus.SUBMITTED, OrderStatus.CANCELLED, OrderStatus.FAILED],
-    OrderStatus.VALIDATED: [OrderStatus.SUBMITTED, OrderStatus.CANCELLED, OrderStatus.FAILED],
-    OrderStatus.SUBMITTED: [OrderStatus.PENDING, OrderStatus.CANCELLED, OrderStatus.FAILED],
-    OrderStatus.IN_PRODUCTION: [OrderStatus.COMPLETED, OrderStatus.FAILED],
-    OrderStatus.COMPLETED: [OrderStatus.SHIPPED],
-    OrderStatus.SHIPPED: [OrderStatus.DELIVERED],
-    OrderStatus.DELIVERED: [],  # Terminal state
-    OrderStatus.CANCELLED: [],  # Terminal state
-    OrderStatus.FAILED: [OrderStatus.SUBMITTED],  # Can retry from failed
+    # 初始狀態：訂單剛接收
+    OrderStatus.RECEIVED: [
+        OrderStatus.PENDING,      # 進入待處理隊列
+        OrderStatus.CANCELLED,    # 可直接取消
+        OrderStatus.FAILED,       # 接收失敗
+        OrderStatus.ERRORED       # 接收過程出錯
+    ],
+    # 待處理：進行驗證
+    OrderStatus.PENDING: [
+        OrderStatus.VALIDATED,    # 驗證通過
+        OrderStatus.CANCELLED,    # 取消訂單
+        OrderStatus.FAILED,       # 驗證失敗
+        OrderStatus.ERRORED       # 驗證過程異常
+    ],
+    # 驗證通過：準備列印
+    OrderStatus.VALIDATED: [
+        OrderStatus.PRINTREADY,   # 進入列印隊列
+        OrderStatus.CANCELLED,    # 取消訂單
+        OrderStatus.FAILED,       # 準備列印失敗
+        OrderStatus.ERRORED       # 準備過程異常
+    ],
+    # 列印就緒：開始列印， 已經Push 到QPMN 不能進行取消
+    OrderStatus.PRINTREADY: [
+        OrderStatus.PRINTED,      # 列印完成
+        OrderStatus.FAILED,       # 列印失敗
+        OrderStatus.ERRORED       # 列印過程異常
+    ],
+    # 已列印：準備出貨， 不能進行取消
+    OrderStatus.PRINTED: [
+        OrderStatus.SHIPPED,      # 已出貨（終端狀態）
+        OrderStatus.FAILED,       # 出貨準備失敗
+        OrderStatus.ERRORED       # 出貨過程異常
+    ],
+    # 失敗狀態：可重試
+    OrderStatus.FAILED: [
+        OrderStatus.PENDING,      # 重新回到待處理
+        OrderStatus.RECEIVED,     # 重新從頭開始
+        OrderStatus.CANCELLED,    # 放棄重試
+    ],
+    # 錯誤狀態：需人工介入後重試或取消
+    OrderStatus.ERRORED: [
+        OrderStatus.PENDING,      # 人工修復後重試
+        OrderStatus.CANCELLED,    # 人工決定取消
+    ],
+    # 終端狀態：不可再轉移
+    OrderStatus.CANCELLED: [],    # 已取消（終端）
+    OrderStatus.SHIPPED: [],      # 已出貨（終端）try from failed
 }
 
 
