@@ -1,5 +1,18 @@
 from pydantic_settings import BaseSettings
 from typing import List, Optional
+from pathlib import Path
+import tomllib
+
+
+def _get_version() -> str:
+    """Read version dynamically from pyproject.toml."""
+    pyproject_path = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+    try:
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+        return data["project"]["version"]
+    except (FileNotFoundError, KeyError):
+        return "0.0.0"
 
 
 class Settings(BaseSettings):
@@ -7,7 +20,7 @@ class Settings(BaseSettings):
 
     # Application
     APP_NAME: str = "Order Gateway API"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = _get_version()
     DEBUG: bool = True
     HOST: str = "0.0.0.0"
     PORT: int = 8000

@@ -1,0 +1,9 @@
+[project]
+name = "order-gateway"
+version = "1.0.0"
+description = "QPMN Order Gateway API - Manages print orders, including validation, submission, and status tracking."
+requires-python = ">=3.12"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
