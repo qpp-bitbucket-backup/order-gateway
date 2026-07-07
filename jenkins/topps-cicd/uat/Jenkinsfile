@@ -11,9 +11,6 @@ pipeline {
         skipDefaultCheckout()
     }
     environment {
-        AWS_REGION     = 'ap-southeast-1'
-        AWS_ACCOUNT_ID = '368264529788'
-
         ACR_REGISTRY   = 'prod-plugin-acr-registry.cn-guangzhou.cr.aliyuncs.com'
         ACR_VPC_REGISTRY = 'prod-plugin-acr-registry-vpc.cn-guangzhou.cr.aliyuncs.com'
         ACR_NAMESPACE  = 'uat'
@@ -64,8 +61,8 @@ pipeline {
                     script {
                         sh """
                             docker build \
-                              -t ${ACR_REGISTRY}/${ACR_REPO}:${IMAGE_TAG} \
-                              -t ${ACR_REGISTRY}/${ACR_REPO}:latest \
+                              -t ${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG} \
+                              -t ${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:latest \
                               -f app/Dockerfile \
                               app
                         """
