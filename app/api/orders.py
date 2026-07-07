@@ -86,7 +86,7 @@ def validate_order(
                 if store_id:
                     sku_query = sku_query.where(Sku.store_id == store_id)
                 existing_sku = session.exec(sku_query).first()
-                print(f"Validating SKU: {item.sku}, Found: {existing_sku}")
+
                 if not existing_sku:
                     validation_errors.append(f"Invalid or inactive SKU: {item.sku}")
                 else:
