@@ -81,12 +81,12 @@ def validate_order(
             else:
                 # Look up the SKU by its business code, scoped to the client's store if set
                 sku_query = select(Sku).where(
-                    (Sku.code == item.sku) & Sku.active.is_(True)
+                    (Sku.sku_id == item.sku) & Sku.active.is_(True)
                 )
                 if store_id:
                     sku_query = sku_query.where(Sku.store_id == store_id)
                 existing_sku = session.exec(sku_query).first()
-
+                print(f"Validating SKU: {item.sku}, Found: {existing_sku}")
                 if not existing_sku:
                     validation_errors.append(f"Invalid or inactive SKU: {item.sku}")
                 else:
@@ -96,7 +96,7 @@ def validate_order(
                             Product.product_id == existing_sku.product_id
                         )
                     ).first()
-                    
+
                     if product and product.components:
                         provided_codes = {
                             component.code for component in (item.components or [])
