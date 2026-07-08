@@ -55,13 +55,6 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "amqp://guest:guest@localhost:5672//"
     CELERY_RESULT_BACKEND: str = "rpc://"
 
-    # RabbitMQ Configuration (Order Processing)
-    RABBITMQ_HOST: str = "localhost"
-    RABBITMQ_PORT: int = 5672
-    RABBITMQ_USER: str = "guest"
-    RABBITMQ_PASSWORD: str = "guest"
-    RABBITMQ_VHOST: str = "/"
-
     # QPMN API Configuration
     QPMN_API_URL: str = "https://api.qpmn.com/v1"
     QPMN_API_KEY: str = ""
