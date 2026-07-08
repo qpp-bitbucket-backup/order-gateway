@@ -150,3 +150,20 @@ class CancelledOrderResponse(BaseModel):
     success: bool = Field(True, description="Cancellation success status")
     message: str = Field("Order cancelled successfully", description="Cancellation message")
     order_id: Optional[str] = Field(None, description="Cancelled order ID")
+
+
+class OrderUpdateRequest(BaseModel):
+    """Schema for order update request.
+
+    Only fields provided will be updated. The order must be in a cancellable
+    state (received, pending, validated, failed, errored) to allow updates.
+    """
+    destination: Optional[Destination] = Field(None, description="Updated destination information")
+    orderData: Optional[OrderData] = Field(None, description="Updated order data (replaces existing)")
+
+
+class OrderUpdateResponse(BaseModel):
+    """Schema for order update response."""
+    success: bool = Field(True, description="Update success status")
+    message: str = Field("Order updated successfully", description="Update message")
+    order: Optional[FullOrder] = Field(None, description="Updated order details")

@@ -88,7 +88,7 @@
     "/api/order": {
       "post": {
         "summary": "Submit an Order",
-        "description": "Submits a new print order.",
+        "description": "Submits a new print order.\n\n**Duplicate detection:** If an order with the same `sourceOrderId` already exists for this store, the API returns HTTP **451** with the existing `order_id` in response details",
         "operationId": "submitOrder",
         "requestBody": {
           "required": true,
@@ -107,6 +107,27 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OrderSubmissionResponse"
+                }
+              }
+            }
+          },
+          "451": {
+            "description": "Order already exists — duplicate `sourceOrderId` detected for this store. The existing order ID is returned in the `X-Existing-Order-Id` header.",
+            "headers": {
+              "X-Existing-Order-Id": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The order_id of the already-existing order."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "detail": "Order with sourceOrderId 'ORD-001' already exists (order_id=abc-123-def)."
                 }
               }
             }
@@ -183,6 +204,104 @@
         }
       }
     },
+    "/api/order/{orderId}": {
+      "put": {
+        "summary": "Update an Order",
+        "description": "Updates the destination and/or order data of an existing order.\n\nThe order can **only** be updated when it is in a cancellable state (`received`, `pending`, `validated`, `failed`, `errored`). Orders with status `printready`, `printed`, `shipped`, or `cancelled` will return HTTP **409 Conflict**.",
+        "operationId": "updateOrder",
+        "parameters": [
+          {
+            "name": "orderId",
+            "in": "path",
+            "description": "The internal order ID (returned as `_id` in the order response).",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderUpdateRequest"
+              },
+              "example": {
+                "destination": {
+                  "name": "newAccountName"
+                },
+                "orderData": {
+                  "sourceOrderId": "1234512345",
+                  "items": [
+                    {
+                      "sku": "Business Cards",
+                      "quantity": 2,
+                      "components": [
+                        {
+                          "code": "Content",
+                          "fetch": true,
+                          "path": "http://www.w2psite.com/businessCard_v2.pdf"
+                        }
+                      ]
+                    }
+                  ],
+                  "shipments": [
+                    {
+                      "shipTo": {
+                        "name": "Jane Smith",
+                        "isoCountry": "US"
+                      },
+                      "carrier": {
+                        "code": "fedex",
+                        "service": "express"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Order updated successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderUpdateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Neither 'destination' nor 'orderData' was provided.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found or access denied.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "409": {
+            "description": "Order cannot be updated because it is no longer in a cancellable state.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+                "example": {
+                  "detail": "Cannot update order with status 'printready'. Order must be in one of: received, pending, validated, failed, errored."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/order/{sourceAccount}/{sourceOrderId}/cancel": {
       "put": {
         "summary": "Cancel Order",
@@ -215,6 +334,119 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CancelledOrderResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/file/resize": {
+      "post": {
+        "summary": "Resize PDF",
+        "description": "Resizes all pages of an uploaded PDF to the specified dimensions.\n\n**Dimension formats:**\n- Points (plain number): `595`\n- Millimeters: `210mm`\n- Inches: `8.5in`\n- Named sizes: `a3`, `a4`, `a5`, `letter`, `legal`, `tabloid`\n\n**fit mode:**\n- `false` (default): Content is cropped or extended to the new size.\n- `true`: Content is scaled to fit within the new page while keeping the aspect ratio, centered.",
+        "operationId": "resizePdf",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file", "width", "height"],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "The PDF file to resize."
+                  },
+                  "width": {
+                    "type": "string",
+                    "description": "Target page width, e.g. '210mm', '595pt', 'a4'.",
+                    "example": "210mm"
+                  },
+                  "height": {
+                    "type": "string",
+                    "description": "Target page height, e.g. '297mm', '842pt', 'a4'.",
+                    "example": "297mm"
+                  },
+                  "fit": {
+                    "type": "boolean",
+                    "description": "Scale content to fit the new page while keeping aspect ratio.",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resize metadata returned successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PDFResizeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/file/resize/download": {
+      "post": {
+        "summary": "Download Resized PDF",
+        "description": "Re-processes and returns the resized PDF as a downloadable binary file (`application/pdf`). Accepts the same parameters as `/api/file/resize`.",
+        "operationId": "downloadResizedPdf",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file", "width", "height"],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "The original PDF file."
+                  },
+                  "width": {
+                    "type": "string",
+                    "description": "Same width used in the resize request.",
+                    "example": "210mm"
+                  },
+                  "height": {
+                    "type": "string",
+                    "description": "Same height used in the resize request.",
+                    "example": "297mm"
+                  },
+                  "fit": {
+                    "type": "boolean",
+                    "description": "Same fit flag used in the resize request.",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resized PDF file returned as binary download.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "e.g. attachment; filename=\"myfile_resized.pdf\""
+              }
+            },
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -587,6 +819,42 @@
       "CancelledOrderResponse": {
         "type": "object"
       },
+      "OrderUpdateRequest": {
+        "type": "object",
+        "description": "At least one of 'destination' or 'orderData' must be provided.",
+        "properties": {
+          "destination": {
+            "$ref": "#/components/schemas/Destination"
+          },
+          "orderData": {
+            "$ref": "#/components/schemas/OrderData"
+          }
+        }
+      },
+      "OrderUpdateResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "order": {
+            "$ref": "#/components/schemas/FullOrder"
+          }
+        }
+      },
+      "Destination": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Account name for order destination."
+          }
+        }
+      },
       "FileUploadUrlsResponse": {
         "type": "object",
         "properties": {
@@ -663,6 +931,59 @@
             "items": {
               "$ref": "#/components/schemas/Sku"
             }
+          }
+        }
+      },
+      "PDFResizeResponse": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "description": "Name of the resized PDF file."
+          },
+          "pages": {
+            "type": "integer",
+            "description": "Number of pages processed."
+          },
+          "original_size": {
+            "$ref": "#/components/schemas/PageSize"
+          },
+          "target_size": {
+            "$ref": "#/components/schemas/PageSize"
+          },
+          "fit_content": {
+            "type": "boolean",
+            "description": "Whether content was scaled to fit."
+          }
+        }
+      },
+      "PageSize": {
+        "type": "object",
+        "properties": {
+          "width_pt": {
+            "type": "number",
+            "description": "Width in PDF points."
+          },
+          "height_pt": {
+            "type": "number",
+            "description": "Height in PDF points."
+          },
+          "width_mm": {
+            "type": "number",
+            "description": "Width in millimeters."
+          },
+          "height_mm": {
+            "type": "number",
+            "description": "Height in millimeters."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "Human-readable error description."
           }
         }
       },

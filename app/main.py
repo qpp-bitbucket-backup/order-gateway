@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
+import copy
 import logging
 
 from app.core.config import settings
@@ -16,14 +18,25 @@ from app.core.auth_oneflow import (
 from app.api import orders, products, files, clients, sync
 
 # Global logging configuration
+# Configure root logger so all modules (including app.api.orders) inherit uvicorn-style console output
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 # Suppress SQLAlchemy engine and pool logs
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.engine.Engine").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
+    # Suppress SQLAlchemy logs after uvicorn logging setup
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine.Engine").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+
     # Startup: Initialize monitoring (Sentry + SkyWalking)
     init_monitoring()
     
@@ -70,13 +83,12 @@ Contact QPMN support to obtain your Token and Secret.
 
 ## Rate Limiting
 - 100 requests per minute for standard accounts
-- 1000 requests per minute for premium accounts
 
 ## Support
 For API support, contact: itdev2@qpp.com
     """,
     docs_url="/docs",
-    redoc_url="/redoc",
+    redoc_url=None,
     openapi_url="/openapi.json",
     lifespan=lifespan,
     openapi_tags=[
@@ -166,9 +178,9 @@ def custom_openapi():
     }
 
     for path, path_item in openapi_schema.get("paths", {}).items():
-        if not path.startswith("/api"):
-            continue
         for method, operation in path_item.items():
+            if not path.startswith("/api"):
+                continue
             if method not in {"get", "post", "put", "patch", "delete", "options", "head", "trace"}:
                 continue
             operation["security"] = ONEFLOW_SECURITY
@@ -180,16 +192,51 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 
-@app.get("/", tags=["Health"])
-def root():
-    """Root endpoint - Health check."""
-    return {
-        "status": "healthy",
-        "service": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "docs": "/docs",
-        "authentication": "OneFlow signed headers required for all /api/* endpoints"
-    }
+def _get_filtered_openapi():
+    """Generate a filtered OpenAPI schema for ReDoc (Orders + File Upload only)."""
+    schema = copy.deepcopy(custom_openapi())
+    allowed_tags = {"Orders", "File Upload"}
+    filtered_paths = {}
+    for path, path_item in schema.get("paths", {}).items():
+        filtered_ops = {}
+        for method, operation in path_item.items():
+            if method not in {"get", "post", "put", "patch", "delete", "options", "head", "trace"}:
+                continue
+            op_tags = set(operation.get("tags", []))
+            if op_tags & allowed_tags:
+                filtered_ops[method] = operation
+        if filtered_ops:
+            filtered_paths[path] = filtered_ops
+    schema["paths"] = filtered_paths
+    schema["tags"] = [t for t in schema.get("tags", []) if t["name"] in allowed_tags]
+    return schema
+
+
+@app.get("/openapi_redoc.json", include_in_schema=False)
+def openapi_redoc():
+    """Filtered OpenAPI schema for ReDoc."""
+    return _get_filtered_openapi()
+
+
+@app.get("/redoc", include_in_schema=False, response_class=HTMLResponse)
+def redoc():
+    """ReDoc documentation - shows only Orders and File Upload APIs."""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>{settings.APP_NAME} - ReDoc</title>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+        <style>body {{ margin: 0; padding: 0; }}</style>
+    </head>
+    <body>
+        <redoc spec-url='/openapi_redoc.json'></redoc>
+        <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+    </body>
+    </html>
+    """
 
 
 @app.get("/health", tags=["Health"])
