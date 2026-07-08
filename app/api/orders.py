@@ -4,6 +4,7 @@ from typing import Optional
 import uuid
 import json
 import logging
+import httpx
 from datetime import datetime,timezone,timezone
 
 logger = logging.getLogger(__name__)
@@ -11,6 +12,7 @@ from app.core.config import settings
 
 from app.core.database import get_session
 from app.models.order import Order, OrderStatus
+from app.models.product import Sku, Product
 from app.schemas.order import (
     OrderValidationRequest,
     OrderValidationResponse,
@@ -53,10 +55,31 @@ def _log_response(endpoint: str, response: dict):
             json.dumps(response, ensure_ascii=False, default=str),
         )
 
+def is_file_accessible(url: str) -> bool:
+    """
+    Check whether a file URL is reachable without downloading its full content.
+
+    Tries a lightweight HEAD request first and falls back to a streamed GET for
+    servers that do not support HEAD. A 2xx/3xx response is treated as accessible.
+    """
+    try:
+        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+            response = client.head(url)
+            # Some servers (and presigned OSS URLs) do not allow HEAD.
+            if response.status_code in (403, 405, 501):
+                with client.stream("GET", url) as stream_response:
+                    return stream_response.status_code < 400
+            return response.status_code < 400
+    except Exception as exc:
+        logger.warning(f"[validate_order] File accessibility check failed for {url}: {exc}")
+        return False
+
 
 @router.post("/order/validate", response_model=OrderValidationResponse)
 def validate_order(
     request: OrderValidationRequest,
+    session: Session = Depends(get_session),
+    store_id: Optional[str] = Depends(get_client_store_id),
 ):
     """
     Validate an Order - Submits an order for validation without actually creating it.
@@ -76,15 +99,51 @@ def validate_order(
 
         # Validate items
         for item in request.orderData.items:
-            # Check if SKU exists (would query database in production)
+            # Check if SKU is provided and refers to a valid, active SKU
             if not item.sku:
                 validation_errors.append("SKU is required for all items")
+            else:
+                # Look up the SKU by its business code, scoped to the client's store if set
+                sku_query = select(Sku).where(
+                    (Sku.sku_id == item.sku) & Sku.active.is_(True)
+                )
+                if store_id:
+                    sku_query = sku_query.where(Sku.store_id == store_id)
+                existing_sku = session.exec(sku_query).first()
+
+                if not existing_sku:
+                    validation_errors.append(f"Invalid or inactive SKU: {item.sku}")
+                else:
+                    # Ensure all components marked as required on the product are present
+                    product = session.exec(
+                        select(Product).where(
+                            Product.product_id == existing_sku.product_id
+                        )
+                    ).first()
+
+                    if product and product.components:
+                        provided_codes = {
+                            component.code for component in (item.components or [])
+                        }
+                        for product_component in product.components:
+                            if product_component.get("required") and (
+                                product_component.get("code") not in provided_codes
+                            ):
+                                validation_errors.append(
+                                    f"Missing required component "
+                                    f"'{product_component.get('code')}' for SKU {item.sku}"
+                                )
 
             # Validate components
             if item.components:
                 for component in item.components:
-                    if component.fetch and not component.path:
-                        validation_errors.append(f"Path required when fetch=true for component {component.code}")
+                    if component.fetch:
+                        if not component.path:
+                            validation_errors.append(f"Path required when fetch=true for component {component.code}")
+                        elif not is_file_accessible(component.path):
+                            validation_errors.append(
+                                f"File not accessible for component {component.code}: {component.path}"
+                            )
 
         # Validate shipments
         if request.orderData.shipments:
