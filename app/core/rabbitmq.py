@@ -27,7 +27,8 @@ def get_rabbitmq_connection_params() -> pika.ConnectionParameters:
     host = parsed.hostname or "localhost"
     port = parsed.port or 5672
     vhost = parsed.path.lstrip("/") if parsed.path and parsed.path != "/" else "/"
-
+    if not vhost:
+        vhost = "/"
     credentials = pika.PlainCredentials(username, password)
     return pika.ConnectionParameters(
         host=host,
