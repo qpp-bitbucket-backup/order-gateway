@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, Query, status, Depends
+from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, status, Depends
+from fastapi.responses import Response
 from sqlmodel import Session, select
 import uuid
 from datetime import datetime,timezone, timedelta
@@ -8,6 +9,7 @@ from app.models.file_upload import FileUpload
 from app.schemas.file_upload import FileUploadUrlsResponse
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
 from app.services.oss import oss_service
+from app.services.pdf_utils import pdf_processor, parse_dimension, PAGE_SIZES
 
 router = APIRouter(
     prefix="/api/file",
