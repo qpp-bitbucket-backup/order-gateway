@@ -26,7 +26,7 @@ celery_app.conf.update(
 )
 
 # Auto-discover tasks
-celery_app.autodiscover_tasks(["app.tasks"])
+celery_app.autodiscover_tasks(["app.tasks", "app.tasks.orders"])
 
 
 @celery_app.task(bind=True)

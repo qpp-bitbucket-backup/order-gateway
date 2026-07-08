@@ -61,11 +61,13 @@ class Settings(BaseSettings):
     RABBITMQ_USER: str = "guest"
     RABBITMQ_PASSWORD: str = "guest"
     RABBITMQ_VHOST: str = "/"
-    RABBITMQ_ORDER_QUEUE: str = "order_processing"
 
     # QPMN API Configuration
     QPMN_API_URL: str = "https://api.qpmn.com/v1"
     QPMN_API_KEY: str = ""
+
+    # OMS API Configuration
+    OMS_API_URL: str = ""
 
     # Alibaba Cloud OSS Configuration
     OSS_ACCESS_KEY_ID: str = "your-oss-access-key-id"

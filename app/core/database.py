@@ -15,7 +15,7 @@ if "sqlite" in settings.DATABASE_URL:
 else:
     engine = create_engine(
         settings.DATABASE_URL,
-        echo=settings.DEBUG,
+        echo=False,
         pool_pre_ping=True,
         pool_size=10,
         max_overflow=20,
