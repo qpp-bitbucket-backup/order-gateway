@@ -1,6 +1,10 @@
 """Celery application configuration."""
 from celery import Celery
 from app.core.config import settings
+from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING
+
+# All order processing queues
+ORDER_QUEUES = [QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING]
 
 # Create Celery app
 celery_app = Celery(
@@ -23,6 +27,12 @@ celery_app.conf.update(
     task_autoretry_for=(Exception,),
     task_max_retries=3,
     task_default_retry_delay=60,  # 60 seconds between retries
+    # Route order tasks to their dedicated queues
+    task_routes={
+        "tasks.orders.publish_order": {"queue": QUEUE_ORDER_PUBLISHING},
+        "tasks.orders.validate_order": {"queue": QUEUE_ORDER_VALIDATING},
+        # "tasks.orders.push_order": {"queue": QUEUE_ORDER_PUSHING},
+    },
 )
 
 # Auto-discover tasks
