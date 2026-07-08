@@ -27,7 +27,7 @@ from app.schemas.order import (
     OrderUpdateResponse,
 )
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
-from app.core.rabbitmq import publish_order_task
+from app.tasks.orders import publish_order
 
 router = APIRouter(
     prefix="/api",
@@ -245,18 +245,14 @@ def submit_order(
         session.commit()
         session.refresh(order)
 
-        # Publish order processing task to RabbitMQ
+        # Publish order processing task via Celery
         task_payload = {
             "order_id": order.order_id,
             "source_order_id": order.source_order_id,
             "status": order.status.value,
             "created_at": order.created_at.isoformat() if order.created_at else None,
         }
-        published = publish_order_task(task_payload)
-        if not published:
-            logger.warning(
-                f"Order {order.order_id} created but RabbitMQ publish failed"
-            )
+        publish_order.apply_async(args=[task_payload])
 
         # Build response
         full_order = FullOrder(

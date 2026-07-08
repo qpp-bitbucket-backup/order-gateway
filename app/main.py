@@ -21,7 +21,7 @@ from app.api import orders, products, files, clients, sync
 # Configure root logger so all modules (including app.api.orders) inherit uvicorn-style console output
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 # Suppress SQLAlchemy engine and pool logs
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)

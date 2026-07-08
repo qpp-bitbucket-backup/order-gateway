@@ -13,7 +13,7 @@ def init_sentry() -> bool:
     Returns:
         True if Sentry was initialized successfully, False otherwise.
     """
-    if not settings.SENTRY_DSN:
+    if not settings.SENTRY_DSN or empty(settings.SENTRY_DSN):
         logger.info("Sentry DSN not configured, skipping Sentry initialization")
         return False
 
