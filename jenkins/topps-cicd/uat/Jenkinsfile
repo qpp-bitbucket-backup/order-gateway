@@ -15,6 +15,8 @@ pipeline {
         ACR_VPC_REGISTRY = 'prod-plugin-acr-registry-vpc.cn-guangzhou.cr.aliyuncs.com'
         ACR_NAMESPACE  = 'uat'
         ACR_REPO       = 'order-gateway'
+
+        DEPLOYMENT_FILE = 'topps/order-gateway/uat/deployment.yml'
     }
 
     stages {
