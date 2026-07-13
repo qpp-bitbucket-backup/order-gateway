@@ -96,12 +96,9 @@ class OrderSubmissionRequest(BaseModel):
 class FullOrder(BaseModel):
     """Complete order response schema."""
     id: str = Field(..., alias="_id", description="Internal order ID")
-    v: int = Field(0, alias="__v", description="Document version")
     destination: Optional[Dict[str, Any]] = Field(None, description="Destination information")
     source: Optional[Dict[str, Any]] = Field(None, description="Source information")
     orderData: Optional[Dict[str, Any]] = Field(None, description="Complete order data")
-    logs: Optional[List[Dict[str, Any]]] = Field(None, description="Order processing logs")
-    files: Optional[List[Dict[str, Any]]] = Field(None, description="Associated files")
 
     class Config:
         populate_by_name = True

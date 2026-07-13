@@ -39,6 +39,8 @@ class Sku(BaseModel):
     active: bool = Field(True, description="Whether SKU is active")
     unitPrice: Optional[float] = Field(None, ge=0, description="Unit price")
     unitCost: Optional[float] = Field(None, ge=0, description="Unit cost")
+    properties: Optional[Dict[str, Any]] = Field(None, description="SKU properties")
+    customizeProject: Optional[Dict[str, Any]] = Field(None, description="Customize project data")
 
     class Config:
         populate_by_name = True

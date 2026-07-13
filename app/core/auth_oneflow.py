@@ -199,18 +199,12 @@ async def verify_oneflow_auth(
             detail="Request timestamp is invalid or expired",
             headers={"X-Error-Code": "EXPIRED_TIMESTAMP"},
         )
-    print(f"client_secret: {client_secret}")
-    print(f"request.method: {request.method}")
-    print(f"request.url.path: {request.url.path}")
-    print(f"x_oneflow_date: {x_oneflow_date}")
     expected_signature = generate_signature(
         client_secret,
         request.method,
         request.url.path,
         x_oneflow_date,
     )
-    print(f"expected_signature: {expected_signature}")
-    print(f"provided_signature: {provided_signature}")
     if not hmac.compare_digest(provided_signature, expected_signature):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

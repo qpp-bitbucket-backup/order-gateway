@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from contextlib import asynccontextmanager
 import copy
 import logging
@@ -244,11 +244,16 @@ def health_check():
     """Health check endpoint - Monitors database and RabbitMQ connectivity."""
     health_status = get_full_health_status()
     
-    return {
-        "status": health_status["status"],
-        "timestamp": health_status["timestamp"],
-        "components": health_status["components"],
-    }
+    status_code = 200 if health_status["status"] == "healthy" else 503
+    
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": health_status["status"],
+            "timestamp": health_status["timestamp"],
+            "components": health_status["components"],
+        },
+    )
 
 
 if __name__ == "__main__":

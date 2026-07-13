@@ -31,6 +31,7 @@ def sync_products_from_qpmn(self, store_id: str = None) -> Dict[str, Any]:
         # Get store_key from clients table if store_id is provided
         store_key = None
         if store_id:
+            print("---------------------------------------------")
             store_key = ClientService.get_store_key_by_id(store_id)
             if not store_key:
                 logger.warning(f"No client found for store_id: {store_id}")

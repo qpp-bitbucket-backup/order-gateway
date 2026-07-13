@@ -38,3 +38,5 @@ class Sku(BaseModel, table=True):
     unit_price: Optional[float] = Field(None, ge=0, description="Unit price")
     unit_cost: Optional[float] = Field(None, ge=0, description="Unit cost")
     store_id: Optional[str] = Field(None, index=True, description="Store identifier")
+    properties: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="SKU properties")
+    customize_project: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Customize project data")
