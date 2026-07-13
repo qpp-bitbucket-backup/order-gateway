@@ -99,11 +99,11 @@ pipeline {
         stage('Checkout Plugin DevOps Helm Chart Repo') {
             steps {
                 script {
-                    dir('order-gateway') {
+                    dir('gitops-ack') {
                         checkout scmGit(
-                            branches: [[name: '*/develop']],
+                            branches: [[name: '*/main']],
                             extensions: [
-                                localBranch('develop')
+                                localBranch('main')
                             ],
                             userRemoteConfigs: [[
                                 url: 'https://itdev25@bitbucket.org/qpp-team/gitops-ack.git',
