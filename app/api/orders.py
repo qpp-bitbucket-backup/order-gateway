@@ -1,11 +1,10 @@
 from fastapi import APIRouter, HTTPException, Query, status, Depends
 from sqlmodel import Session, select
 from typing import Optional
-import uuid
+from datetime import datetime, timezone
 import json
 import logging
 import httpx
-from datetime import datetime,timezone,timezone
 
 logger = logging.getLogger(__name__)
 from app.core.config import settings
@@ -27,7 +26,7 @@ from app.schemas.order import (
     OrderUpdateResponse,
 )
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
-from app.tasks.orders import publish_order
+from app.services.order import order_service
 
 router = APIRouter(
     prefix="/api",
@@ -54,6 +53,7 @@ def _log_response(endpoint: str, response: dict):
             endpoint,
             json.dumps(response, ensure_ascii=False, default=str),
         )
+
 
 def is_file_accessible(url: str) -> bool:
     """
@@ -200,75 +200,42 @@ def submit_order(
     exists for this store, the API returns HTTP **451** with the existing
     `order_id` in the response details.
     """
-
     _log_request("POST /order", request.model_dump())
     try:
-        # Check for existing order with the same source_order_id and store_id (idempotency)
-        if store_id:
-            existing_order = session.exec(
-                select(Order).where(
-                    (Order.source_order_id == request.orderData.sourceOrderId) &
-                    (Order.store_id == store_id)
-                )
-            ).first()
-            
-            if existing_order:
-                # Order already exists — return 451 to indicate duplicate
-                raise HTTPException(
-                    status_code=451,
-                    detail=(
-                        f"Order with sourceOrderId '{request.orderData.sourceOrderId}' "
-                        f"already exists (order_id={existing_order.order_id})."
-                    )
-                )
-        
-        # Generate unique order ID
-        order_id = str(uuid.uuid4())
+        # Check for duplicate (idempotency)
+        existing_order = order_service.check_duplicate(
+            session,
+            source_order_id=request.orderData.sourceOrderId,
+            store_id=store_id,
+        )
+        if existing_order:
+            raise HTTPException(
+                status_code=451,
+                detail=(
+                    f"Order with sourceOrderId '{request.orderData.sourceOrderId}' "
+                    f"already exists (order_id={existing_order.order_id})."
+                ),
+            )
 
-        # Create order record
-        order = Order(
-            order_id=order_id,
+        # Create order via service
+        order = order_service.create_order(
+            session,
             source_account=request.destination.name,
             source_order_id=request.orderData.sourceOrderId,
             destination=request.destination.model_dump(),
-            source={
-                "name": request.destination.name,
-                "submitted_at": datetime.now(timezone.utc).isoformat()
-            },
             order_data=request.orderData.model_dump(),
-            status=OrderStatus.RECEIVED,
-            version=0,
-            store_id=store_id  # Associate order with client's store
+            store_id=store_id,
         )
 
-        session.add(order)
-        session.commit()
-        session.refresh(order)
-
-        # Publish order processing task via Celery
-        task_payload = {
-            "order_id": order.order_id,
-            "source_order_id": order.source_order_id,
-            "status": order.status.value,
-            "created_at": order.created_at.isoformat() if order.created_at else None,
-        }
-        publish_order.apply_async(args=[task_payload])
-
-        # Build response
+        # Build response (exclude logs, version, files, store_order_id)
         full_order = FullOrder(
             id=order.order_id,
-            v=order.version,
             destination=order.destination,
             source=order.source,
             orderData=order.order_data,
-            logs=order.logs or [],
-            files=order.files or []
         )
 
-        resp = OrderSubmissionResponse(
-            success=True,
-            order=full_order
-        )
+        resp = OrderSubmissionResponse(success=True, order=full_order)
         _log_response("POST /order", resp.model_dump())
         return resp
 
@@ -278,7 +245,7 @@ def submit_order(
         session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Order submission failed: {str(e)}"
+            detail=f"Order submission failed: {str(e)}",
         )
 
 
@@ -297,37 +264,19 @@ def get_all_orders(
     """
     _log_request("GET /order", {"page": page, "pagesize": pagesize})
     try:
-        # Calculate offset
-        offset = (page - 1) * pagesize
-
-        # Build query with optional store_id filter
-        query = select(Order)
-        if store_id:
-            query = query.where(Order.store_id == store_id)
-
-        # Get total count
-        count_statement = query
-        total_count = len(session.exec(count_statement).all())
-
-        # Get paginated orders
-        statement = (
-            query
-            .offset(offset)
-            .limit(pagesize)
-            .order_by(Order.created_at.desc())
+        orders, total_count, total_pages = order_service.get_all_orders(
+            session,
+            store_id=store_id,
+            page=page,
+            pagesize=pagesize,
         )
-        orders = session.exec(statement).all()
 
-        # Calculate total pages
-        total_pages = (total_count + pagesize - 1) // pagesize
-
-        # Build response
         order_summaries = [
             OrderSummary(
                 id=order.order_id,
                 destination=order.destination,
                 source=order.source,
-                orderData=order.order_data
+                orderData=order.order_data,
             )
             for order in orders
         ]
@@ -337,7 +286,7 @@ def get_all_orders(
             count=total_count,
             page=page,
             pages=total_pages,
-            data=order_summaries
+            data=order_summaries,
         )
         _log_response("GET /order", resp.model_dump())
         return resp
@@ -345,7 +294,7 @@ def get_all_orders(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve orders: {str(e)}"
+            detail=f"Failed to retrieve orders: {str(e)}",
         )
 
 
@@ -363,40 +312,23 @@ def get_order_by_id(
     """
     _log_request("GET /order/{order_id}", {"order_id": order_id})
     try:
-        # Build query with optional store_id filter
-        query = select(Order).where(Order.order_id == order_id)
-        if store_id:
-            query = query.where(Order.store_id == store_id)
-        
-        order = session.exec(query).first()
+        order = order_service.get_order_by_id(session, order_id, store_id=store_id)
 
         if not order:
-            if store_id:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Order with ID '{order_id}' not found or access denied"
-                )
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Order with ID '{order_id}' not found"
-                )
+            detail = (
+                f"Order with ID '{order_id}' not found"
+                + (" or access denied" if store_id else "")
+            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
-        # Build full order response
         full_order = FullOrder(
             id=order.order_id,
-            v=order.version,
             destination=order.destination,
             source=order.source,
             orderData=order.order_data,
-            logs=order.logs or [],
-            files=order.files or []
         )
 
-        resp = OrderDetailsResponse(
-            success=True,
-            order=full_order
-        )
+        resp = OrderDetailsResponse(success=True, order=full_order)
         _log_response("GET /order/{order_id}", resp.model_dump())
         return resp
 
@@ -405,7 +337,7 @@ def get_order_by_id(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve order: {str(e)}"
+            detail=f"Failed to retrieve order: {str(e)}",
         )
 
 
@@ -429,23 +361,9 @@ def update_order(
     Orders with status `printready`, `printed`, `shipped`, or `cancelled` cannot be
     modified and will return HTTP **409 Conflict**.
     """
-    # Statuses that allow updates (same as cancellable states)
-    UPDATABLE_STATUSES = {
-        OrderStatus.RECEIVED,
-        OrderStatus.PENDING,
-        OrderStatus.VALIDATED,
-        OrderStatus.FAILED,
-        OrderStatus.ERRORED,
-    }
-
     _log_request("PUT /order/{order_id}", {"order_id": order_id, **request.model_dump()})
     try:
-        # Find the order by internal order_id
-        query = select(Order).where(Order.order_id == order_id)
-        if store_id:
-            query = query.where(Order.store_id == store_id)
-
-        order = session.exec(query).first()
+        order = order_service.get_order_by_id(session, order_id, store_id=store_id)
 
         if not order:
             detail = (
@@ -454,55 +372,24 @@ def update_order(
             )
             raise HTTPException(status_code=404, detail=detail)
 
-        # Check if the order is in an updatable state
-        if order.status not in UPDATABLE_STATUSES:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    f"Cannot update order with status '{order.status.value}'. "
-                    f"Order must be in one of: "
-                    f"{', '.join(s.value for s in UPDATABLE_STATUSES)}."
-                ),
+        try:
+            order, changes = order_service.update_order(
+                session,
+                order,
+                destination=request.destination.model_dump() if request.destination else None,
+                order_data=request.orderData.model_dump() if request.orderData else None,
             )
-
-        # Apply updates
-        changes = []
-
-        if request.destination is not None:
-            order.destination = request.destination.model_dump()
-            changes.append("destination")
-
-        if request.orderData is not None:
-            order.order_data = request.orderData.model_dump()
-            changes.append("orderData")
-
-        if not changes:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="At least one of 'destination' or 'orderData' must be provided.",
-            )
-
-        # Bump version and add log entry
-        order.version += 1
-        log_entry = {
-            "action": "updated",
-            "fields": changes,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        order.logs = (order.logs or []) + [log_entry]
-
-        session.add(order)
-        session.commit()
-        session.refresh(order)
+        except ValueError as ve:
+            # Determine 400 vs 409 based on message content
+            if "status" in str(ve).lower():
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(ve))
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
         full_order = FullOrder(
             id=order.order_id,
-            v=order.version,
             destination=order.destination,
             source=order.source,
             orderData=order.order_data,
-            logs=order.logs or [],
-            files=order.files or [],
         )
 
         resp = OrderUpdateResponse(
@@ -540,44 +427,29 @@ def cancel_order(
     try:
         # Find order by source account and source order ID
         query = select(Order).where(
-            (Order.source_account == source_account) &
-            (Order.source_order_id == source_order_id)
+            (Order.source_account == source_account)
+            & (Order.source_order_id == source_order_id)
         )
-        
-        # Add store_id filter if using client authentication
         if store_id:
             query = query.where(Order.store_id == store_id)
-        
         order = session.exec(query).first()
 
         if not order:
-            if store_id:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Order with sourceOrderId '{source_order_id}' not found or access denied"
-                )
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Order with sourceOrderId '{source_order_id}' not found"
-                )
-
-        # Check if order can be cancelled
-        if order.status in [OrderStatus.PRINTREADY,OrderStatus.PRINTED, OrderStatus.SHIPPED]:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot cancel order with status '{order.status.value}'"
+            detail = (
+                f"Order with sourceOrderId '{source_order_id}' not found"
+                + (" or access denied" if store_id else "")
             )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
-        # Update order status
-        order.status = OrderStatus.CANCELLED
-        session.add(order)
-        session.commit()
+        try:
+            order = order_service.cancel_order(session, order)
+        except ValueError as ve:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(ve))
 
         resp = CancelledOrderResponse(
             success=True,
             message="Order cancelled successfully",
-            order_id=order.order_id
+            order_id=order.order_id,
         )
         _log_response("PUT /order/cancel", resp.model_dump())
         return resp
@@ -588,5 +460,5 @@ def cancel_order(
         session.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Order cancellation failed: {str(e)}"
+            detail=f"Order cancellation failed: {str(e)}",
         )

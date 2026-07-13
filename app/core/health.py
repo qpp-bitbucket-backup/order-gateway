@@ -111,6 +111,7 @@ def get_full_health_status() -> Dict[str, Any]:
     """
     db_health = check_database_health()
     rabbitmq_health = check_rabbitmq_health()
+    status_code = 200
     
     # Overall status is healthy only if all components are healthy
     overall_status = "healthy" if (
@@ -118,8 +119,11 @@ def get_full_health_status() -> Dict[str, Any]:
         rabbitmq_health["status"] == "healthy"
     ) else "degraded"
     
+    if db_health["status"] != "healthy" or rabbitmq_health["status"] != "healthy":
+        status_code = 503
     return {
         "status": overall_status,
+        "status_code":  status_code,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "components": {
             "database": db_health,

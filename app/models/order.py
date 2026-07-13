@@ -181,3 +181,4 @@ class Order(BaseModel, table=True):
     files: Optional[List[Dict[str, Any]]] = Field(None, sa_column=Column(JSON), description="Associated files")
     version: int = Field(default=0, description="Document version (__v)")
     store_id: Optional[str] = Field(None, index=True, description="Store identifier")
+    store_order_id: Optional[str] = Field(None, max_length=255, index=True, description="Store order ID for external reference")
