@@ -96,6 +96,95 @@ pipeline {
             }
         }
 
+        stage('Checkout Plugin DevOps Helm Chart Repo') {
+            steps {
+                script {
+                    dir('order-gateway') {
+                        checkout scmGit(
+                            branches: [[name: '*/develop']],
+                            extensions: [
+                                localBranch('develop')
+                            ],
+                            userRemoteConfigs: [[
+                                url: 'https://itdev25@bitbucket.org/qpp-team/gitops-ack.git',
+                                credentialsId: 'bitbucket-ci-api-token'
+                            ]]
+                        )
+                    }
+                }
+            }
+        }
+        stage('Update Deployment Image Tag - topps/order-gateway/uat') {
+            steps {
+                dir('gitops-ack') {
+                    sh """
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:' ${env.DEPLOYMENT_FILE}; then
+                            echo "ERROR: Expected image pattern not found in ${env.DEPLOYMENT_FILE}"
+                            exit 1
+                        fi
+
+                        sed -i 's|\\(image:[[:space:]]*${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:\\)[^[:space:]]*|\\1${env.IMAGE_TAG}|g' ${env.DEPLOYMENT_FILE}
+                        
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}' ${env.DEPLOYMENT_FILE}; then
+                            echo "ERROR: Image tag replacement failed! Please check ${env.DEPLOYMENT_FILE}"
+                            exit 1
+                        fi
+
+                        echo "Verified: image tag updated successfully"
+                        grep 'image:' ${env.DEPLOYMENT_FILE}
+                    """
+                    }
+                }
+            }
+        }
+
+        stage('Commit and Push Changes - topps/order-gateway/uat') {
+            steps {
+                script {
+                    dir('gitops-ack') {
+                        withCredentials([usernamePassword(
+                            credentialsId: 'bitbucket-cd-access-token-gitops-ack',
+                            usernameVariable: 'GIT_USERNAME',
+                            passwordVariable: 'GIT_PASSWORD'
+                        )]) {
+                            sh """
+                                git config user.email "jenkins@qpp.com"
+                                git config user.name "Jenkins CI"
+                                
+                                git add topps/order-gateway/uat/deployment.yml
+
+                                if git diff --staged --quiet; then
+                                    echo "No changes to commit"
+                                else
+                                    git commit -m "Update order-gateway deployment image tag to ${IMAGE_TAG}"
+
+                                    git config credential.helper '!f() { echo "username=\$GIT_USERNAME"; echo "password=\$GIT_PASSWORD"; }; f'
+
+                                    git push origin main
+
+                                    git config --unset credential.helper
+
+                                    echo "Successfully pushed changes to gitops-ack repository"
+                                fi
+                            """
+                        }
+                    }
+                }
+            }
+        }
+        stage('Cleanup Docker Images') {
+            steps {
+                container('docker') {
+                    script {
+                        sh """
+                            docker rmi ${ACR_REGISTRY}/${ACR_REPO}:${IMAGE_TAG} || true
+                            docker rmi ${ACR_REGISTRY}/${ACR_REPO}:latest || true                           
+                        """
+                    }
+                }
+            }
+        }                
+    
 
 
     }
