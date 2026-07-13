@@ -114,6 +114,7 @@ pipeline {
                 }
             }
         }
+
         stage('Update Deployment Image Tag - topps/order-gateway/uat') {
             steps {
                 dir('gitops-ack') {
@@ -133,10 +134,10 @@ pipeline {
                         echo "Verified: image tag updated successfully"
                         grep 'image:' ${env.DEPLOYMENT_FILE}
                     """
-                    }
                 }
             }
         }
+        
 
         stage('Commit and Push Changes - topps/order-gateway/uat') {
             steps {
