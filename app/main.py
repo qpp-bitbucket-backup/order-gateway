@@ -113,6 +113,10 @@ For API support, contact: itdev2@qpp.com
             "description": "Product synchronization from QPMN API (requires x-admin-key)",
         },
         {
+            "name": "Products Admin",
+            "description": "Product/SKU management operations (requires x-admin-key)",
+        },
+        {
             "name": "Health",
             "description": "Health check and status endpoints (no authentication required)",
         },
@@ -131,6 +135,7 @@ app.add_middleware(
 # Include routers
 app.include_router(orders.router)
 app.include_router(products.router)
+app.include_router(products.admin_router)
 app.include_router(files.router)
 app.include_router(clients.router)
 app.include_router(sync.router)

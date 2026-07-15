@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from typing import Optional
 from app.core.auth_admin import verify_admin_key
-from app.tasks.products import sync_products_from_qpmn, sync_skus_from_qpmn
+from app.tasks.products import sync_products_task, sync_skus_task
 
 router = APIRouter(
     prefix="/api/sync",
@@ -27,7 +27,7 @@ def trigger_product_sync(store_id: Optional[str] = Query(None, description="Stor
     """
     try:
         # Start async task
-        task = sync_products_from_qpmn.delay(store_id=store_id)
+        task = sync_products_task.delay(store_id=store_id)
         
         return {
             "success": True,
@@ -58,7 +58,7 @@ def trigger_sku_sync(store_id: Optional[str] = Query(None, description="Store ID
     """
     try:
         # Start async task
-        task = sync_skus_from_qpmn.delay(store_id=store_id)
+        task = sync_skus_task.delay(store_id=store_id)
         
         return {
             "success": True,

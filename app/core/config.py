@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     QPMN_API_URL: str = "https://api.qpmn.com/v1"
     QPMN_API_KEY: str = ""
 
+    # PDF Processing Configuration
+    MODIFY_PDF_RESOLUTION: bool = False
+    PDF_TARGET_WIDTH: float = 595.0  # A4 width in points (8.27 inches)
+    PDF_TARGET_HEIGHT: float = 842.0  # A4 height in points (11.69 inches)
+
     # OMS API Configuration
     OMS_API_URL: str = ""
 

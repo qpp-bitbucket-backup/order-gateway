@@ -35,12 +35,6 @@ Examples:
         help='Store ID to sync products for (required)'
     )
     
-    parser.add_argument(
-        '--skus-only',
-        action='store_true',
-        help='Sync only SKUs, not products'
-    )
-    
     args = parser.parse_args()
     
     print("=" * 60)
@@ -48,20 +42,13 @@ Examples:
     print("=" * 60)
     print()
     print(f"Store ID: {args.store_id}")
-    print(f"Mode: {'SKUs only' if args.skus_only else 'Products and SKUs'}")
+    print(f"Mode: {'Products and SKUs'}")
     print()
     print("Starting sync...")
-    print()
     
     try:
-        if args.skus_only:
-            # Sync only SKUs
-            print("Syncing SKUs...")
-            result = sync_skus_from_qpmn(store_id=args.store_id)
-        else:
-            # Sync products and SKUs
-            print("Syncing products and SKUs...")
-            result = sync_products_from_qpmn(store_id=args.store_id)
+        print("Syncing products ...")
+        result = sync_products_from_qpmn(args.store_id)
         
         print()
         print("=" * 60)
