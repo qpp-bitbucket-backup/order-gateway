@@ -1,0 +1,112 @@
+"""Outbound notification Celery tasks."""
+import logging
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
+
+from sqlmodel import Session, select
+
+from app.core.celery import celery_app
+from app.core.database import engine
+from app.core.rabbitmq import QUEUE_ORDER_NOTIFYING
+from app.models.order import Order
+from app.models.webhook_log import WebhookLog, WebhookProcessStatus
+from app.services.oms import oms_service
+
+logger = logging.getLogger(__name__)
+
+
+@celery_app.task(
+    bind=True,
+    name="tasks.notifications.notify_oms",
+    queue=QUEUE_ORDER_NOTIFYING,
+)
+def notify_oms(
+    self,
+    webhook_log_id: int,
+    order_id: str,
+    event_status: str,
+    shipments: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """
+    Notify OMS of an order status update via API-002 (HUB4 transport).
+
+    Success → mark the outbound log ``processed``.
+    4xx / business error → mark ``failed`` (no retry).
+    5xx / network error → update ``retry_count`` + ``error_message`` then
+    raise so the global autoretry kicks in; after ``max_retries`` the log
+    is left as ``failed``.
+    """
+    logger.info(
+        "[Celery] notify_oms: log_id=%s order_id=%s status=%s",
+        webhook_log_id,
+        order_id,
+        event_status,
+    )
+
+    try:
+        with Session(engine) as session:
+            log = session.exec(
+                select(WebhookLog).where(WebhookLog.id == webhook_log_id)
+            ).first()
+            if not log:
+                logger.error("[Celery] WebhookLog not found: %s", webhook_log_id)
+                return False
+
+            order = session.exec(
+                select(Order).where(Order.order_id == order_id)
+            ).first()
+            if not order:
+                logger.error("[Celery] Order not found: %s", order_id)
+                log.process_status = WebhookProcessStatus.FAILED
+                log.error_message = "Order not found"
+                session.add(log)
+                session.commit()
+                return False
+
+            result = oms_service.update_order_status(
+                order=order,
+                event_status=event_status,
+                status_desc=event_status,
+                shipments=shipments,
+            )
+
+            if result.get("success"):
+                log.process_status = WebhookProcessStatus.PROCESSED
+                log.processed_at = datetime.now(timezone.utc)
+                log.payload = {**(log.payload or {}), "response": result.get("data")}
+                session.add(log)
+                session.commit()
+                logger.info("[Celery] OMS notified for order %s", order_id)
+                return True
+
+            # Non-retryable failure (4xx, business error, not configured)
+            log.process_status = WebhookProcessStatus.FAILED
+            log.error_message = result.get("message", "OMS returned failure")
+            log.retry_count = self.request.retries
+            session.add(log)
+            session.commit()
+            logger.warning("[Celery] OMS business error for order %s: %s", order_id, result)
+            return False
+
+    except Exception as e:
+        logger.error(
+            "[Celery] notify_oms failed for log %s: %s",
+            webhook_log_id,
+            e,
+            exc_info=True,
+        )
+        try:
+            with Session(engine) as session:
+                log = session.exec(
+                    select(WebhookLog).where(WebhookLog.id == webhook_log_id)
+                ).first()
+                if log:
+                    log.retry_count = self.request.retries
+                    log.error_message = str(e)[:512]
+                    if self.request.retries >= self.max_retries:
+                        log.process_status = WebhookProcessStatus.FAILED
+                    session.add(log)
+                    session.commit()
+        except Exception as log_err:
+            logger.error("[Celery] Failed to update webhook log: %s", log_err)
+        raise
