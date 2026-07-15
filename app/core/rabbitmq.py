@@ -12,6 +12,8 @@ QUEUE_ORDER_PUBLISHING = 'order_publishing'
 QUEUE_ORDER_VALIDATING = 'order_validating'
 # Push valid order to QPMN platform
 QUEUE_ORDER_PUSHING = 'order_pushing'
+# Notify OMS/VFS of order status updates (outbound)
+QUEUE_ORDER_NOTIFYING = 'order_notifying'
 
 
 def get_rabbitmq_connection_params() -> pika.ConnectionParameters:
