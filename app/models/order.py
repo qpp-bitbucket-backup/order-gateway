@@ -86,6 +86,22 @@ def can_transition(from_status: OrderStatus, to_status: OrderStatus) -> bool:
     return to_status in allowed
 
 
+# Internal status -> external event status code (Site Flow / Partner API naming).
+# Statuses not listed here (PENDING, FAILED) are internal only and never notified.
+STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
+    OrderStatus.RECEIVED: "received",
+    OrderStatus.VALIDATED: "dataready",
+    OrderStatus.PRINTREADY: "printready",
+    OrderStatus.PRINTED: "printed",
+    OrderStatus.SHIPPED: "shipped",
+    OrderStatus.CANCELLED: "cancelled",
+    OrderStatus.ERRORED: "error",
+}
+
+# Reverse lookup: external event status code -> internal status
+EVENT_STATUS_MAP: Dict[str, OrderStatus] = {v: k for k, v in STATUS_EVENT_MAP.items()}
+
+
 class Destination(SQLModel):
     """Destination model for order routing."""
     name: str = Field(..., description="Account name for order destination")
