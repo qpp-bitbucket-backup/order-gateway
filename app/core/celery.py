@@ -31,7 +31,7 @@ celery_app.conf.update(
     task_routes={
         "tasks.orders.publish_order": {"queue": QUEUE_ORDER_PUBLISHING},
         "tasks.orders.validate_order": {"queue": QUEUE_ORDER_VALIDATING},
-        # "tasks.orders.push_order": {"queue": QUEUE_ORDER_PUSHING},
+        "tasks.orders.push_order": {"queue": QUEUE_ORDER_PUSHING},
     },
 )
 
