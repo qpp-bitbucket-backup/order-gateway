@@ -255,6 +255,7 @@ class PDFProcessor:
             new_page = dst_doc.new_page(width=width, height=height)
 
             if fit:
+                # Calculate scale to fit while maintaining aspect ratio
                 scale_x = width / original_rect.width
                 scale_y = height / original_rect.height
                 scale = min(scale_x, scale_y)
@@ -262,9 +263,9 @@ class PDFProcessor:
                 scaled_h = original_rect.height * scale
                 offset_x = (width - scaled_w) / 2
                 offset_y = (height - scaled_h) / 2
-                clip_rect = fitz.Rect(offset_x, offset_y, offset_x + scaled_w, offset_y + scaled_h)
-                matrix = fitz.Matrix(scale, scale)
-                new_page.show_pdf_page(clip_rect, src_doc, page.number, matrix=matrix)
+                # Target rect for the scaled content
+                target_rect = fitz.Rect(offset_x, offset_y, offset_x + scaled_w, offset_y + scaled_h)
+                new_page.show_pdf_page(target_rect, src_doc, page.number)
             else:
                 target_rect = fitz.Rect(0, 0, width, height)
                 new_page.show_pdf_page(target_rect, src_doc, page.number)
