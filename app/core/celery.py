@@ -31,6 +31,7 @@ celery_app.conf.update(
         "tasks.orders.validate_order": {"queue": QUEUE_ORDER_VALIDATING},
         "tasks.orders.push_order": {"queue": QUEUE_ORDER_PUSHING},
         "tasks.notifications.notify_oms": {"queue": QUEUE_ORDER_NOTIFYING},
+        "tasks.notifications.notify_vfs": {"queue": QUEUE_ORDER_NOTIFYING},
     },
 )
 
