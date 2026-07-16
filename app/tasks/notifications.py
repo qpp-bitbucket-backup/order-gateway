@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
     bind=True,
     name="tasks.notifications.notify_oms",
     queue=QUEUE_ORDER_NOTIFYING,
+    autoretry_for=(Exception,),
+    max_retries=3,
+    default_retry_delay=60,
 )
 def notify_oms(
     self,
@@ -33,8 +36,8 @@ def notify_oms(
     Success → mark the outbound log ``processed``.
     4xx / business error → mark ``failed`` (no retry).
     5xx / network error → update ``retry_count`` + ``error_message`` then
-    raise so the global autoretry kicks in; after ``max_retries`` the log
-    is left as ``failed``.
+    raise so the task-level autoretry kicks in (3 retries, 60 s apart);
+    after ``max_retries`` the log is left as ``failed``.
     """
     logger.info(
         "[Celery] notify_oms: log_id=%s order_id=%s status=%s",

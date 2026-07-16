@@ -23,10 +23,8 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=300,  # 5 minutes timeout
     worker_prefetch_multiplier=1,
-    # Retry configuration
-    task_autoretry_for=(Exception,),
-    task_max_retries=3,
-    task_default_retry_delay=60,  # 60 seconds between retries
+    # Retry policy is declared per task (autoretry_for/max_retries/default_retry_delay
+    # are task decorator options; Celery has no global equivalents).
     # Route order tasks to their dedicated queues
     task_routes={
         "tasks.orders.publish_order": {"queue": QUEUE_ORDER_PUBLISHING},
