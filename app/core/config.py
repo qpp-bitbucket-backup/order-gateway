@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     OMS_INTERFACE_TYPE: str = "1"
     OMS_STATUS_METHOD_NAME: str = "shipment_order_notify"
 
+    # VFS postback webhook (SiteFlow style, system-level URL)
+    VFS_POSTBACK_URL: str = ""
+    VFS_PARTNER_ID: str = ""
+    VFS_PARTNER_API_KEY: str = ""
+
     # CORS
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
 
