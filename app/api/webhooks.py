@@ -12,7 +12,7 @@ from app.models.client import Client
 from app.models.order import Order, can_transition, EVENT_STATUS_MAP
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.schemas.webhook import QpmnStatusWebhookRequest, WebhookResponse
-from app.tasks.notifications import notify_oms
+from app.tasks.notifications import notify_oms, notify_vfs
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,8 @@ def receive_order_status(
     4. Derive the effective status from ``data.order.items`` (whichever item's
        status changed drives the order status) and validate the transition.
     5. Update ``orders.status`` and append a log entry.
-    6. Create an outbound log (``source=oms``) and enqueue ``notify_oms``.
+    6. Create outbound logs (``source=oms`` / ``source=vfs``) and enqueue
+       ``notify_oms`` and ``notify_vfs``.
     """
     client = _verify_qpmn_token(session, authorization)
     signature_valid = client is not None
@@ -189,6 +190,31 @@ def receive_order_status(
 
     notify_oms.delay(
         webhook_log_id=outbound_log.id,
+        order_id=order.order_id,
+        event_status=effective_status,
+        shipments=shipments_data,
+    )
+
+    # Outbound log (source=vfs) + enqueue notify_vfs (SiteFlow-style postback)
+    vfs_outbound_log = WebhookLog(
+        direction=WebhookDirection.OUTBOUND,
+        source="vfs",
+        order_id=order.order_id,
+        source_order_id=order.source_order_id,
+        event_status=effective_status,
+        payload={
+            "sourceOrderId": order.source_order_id,
+            "status": effective_status,
+            "shipments": shipments_data or [],
+        },
+        process_status=WebhookProcessStatus.RECEIVED,
+    )
+    session.add(vfs_outbound_log)
+    session.commit()
+    session.refresh(vfs_outbound_log)
+
+    notify_vfs.delay(
+        webhook_log_id=vfs_outbound_log.id,
         order_id=order.order_id,
         event_status=effective_status,
         shipments=shipments_data,
