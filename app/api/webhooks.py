@@ -1,5 +1,4 @@
 """QPMN order status webhook endpoints."""
-import hmac
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -8,8 +7,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
 
-from app.core.config import settings
 from app.core.database import get_session
+from app.models.client import Client
 from app.models.order import Order, can_transition, EVENT_STATUS_MAP
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.schemas.webhook import QpmnStatusWebhookRequest, WebhookResponse
@@ -23,17 +22,24 @@ router = APIRouter(
 )
 
 
-def _verify_qpmn_token(authorization: Optional[str]) -> bool:
-    """Verify the ``Authorization: Basic {token}`` header against the configured token."""
+def _verify_qpmn_token(session: Session, authorization: Optional[str]) -> Optional[Client]:
+    """Verify the ``Authorization: Basic {token}`` header against a client's ``store_key``.
+
+    Each QPMN store has its own authorization token (see QPMN's "店铺授权Token"),
+    stored per-client in ``Client.store_key`` rather than a single shared secret.
+    Returns the matched (active) ``Client`` on success, ``None`` on failure.
+    """
     if not authorization:
-        return False
+        return None
     parts = authorization.split(" ", 1)
     if len(parts) != 2 or parts[0].lower() != "basic":
-        return False
+        return None
     token = parts[1].strip()
-    if not token or not settings.QPMN_WEBHOOK_TOKEN:
-        return False
-    return hmac.compare_digest(token, settings.QPMN_WEBHOOK_TOKEN)
+    if not token:
+        return None
+    return session.exec(
+        select(Client).where(Client.store_key == token, Client.is_active == True)
+    ).first()
 
 
 @router.post("/order-status", response_model=WebhookResponse)
@@ -44,26 +50,37 @@ def receive_order_status(
     authorization: Optional[str] = Header(None),
 ):
     """
-    Receive a QPMN/Popprint order status webhook.
+    Receive a QPMN order_updated webhook (aligned with Printful's Webhook-API shape).
 
     Processing order:
-    1. Insert an inbound ``webhook_log`` (raw payload + headers).
+    1. Insert an inbound ``webhook_log`` (raw payload + headers) — always the
+       full raw payload, item-level statuses are never persisted separately.
     2. Verify the Basic token (result recorded on the log).
-    3. Look up the order (``orderId`` → ``storeOrderId`` fallback).
-    4. Validate the status transition.
+    3. Look up the order (``data.order.order_id`` → ``data.order.external_id`` fallback).
+    4. Derive the effective status from ``data.order.items`` (whichever item's
+       status changed drives the order status) and validate the transition.
     5. Update ``orders.status`` and append a log entry.
     6. Create an outbound log (``source=oms``) and enqueue ``notify_oms``.
     """
-    signature_valid = _verify_qpmn_token(authorization)
+    client = _verify_qpmn_token(session, authorization)
+    signature_valid = client is not None
     headers_dict = {k: v for k, v in request.headers.items()}
 
-    # ① Insert inbound log
+    order_event = payload.data.order
+    # Order status follows the item status: normally every item in one call
+    # shares the same status. If they don't (mixed item statuses in a single
+    # payload), fall back to the last item as the effective one — an edge
+    # case we don't have real QPMN traffic for yet.
+    item_statuses = {item.status for item in order_event.items}
+    effective_status = item_statuses.pop() if len(item_statuses) == 1 else order_event.items[-1].status
+
+    # ① Insert inbound log (raw payload, unchanged regardless of downstream outcome)
     inbound_log = WebhookLog(
         direction=WebhookDirection.INBOUND,
         source="qpmn",
-        order_id=payload.orderId,
-        source_order_id=payload.storeOrderId,
-        event_status=payload.status,
+        order_id=order_event.order_id,
+        source_order_id=order_event.external_id,
+        event_status=effective_status,
         payload=payload.model_dump(),
         headers=headers_dict,
         signature_valid=signature_valid,
@@ -84,15 +101,16 @@ def receive_order_status(
             detail="Invalid or missing Authorization token",
         )
 
-    # ③ Look up order
+    # ③ Look up order: QPMN's own order_id (→ store_order_id) first, then our
+    # source_order_id (echoed back as external_id) as fallback.
     order = None
-    if payload.orderId:
+    if order_event.order_id:
         order = session.exec(
-            select(Order).where(Order.order_id == payload.orderId)
+            select(Order).where(Order.store_order_id == order_event.order_id)
         ).first()
-    if not order and payload.storeOrderId:
+    if not order and order_event.external_id:
         order = session.exec(
-            select(Order).where(Order.store_order_id == payload.storeOrderId)
+            select(Order).where(Order.source_order_id == order_event.external_id)
         ).first()
 
     if not order:
@@ -108,14 +126,14 @@ def receive_order_status(
     inbound_log.order_id = order.order_id
     inbound_log.source_order_id = order.store_order_id
 
-    # ④ Map external status → internal; unknown statuses are skipped
-    new_status = EVENT_STATUS_MAP.get(payload.status)
+    # ④ Map external status → internal; unknown statuses are rejected (success: false, HTTP 200)
+    new_status = EVENT_STATUS_MAP.get(effective_status)
     if not new_status:
         inbound_log.process_status = WebhookProcessStatus.SKIPPED
-        inbound_log.error_message = f"Unmapped status: {payload.status}"
+        inbound_log.error_message = f"Unmapped status: {effective_status}"
         session.add(inbound_log)
         session.commit()
-        return WebhookResponse(success=True, message=f"Skipped: unmapped status '{payload.status}'")
+        return WebhookResponse(success=False, message=f"Unmapped status: '{effective_status}'")
 
     if not can_transition(order.status, new_status):
         inbound_log.process_status = WebhookProcessStatus.SKIPPED
@@ -123,8 +141,8 @@ def receive_order_status(
         session.add(inbound_log)
         session.commit()
         return WebhookResponse(
-            success=True,
-            message=f"Skipped: invalid transition {order.status.value} -> {new_status.value}",
+            success=False,
+            message=f"Invalid transition: {order.status.value} -> {new_status.value}",
         )
 
     # ⑤ Update order status + append log
@@ -135,7 +153,7 @@ def receive_order_status(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "action": "qpmn_status_webhook",
         "message": f"Status updated to {new_status.value} via QPMN webhook",
-        "event_status": payload.status,
+        "event_status": effective_status,
         "worker": "webhook_handler",
     })
     flag_modified(order, "logs")
@@ -150,17 +168,17 @@ def receive_order_status(
 
     # ⑥ Create outbound log (source=oms) + enqueue notify_oms
     shipments_data = (
-        [s.model_dump() for s in payload.shipments] if payload.shipments else None
+        [s.model_dump() for s in order_event.shipments] if order_event.shipments else None
     )
     outbound_log = WebhookLog(
         direction=WebhookDirection.OUTBOUND,
         source="oms",
         order_id=order.order_id,
         source_order_id=order.store_order_id,
-        event_status=payload.status,
+        event_status=effective_status,
         payload={
             "orderNo": order.order_id,
-            "status": payload.status,
+            "status": effective_status,
             "shipments": shipments_data or [],
         },
         process_status=WebhookProcessStatus.RECEIVED,
@@ -172,7 +190,7 @@ def receive_order_status(
     notify_oms.delay(
         webhook_log_id=outbound_log.id,
         order_id=order.order_id,
-        event_status=payload.status,
+        event_status=effective_status,
         shipments=shipments_data,
     )
 

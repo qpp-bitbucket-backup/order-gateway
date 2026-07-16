@@ -48,9 +48,6 @@ class Settings(BaseSettings):
     HP_CLIENT_ID: str = "hp-client-id-here"
     HP_CLIENT_SECRET: str = "hp-client-secret-here"
 
-    # QPMN inbound webhook authentication (Basic token, issued/coordinated with SZ)
-    QPMN_WEBHOOK_TOKEN: str = ""
-
     # OMS HUB4 transport configuration (Baozun standard)
     OMS_APP_SECRET: str = ""
     OMS_SOURCE_APP: str = ""
