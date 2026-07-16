@@ -1,5 +1,6 @@
 """Celery application configuration."""
 from celery import Celery
+from celery.schedules import crontab
 from app.core.config import settings
 from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING
 
@@ -32,6 +33,14 @@ celery_app.conf.update(
         "tasks.orders.publish_order": {"queue": QUEUE_ORDER_PUBLISHING},
         "tasks.orders.validate_order": {"queue": QUEUE_ORDER_VALIDATING},
         "tasks.orders.push_order": {"queue": QUEUE_ORDER_PUSHING},
+    },
+    # Celery Beat schedule for periodic tasks
+    beat_schedule={
+        # Sync products for all stores at configured interval
+        "sync-products-periodic": {
+            "task": "tasks.products.sync_all_stores_products",
+            "schedule": crontab(minute=f"*/{settings.CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES}"),
+        } if settings.CELERY_BEAT_SYNC_ENABLED else {},
     },
 )
 

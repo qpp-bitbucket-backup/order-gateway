@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "amqp://guest:guest@localhost:5672//"
     CELERY_RESULT_BACKEND: str = "rpc://"
 
+    # Celery Beat - Product Sync Schedule Configuration
+    CELERY_BEAT_SYNC_ENABLED: bool = True
+    CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES: int = 5  # Sync products every N minutes
+
     # QPMN API Configuration
     QPMN_API_URL: str = "https://api.qpmn.com/v1"
     QPMN_API_KEY: str = ""
