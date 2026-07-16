@@ -373,3 +373,53 @@ def sync_skus_from_qpmn(store_id: str = None) -> Dict[str, Any]:
 def sync_skus_task(self, store_id: str = None) -> Dict[str, Any]:
     """Celery task wrapper for sync_skus_from_qpmn."""
     return sync_skus_from_qpmn(store_id)
+
+
+@celery_app.task(bind=True, name="tasks.products.sync_all_stores_products")
+def sync_all_stores_products(self) -> Dict[str, Any]:
+    """
+    Celery Beat task to sync products for all stores.
+    Iterates through all clients and syncs their products.
+    """
+    logger.info("[Celery Beat] Starting product sync for all stores")
+    
+    results = []
+    with Session(engine) as session:
+        clients = session.exec(select(Client)).all()
+        
+        if not clients:
+            logger.warning("[Celery Beat] No clients/stores found in database")
+            return {
+                "success": False,
+                "message": "No clients/stores found",
+                "stores_synced": 0,
+            }
+        
+        for client in clients:
+            store_id = client.store_id
+            logger.info(f"[Celery Beat] Syncing products for store: {store_id}")
+            
+            try:
+                result = sync_products_from_qpmn(store_id)
+                results.append({
+                    "store_id": store_id,
+                    "success": result.get("success"),
+                    "products_synced": result.get("products_synced", 0),
+                    "skus_synced": result.get("skus_synced", 0),
+                })
+                logger.info(f"[Celery Beat] Store {store_id}: {result.get('products_synced', 0)} products, {result.get('skus_synced', 0)} SKUs synced")
+            except Exception as e:
+                logger.error(f"[Celery Beat] Failed to sync products for store {store_id}: {e}", exc_info=True)
+                results.append({
+                    "store_id": store_id,
+                    "success": False,
+                    "error": str(e),
+                })
+    
+    logger.info(f"[Celery Beat] Product sync completed for {len(clients)} stores")
+    return {
+        "success": True,
+        "stores_synced": len(clients),
+        "results": results,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
