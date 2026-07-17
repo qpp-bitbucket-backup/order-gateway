@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     HP_CLIENT_ID: str = "hp-client-id-here"
     HP_CLIENT_SECRET: str = "hp-client-secret-here"
 
+    # OMS HUB4 transport configuration (Baozun standard)
+    OMS_APP_SECRET: str = ""
+    OMS_SOURCE_APP: str = ""
+    OMS_INTERFACE_TYPE: str = "1"
+    OMS_STATUS_METHOD_NAME: str = "shipment_order_notify"
+
     # CORS
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
 

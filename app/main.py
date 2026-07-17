@@ -15,7 +15,7 @@ from app.core.auth_oneflow import (
     oneflow_authorization_header,
     oneflow_date_header,
 )
-from app.api import orders, products, files, clients, sync
+from app.api import orders, products, files, clients, sync, webhooks
 
 # Global logging configuration
 # Configure root logger so all modules (including app.api.orders) inherit uvicorn-style console output
@@ -139,6 +139,7 @@ app.include_router(products.admin_router)
 app.include_router(files.router)
 app.include_router(clients.router)
 app.include_router(sync.router)
+app.include_router(webhooks.router)
 
 
 ONEFLOW_SECURITY = [
