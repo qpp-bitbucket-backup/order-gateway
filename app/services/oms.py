@@ -151,7 +151,7 @@ class OMSService:
 
         logger.info("[OMS] POST API-002 status=%s orderNo=%s", event_status, order.order_id)
 
-        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = client.post(
                 self.base_url,
                 params=url_params,

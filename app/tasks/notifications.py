@@ -19,9 +19,6 @@ logger = logging.getLogger(__name__)
     bind=True,
     name="tasks.notifications.notify_oms",
     queue=QUEUE_ORDER_NOTIFYING,
-    autoretry_for=(Exception,),
-    max_retries=3,
-    default_retry_delay=60,
 )
 def notify_oms(
     self,
@@ -36,8 +33,9 @@ def notify_oms(
     Success → mark the outbound log ``processed``.
     4xx / business error → mark ``failed`` (no retry).
     5xx / network error → update ``retry_count`` + ``error_message`` then
-    raise so the task-level autoretry kicks in (3 retries, 60 s apart);
-    after ``max_retries`` the log is left as ``failed``.
+    re-enqueue itself 15 minutes out (same pattern as ``push_order`` for
+    QPMN) — unlike ``notify_vfs``, there's no retry cap; it keeps retrying
+    every 15 minutes until OMS accepts it.
     """
     logger.info(
         "[Celery] notify_oms: log_id=%s order_id=%s status=%s",
@@ -104,12 +102,18 @@ def notify_oms(
                     select(WebhookLog).where(WebhookLog.id == webhook_log_id)
                 ).first()
                 if log:
-                    log.retry_count = self.request.retries
+                    log.retry_count = (log.retry_count or 0) + 1
                     log.error_message = str(e)[:512]
-                    if self.request.retries >= self.max_retries:
-                        log.process_status = WebhookProcessStatus.FAILED
                     session.add(log)
                     session.commit()
         except Exception as log_err:
             logger.error("[Celery] Failed to update webhook log: %s", log_err)
-        raise
+
+        logger.warning(
+            "[Celery] notify_oms failed for order %s, retrying in 15 minutes", order_id
+        )
+        notify_oms.apply_async(
+            args=[webhook_log_id, order_id, event_status, shipments],
+            countdown=900,
+        )
+        return True
