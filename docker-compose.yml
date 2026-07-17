@@ -1,22 +1,22 @@
 version: '3.8'
 
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: order_gateway_mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-password}
-      MYSQL_DATABASE: ${DB_NAME:-order_gateway}
-      MYSQL_USER: ${DB_USERNAME:-order_user}
-      MYSQL_PASSWORD: ${DB_PASSWORD:-order_password}
-    ports:
-      - "${DB_PORT:-3306}:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: order_gateway_mysql
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-password}
+  #     MYSQL_DATABASE: ${DB_NAME:-order_gateway}
+  #     MYSQL_USER: ${DB_USERNAME:-order_user}
+  #     MYSQL_PASSWORD: ${DB_PASSWORD:-order_password}
+  #   ports:
+  #     - "${DB_PORT:-3306}:3306"
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+  #     timeout: 20s
+  #     retries: 10
 
   app:
     build: .

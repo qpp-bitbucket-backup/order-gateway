@@ -218,4 +218,4 @@ def receive_order_status(
         event_status=effective_status,
     )
 
-    return WebhookResponse(success=True)
+    return WebhookResponse(success=True, message=f"Status updated to '{new_status.value}'")

@@ -4,7 +4,7 @@ import hmac
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 
 import httpx
 
@@ -30,12 +30,11 @@ class VFSService:
         POST an order status postback webhook to VFS.
 
         Payload follows the Site Flow postback shape defined in the status
-        sync spec: ``{timestamp, sourceOrderId, status}``; shipped events
-        additionally carry the shipped item quantity. Shipment/tracking
-        detail is intentionally not included here — the real Site Flow
-        postback template is customer-configured per account, and the exact
-        shipped-event shape VFS wants is still unconfirmed (see
-        `docs/siteflow-postback-research.md`).
+        sync spec: ``{timestamp, sourceOrderId, status}``. Shipment/tracking
+        detail and item quantity are intentionally not included here — the
+        real Site Flow postback template is customer-configured per account,
+        and the exact shipped-event shape VFS wants is still unconfirmed
+        (see `docs/siteflow-postback-research.md`).
 
         Authentication headers (per the status sync spec):
         - ``X-SITEFLOW-NONCE``: random unique token per request
@@ -59,9 +58,6 @@ class VFSService:
             "sourceOrderId": order.source_order_id,
             "status": event_status,
         }
-
-        if event_status == "shipped":
-            payload["itemQuantity"] = self._total_item_quantity(order)
 
         if USE_MOCK:
             return _mock_postback_response(order.source_order_id, event_status)
@@ -110,12 +106,6 @@ class VFSService:
             "X-SITEFLOW-NONCE": nonce,
             "X-SITEFLOW-SIGNATURE": f"{settings.VFS_PARTNER_ID}:{signature}",
         }
-
-    @staticmethod
-    def _total_item_quantity(order: Order) -> int:
-        """Sum the ordered quantity across all line items."""
-        items = (order.order_data or {}).get("items", [])
-        return sum(item.get("quantity") or 0 for item in items)
 
 
 vfs_service = VFSService()
