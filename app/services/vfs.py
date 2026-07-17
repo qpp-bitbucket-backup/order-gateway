@@ -25,14 +25,17 @@ class VFSService:
         self,
         order: Order,
         event_status: str,
-        shipments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         POST an order status postback webhook to VFS.
 
         Payload follows the Site Flow postback shape defined in the status
         sync spec: ``{timestamp, sourceOrderId, status}``; shipped events
-        additionally carry the tracking number and shipped item quantity.
+        additionally carry the shipped item quantity. Shipment/tracking
+        detail is intentionally not included here — the real Site Flow
+        postback template is customer-configured per account, and the exact
+        shipped-event shape VFS wants is still unconfirmed (see
+        `docs/siteflow-postback-research.md`).
 
         Authentication headers (per the status sync spec):
         - ``X-SITEFLOW-NONCE``: random unique token per request
@@ -41,7 +44,6 @@ class VFSService:
         Args:
             order: The order model instance (uses ``order.source_order_id``).
             event_status: External status code (e.g. ``printed``, ``shipped``).
-            shipments: Optional list of shipment dicts (trackingNumber/carrierName/shipDate).
 
         Returns:
             ``{"success": True/False, ...}``.  Non-retryable failures (4xx,
@@ -58,12 +60,7 @@ class VFSService:
             "status": event_status,
         }
 
-        # Fulfillment payload must contain the tracking number and the
-        # shipped item quantity (status sync spec).
         if event_status == "shipped":
-            if shipments:
-                payload["trackingNumber"] = shipments[0].get("trackingNumber")
-                payload["shipments"] = shipments
             payload["itemQuantity"] = self._total_item_quantity(order)
 
         if USE_MOCK:

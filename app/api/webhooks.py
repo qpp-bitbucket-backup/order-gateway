@@ -205,7 +205,6 @@ def receive_order_status(
         payload={
             "sourceOrderId": order.source_order_id,
             "status": effective_status,
-            "shipments": shipments_data or [],
         },
         process_status=WebhookProcessStatus.RECEIVED,
     )
@@ -217,7 +216,6 @@ def receive_order_status(
         webhook_log_id=vfs_outbound_log.id,
         order_id=order.order_id,
         event_status=effective_status,
-        shipments=shipments_data,
     )
 
     return WebhookResponse(success=True)

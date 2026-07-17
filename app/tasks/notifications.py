@@ -137,7 +137,6 @@ def notify_vfs(
     webhook_log_id: int,
     order_id: str,
     event_status: str,
-    shipments: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """
     Notify VFS of an order status update via the postback webhook.
@@ -178,7 +177,6 @@ def notify_vfs(
             result = vfs_service.send_status_postback(
                 order=order,
                 event_status=event_status,
-                shipments=shipments,
             )
 
             if result.get("success"):
