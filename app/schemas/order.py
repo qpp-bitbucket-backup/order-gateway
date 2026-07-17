@@ -127,6 +127,61 @@ class OrderSummary(BaseModel):
         populate_by_name = True
 
 
+class PlatformOrderSummary(BaseModel):
+    """Platform order summary with additional fields."""
+    id: str = Field(..., alias="_id", description="Internal order ID")
+    sourceOrderId: str = Field(..., description="External order ID from source")
+    destination: Optional[Dict[str, Any]] = Field(None, description="Destination information")
+    source: Optional[Dict[str, Any]] = Field(None, description="Source information")
+    orderData: Optional[Dict[str, Any]] = Field(None, description="Order data summary")
+    status: str = Field(..., description="Current order status")
+    logs: Optional[Any] = Field(None, description="Order processing logs")
+    files: Optional[Any] = Field(None, description="Associated files")
+    version: int = Field(0, description="Document version")
+    storeId: Optional[str] = Field(None, description="Store identifier")
+    storeOrderId: Optional[str] = Field(None, description="Store order ID")
+    createdAt: Optional[str] = Field(None, description="Created timestamp")
+    updatedAt: Optional[str] = Field(None, description="Updated timestamp")
+
+    class Config:
+        populate_by_name = True
+
+
+class PlatformOrdersListResponse(BaseModel):
+    """Schema for platform orders list response."""
+    success: bool = Field(..., description="Request success status")
+    count: int = Field(..., description="Total number of orders")
+    page: int = Field(..., description="Current page number")
+    pages: int = Field(..., description="Total number of pages")
+    data: List[PlatformOrderSummary] = Field(..., description="List of order summaries")
+
+
+class PlatformFullOrder(BaseModel):
+    """Complete platform order with all fields."""
+    id: str = Field(..., alias="_id", description="Internal order ID")
+    sourceOrderId: str = Field(..., description="External order ID from source")
+    destination: Optional[Dict[str, Any]] = Field(None, description="Destination information")
+    source: Optional[Dict[str, Any]] = Field(None, description="Source information")
+    orderData: Optional[Dict[str, Any]] = Field(None, description="Complete order data")
+    status: str = Field(..., description="Current order status")
+    logs: Optional[Any] = Field(None, description="Order processing logs")
+    files: Optional[Any] = Field(None, description="Associated files")
+    version: int = Field(0, description="Document version")
+    storeId: Optional[str] = Field(None, description="Store identifier")
+    storeOrderId: Optional[str] = Field(None, description="Store order ID")
+    createdAt: Optional[str] = Field(None, description="Created timestamp")
+    updatedAt: Optional[str] = Field(None, description="Updated timestamp")
+
+    class Config:
+        populate_by_name = True
+
+
+class PlatformOrderDetailsResponse(BaseModel):
+    """Schema for platform order details response."""
+    success: bool = Field(True, description="Request success status")
+    order: Optional[PlatformFullOrder] = Field(None, description="Complete order details")
+
+
 class OrdersListResponse(BaseModel):
     """Schema for orders list response."""
     success: bool = Field(..., description="Request success status")

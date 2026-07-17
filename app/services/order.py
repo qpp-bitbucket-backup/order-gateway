@@ -49,6 +49,7 @@ class OrderService:
         store_id: Optional[str] = None,
         page: int = 1,
         pagesize: int = 10,
+        status: Optional[OrderStatus] = None,
     ) -> Tuple[List[Order], int, int]:
         """
         Retrieve a paginated list of orders.
@@ -59,6 +60,8 @@ class OrderService:
         query = select(Order)
         if store_id:
             query = query.where(Order.store_id == store_id)
+        if status:
+            query = query.where(Order.status == status)
 
         # Total count
         total_count = len(session.exec(query).all())
@@ -254,7 +257,7 @@ class OrderService:
         if not order:
             raise ValueError(f"Order: [{order_id}] not found")
 
-        files = order.files
+        files_dict = order.files
         order_data = order.order_data or {}
         line_items = []
 
@@ -270,7 +273,7 @@ class OrderService:
             properties = sku.properties
             customize_properties = sku.customize_project or {}
             designs = customize_properties.get("designs", [])
-
+            files = files_dict.get(sku_id, []);
             for index, design in enumerate(designs):
                 file_obj = files[index] if index < len(files) else None
                 if not file_obj:
