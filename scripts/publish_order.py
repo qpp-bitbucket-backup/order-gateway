@@ -7,9 +7,14 @@ Usage:
     python test_publish_order.py --direct                 # 直接調用函數（不走 Celery）
     python test_publish_order.py --delay                  # 發送到 broker（需要 RabbitMQ + worker）
 """
+import os
+import sys
+
+# Add project root to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import logging
-import sys
 
 logging.basicConfig(
     level=logging.INFO,
