@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # Admin API key for client management endpoints
     ADMIN_API_KEY: str = "admin-api-key-change-in-production"
 
+    # Default Admin User (seeded on first startup)
+    DEFAULT_ADMIN_USERNAME: str = "admin"
+    DEFAULT_ADMIN_EMAIL: str = "admin@order-gateway.com"
+    DEFAULT_ADMIN_PASSWORD: str = "admin123"
+
     # HP PrintOS webhook credentials (for inbound webhooks)
     HP_CLIENT_ID: str = "hp-client-id-here"
     HP_CLIENT_SECRET: str = "hp-client-secret-here"

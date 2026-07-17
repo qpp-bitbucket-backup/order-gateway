@@ -58,34 +58,35 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
             session.commit()
             logger.info(f"[Celery] Order {order_id} status updated to PENDING")
 
-            uploaded_files: List[Dict[str, Any]] = []
+            uploaded_files: Dict = {}
             products = order.order_data.get("items", [])
             store_id = order.store_id
             store_key = client_service.get_store_key_by_id(store_id)
-            
+            file_quantity = 0
             with tempfile.TemporaryDirectory(prefix=f"order_{order_id}_") as tmp_dir:
                 for product in products:
                     components = product.get("components", [])
+                    sku = product.get("sku", None)
                     for component in components:
                         file_url = component.get("path", None)
                         if not file_url:
                             continue
 
-                        logger.info(f"[Celery] Processing file: {file_url}")
-
+                        logger.info(f"[Celery] Processing SKU [{sku}] file: {file_url}")
+                        item_files = []
                         try:
                             success, result = file_service.download_file(file_url, tmp_dir)
                             if not success:
                                 _mark_order_failed(order_id,"Cannot download design files")
                                 logger.error(f"File: [{file_url}] download failed") 
-                                return False
+                                return True
 
                             if result.lower().endswith(".pdf"):
                                 page_files = file_service.split_pdf(result, tmp_dir)
                                 if not page_files:
                                     _mark_order_failed(order_id,"Cannot split PDF file")
                                     logger.error(f"File: [{file_url}] PDF split failed") 
-                                    return False
+                                    return True
                             else:
                                 page_files = [result]
 
@@ -93,10 +94,11 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                                 upload_result = file_service.upload_to_qpmn(page_file, store_key)
                                 if not upload_result:
                                     _mark_order_failed(order_id,"Cannot upload design files")
-                                    raise ValueError(f"File: [{page_file}] upload failed")
-                                    return False
-                                uploaded_files.append(upload_result)
-
+                                    logger.error(f"File: [{page_file}] upload failed")
+                                    return True
+                                item_files.append(upload_result)
+                            uploaded_files[sku]= item_files
+                            file_quantity += len(item_files)
                         except Exception as file_err:
                             logger.error(
                                 f"[Celery] Failed to process file {file_url}: {file_err}",
@@ -108,7 +110,7 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                     session.add(order)
                     session.commit()
                     logger.info(
-                        f"[Celery] Saved {len(uploaded_files)} file(s) to order {order_id}"
+                        f"[Celery] Saved {file_quantity} file(s) to order {order_id}"
                     )
 
             # Chain to validate_order
@@ -254,6 +256,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                 if success:
                     # Order pushed successfully - mark as received
                     order.status = OrderStatus.PRINTREADY
+                    order.store_order_id = result.get("data",{}).get("orderId",None)
                     _append_order_log(order, "order_push_success", "Order pushed to QPMN successfully")
                     session.add(order)
                     session.commit()
@@ -266,6 +269,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     session.add(order)
                     session.commit()
                     logger.error(f"[Celery] Order {order_id} push failed: {result}")
+                    logger.info(f"[Celery] Order {order_id} payload: {payload}")
 
             except httpx.TimeoutException:
                 logger.warning(f"[Celery] QPMN timeout for order {order_id}, retrying in 15 minutes")

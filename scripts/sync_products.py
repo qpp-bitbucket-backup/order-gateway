@@ -1,10 +1,11 @@
 """Manual product sync script for testing."""
+import os
 import sys
 import argparse
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.tasks.products import sync_products_from_qpmn, sync_skus_from_qpmn
 from app.core.config import settings

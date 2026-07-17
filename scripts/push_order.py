@@ -6,9 +6,14 @@ Usage:
     python test_push_order.py --order-id YOUR_ORDER_ID # 指定 order_id
     python test_push_order.py --direct                 # 直接調用函數（不走 Celery）
 """
+import os
+import sys
+
+# Add project root to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import argparse
 import logging
-import sys
 
 logging.basicConfig(
     level=logging.INFO,
