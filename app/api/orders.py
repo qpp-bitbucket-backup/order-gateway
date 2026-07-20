@@ -480,7 +480,7 @@ jwt_router = APIRouter(
 )
 
 
-@jwt_router.get("/order", response_model=PlatformOrdersListResponse)
+@jwt_router.get("/orders", response_model=PlatformOrdersListResponse)
 def platform_get_orders(
     page: int = Query(1, ge=1, description="The page number to return"),
     pagesize: int = Query(10, ge=1, le=100, description="Number of orders per page"),
@@ -541,7 +541,7 @@ def platform_get_orders(
         )
 
 
-@jwt_router.get("/order/{order_id}", response_model=PlatformOrderDetailsResponse)
+@jwt_router.get("/orders/{order_id}", response_model=PlatformOrderDetailsResponse)
 def platform_get_order(
     order_id: str,
     session: Session = Depends(get_session),
