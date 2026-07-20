@@ -63,6 +63,7 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
             store_id = order.store_id
             store_key = client_service.get_store_key_by_id(store_id)
             file_quantity = 0
+            file_index = 0
             with tempfile.TemporaryDirectory(prefix=f"order_{order_id}_") as tmp_dir:
                 for product in products:
                     components = product.get("components", [])
@@ -70,6 +71,7 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                     for component in components:
                         file_url = component.get("path", None)
                         if not file_url:
+                            file_index +=1
                             continue
 
                         logger.info(f"[Celery] Processing SKU [{sku}] file: {file_url}")
@@ -97,7 +99,8 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                                     logger.error(f"File: [{page_file}] upload failed")
                                     return True
                                 item_files.append(upload_result)
-                            uploaded_files[sku]= item_files
+                            uploaded_files[f"{sku}-{file_index}"]= item_files
+                            file_index+=1
                             file_quantity += len(item_files)
                         except Exception as file_err:
                             logger.error(
@@ -235,7 +238,6 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             store_key = client_service.get_store_key_by_id(order.store_id)
             api_url = f"{settings.QPMN_API_URL}/store/orders"
             headers = {"Authorization": f"Basic {store_key}"}
-
             try:
                 with httpx.Client(timeout=30.0) as client:
                     response = client.post(api_url, json=payload, headers=headers)
@@ -249,7 +251,6 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     push_order.apply_async(args=[order_data], countdown=900)  # 15 minutes = 900 seconds
                     return True
 
-                response.raise_for_status()
                 result = response.json()
                 success = result.get("success", False)
 
