@@ -115,7 +115,7 @@ def get_sync_status(task_id: str):
 # ---------------------------------------------------------------------------
 
 jwt_router = APIRouter(
-    prefix="/api/platform/sync",
+    prefix="/api/platform",
     tags=["Platform"],
 )
 

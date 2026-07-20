@@ -20,12 +20,12 @@ from app.services.user import user_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/platform/users", tags=["Platform"])
+router = APIRouter(prefix="/api/platform", tags=["Platform"])
 
 
 # ── Auth (public) ───────────────────────────────────────────────
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/users/login", response_model=LoginResponse)
 def login(
     request: LoginRequest,
     session: Session = Depends(get_session),
@@ -58,7 +58,7 @@ def login(
     )
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/users/me", response_model=UserResponse)
 def get_current_user_profile(
     current_user: User = Depends(get_current_user),
 ):
@@ -79,7 +79,7 @@ def get_current_user_profile(
     )
 
 
-@router.put("/me/password")
+@router.put("/users/me/password")
 def change_password(
     request: ChangePasswordRequest,
     session: Session = Depends(get_session),
@@ -101,7 +101,7 @@ def change_password(
 
 # ── User CRUD (admin only) ──────────────────────────────────────
 
-@router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def create_user(
     request: UserCreate,
     session: Session = Depends(get_session),
@@ -150,7 +150,7 @@ def create_user(
     )
 
 
-@router.get("", response_model=dict)
+@router.get("/users", response_model=dict)
 def list_users(
     page: int = Query(1, ge=1, description="Page number"),
     pagesize: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -194,7 +194,7 @@ def list_users(
     }
 
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get("/users/{user_id}", response_model=UserResponse)
 def get_user(
     user_id: int,
     session: Session = Depends(get_session),
@@ -223,7 +223,7 @@ def get_user(
     )
 
 
-@router.put("/{user_id}", response_model=UserResponse)
+@router.put("/users/{user_id}", response_model=UserResponse)
 def update_user(
     user_id: int,
     request: UserUpdate,
@@ -280,7 +280,7 @@ def update_user(
     )
 
 
-@router.delete("/{user_id}")
+@router.delete("/users/{user_id}")
 def delete_user(
     user_id: int,
     session: Session = Depends(get_session),

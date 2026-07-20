@@ -177,7 +177,7 @@ jwt_router = APIRouter(
 )
 
 
-@jwt_router.get("/product", response_model=ProductsListResponse)
+@jwt_router.get("/products", response_model=ProductsListResponse)
 def jwt_get_products(
     page: int = Query(1, ge=1, description="Page number"),
     pagesize: int = Query(100, ge=1, le=1000, description="Items per page"),
@@ -232,7 +232,7 @@ def jwt_get_products(
         )
 
 
-@jwt_router.get("/sku", response_model=SkusListResponse)
+@jwt_router.get("/skus", response_model=SkusListResponse)
 def jwt_get_skus(
     page: int = Query(1, ge=1, description="Page number"),
     pagesize: int = Query(100, ge=1, le=1000, description="Items per page"),
@@ -304,7 +304,7 @@ def jwt_get_skus(
         )
 
 
-@jwt_router.get("/sku/{sku_id}", response_model=SkuUpdateResponse)
+@jwt_router.get("/skus/{sku_id}", response_model=SkuUpdateResponse)
 def jwt_get_sku_by_id(
     sku_id: str,
     session: Session = Depends(get_session),
@@ -353,7 +353,7 @@ def jwt_get_sku_by_id(
         )
 
 
-@jwt_router.put("/sku/{sku_id}", response_model=SkuUpdateResponse)
+@jwt_router.put("/skus/{sku_id}", response_model=SkuUpdateResponse)
 def jwt_update_sku(
     sku_id: str,
     request: SkuUpdateRequest,
