@@ -261,7 +261,7 @@ class OrderService:
         order_data = order.order_data or {}
         line_items = []
 
-        for item in order_data.get("items"):
+        for item_index, item in enumerate(order_data.get("items",[])):
             sku_id = item.get("sku")
             if not sku_id:
                 continue
@@ -270,10 +270,10 @@ class OrderService:
             if not sku:
                 raise ValueError(f"SKU: [{sku_id}] not found")
 
-            properties = sku.properties
+            properties = sku.properties or {}
             customize_properties = sku.customize_project or {}
             designs = customize_properties.get("designs", [])
-            files = files_dict.get(sku_id, []);
+            files = files_dict.get(f"{sku_id}-{item_index}", []);
             for index, design in enumerate(designs):
                 file_obj = files[index] if index < len(files) else None
                 if not file_obj:
