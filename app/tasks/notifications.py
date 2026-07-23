@@ -74,11 +74,12 @@ def notify_oms(
 
             if result.get("request_headers") is not None:
                 log.headers = result.get("request_headers")
+            if result.get("request_payload") is not None:
+                log.payload = result.get("request_payload")
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
                 log.processed_at = datetime.now(timezone.utc)
-                log.payload = {**(log.payload or {}), "response": result.get("data")}
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] OMS notified for order %s", order_id)
@@ -184,11 +185,12 @@ def notify_vfs(
 
             if result.get("request_headers") is not None:
                 log.headers = result.get("request_headers")
+            if result.get("request_payload") is not None:
+                log.payload = result.get("request_payload")
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
                 log.processed_at = datetime.now(timezone.utc)
-                log.payload = {**(log.payload or {}), "response": result}
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] VFS notified for order %s", order_id)

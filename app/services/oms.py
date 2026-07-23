@@ -138,7 +138,7 @@ class OMSService:
                 **{"Version" if k == "version" else k: v for k, v in mock_params.items()},
                 "sign": "mock-signature",
             }
-            return _mock_status_response(order.order_id, event_status, mock_headers)
+            return _mock_status_response(order.order_id, event_status, mock_headers, payload)
 
         app_secret = settings.OMS_APP_SECRET
         body_ciphertext = hub4.aes_encrypt(
@@ -184,6 +184,7 @@ class OMSService:
                 "message": f"HTTP {response.status_code}",
                 "status_code": response.status_code,
                 "request_headers": request_headers,
+                "request_payload": payload,
             }
 
         # 5xx / network — raise so the Celery task can retry.
@@ -202,10 +203,16 @@ class OMSService:
                 "success": False,
                 "message": body.get("message", "OMS returned success=false"),
                 "request_headers": request_headers,
+                "request_payload": payload,
             }
 
         logger.info("[OMS] Status update acknowledged for order %s -> %s", order.order_id, event_status)
-        return {"success": True, "data": body.get("data"), "request_headers": request_headers}
+        return {
+            "success": True,
+            "data": body.get("data"),
+            "request_headers": request_headers,
+            "request_payload": payload,
+        }
 
     @staticmethod
     def _map_to_address(data: dict, order_id: str, address_type: AddressType) -> Address:
@@ -273,7 +280,12 @@ def _mock_response(order_id: str) -> dict:
     }
 
 
-def _mock_status_response(order_id: str, event_status: str, request_headers: Optional[Dict[str, Any]] = None) -> dict:
+def _mock_status_response(
+    order_id: str,
+    event_status: str,
+    request_headers: Optional[Dict[str, Any]] = None,
+    request_payload: Optional[Dict[str, Any]] = None,
+) -> dict:
     """Return a fake OMS API-002 response for local development / testing."""
     logger.info("[OMS][MOCK] Returning mock status update for order %s -> %s", order_id, event_status)
     return {
@@ -283,4 +295,5 @@ def _mock_status_response(order_id: str, event_status: str, request_headers: Opt
             "status": event_status,
         },
         "request_headers": request_headers,
+        "request_payload": request_payload,
     }
