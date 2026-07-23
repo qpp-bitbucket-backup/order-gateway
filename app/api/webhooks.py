@@ -75,12 +75,13 @@ def receive_order_status(
     item_statuses = {item.status for item in order_event.items}
     effective_status = item_statuses.pop() if len(item_statuses) == 1 else order_event.items[-1].status
 
-    # ① Insert inbound log (raw payload, unchanged regardless of downstream outcome)
+    # Insert inbound log (raw payload, unchanged regardless of downstream outcome)
     inbound_log = WebhookLog(
         direction=WebhookDirection.INBOUND,
         source="qpmn",
-        order_id=order_event.order_id,
+        order_id="",
         source_order_id=order_event.external_id,
+        store_order_id=order_event.order_id,
         event_status=effective_status,
         payload=payload.model_dump(),
         headers=headers_dict,
@@ -91,7 +92,7 @@ def receive_order_status(
     session.commit()
     session.refresh(inbound_log)
 
-    # ② Auth failure
+    # Auth failure
     if not signature_valid:
         inbound_log.process_status = WebhookProcessStatus.FAILED
         inbound_log.error_message = "Invalid or missing Authorization token"
@@ -102,7 +103,7 @@ def receive_order_status(
             detail="Invalid or missing Authorization token",
         )
 
-    # ③ Look up order: QPMN's own order_id (→ store_order_id) first, then our
+    # Look up order: QPMN's own order_id (→ store_order_id) first, then our
     # source_order_id (echoed back as external_id) as fallback.
     order = None
     if order_event.order_id:
@@ -119,15 +120,14 @@ def receive_order_status(
         inbound_log.error_message = "Order not found"
         session.add(inbound_log)
         session.commit()
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found",
+        return WebhookResponse(
+            success=False,
+            message="Order not found",
         )
 
     inbound_log.order_id = order.order_id
-    inbound_log.source_order_id = order.store_order_id
 
-    # ④ Map external status → internal; unknown statuses are rejected (success: false, HTTP 200)
+    # Map external status → internal; unknown statuses are rejected (success: false, HTTP 200)
     new_status = EVENT_STATUS_MAP.get(effective_status)
     if not new_status:
         inbound_log.process_status = WebhookProcessStatus.SKIPPED
@@ -146,7 +146,7 @@ def receive_order_status(
             message=f"Invalid transition: {order.status.value} -> {new_status.value}",
         )
 
-    # ⑤ Update order status + append log
+    # Update order status + append log
     order.status = new_status
     if order.logs is None:
         order.logs = []
@@ -167,15 +167,16 @@ def receive_order_status(
     session.add(inbound_log)
     session.commit()
 
-    # ⑥ Create outbound log (source=oms) + enqueue notify_oms
+    # Create outbound log (source=oms) + enqueue notify_oms
     shipments_data = (
         [s.model_dump() for s in order_event.shipments] if order_event.shipments else None
     )
-    outbound_log = WebhookLog(
+    oms_outbound_log = WebhookLog(
         direction=WebhookDirection.OUTBOUND,
         source="oms",
         order_id=order.order_id,
-        source_order_id=order.store_order_id,
+        source_order_id=order.source_order_id,
+        store_order_id=order.store_order_id,
         event_status=effective_status,
         payload={
             "orderNo": order.order_id,
@@ -184,12 +185,12 @@ def receive_order_status(
         },
         process_status=WebhookProcessStatus.RECEIVED,
     )
-    session.add(outbound_log)
+    session.add(oms_outbound_log)
     session.commit()
-    session.refresh(outbound_log)
+    session.refresh(oms_outbound_log)
 
     notify_oms.delay(
-        webhook_log_id=outbound_log.id,
+        webhook_log_id=oms_outbound_log.id,
         order_id=order.order_id,
         event_status=effective_status,
         shipments=shipments_data,
@@ -201,6 +202,7 @@ def receive_order_status(
         source="vfs",
         order_id=order.order_id,
         source_order_id=order.source_order_id,
+        store_order_id=order.store_order_id,
         event_status=effective_status,
         payload={
             "sourceOrderId": order.source_order_id,
