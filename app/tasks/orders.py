@@ -176,7 +176,7 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
                 _mark_order_failed(order_id,  "No delivery address returned by OMS")
                 return False
 
-            order.status = OrderStatus.VALIDATED
+            order.status = OrderStatus.PROCESSING
             session.add(order)
             session.commit()
 
@@ -199,7 +199,7 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
 @celery_app.task(bind=True, name="tasks.orders.push_order", queue=QUEUE_ORDER_PUSHING)
 def push_order(self, order_data: Dict[str, Any]) -> bool:
     """
-    Push a validated order to the QPMN platform.
+    Push a processing order to the QPMN platform.
 
     Args:
         order_data: Order data dictionary.
@@ -219,7 +219,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                 logger.error(f"[Celery] Order not found: {order_id}")
                 return False
 
-            if not can_transition(order.status, OrderStatus.PRINTREADY):
+            if not can_transition(order.status, OrderStatus.PROCESSING):
                 logger.error(
                     f"[Celery] Invalid state transition for order {order_id}: "
                     f"{order.status.value} -> {OrderStatus.PRINTREADY.value}"
@@ -228,7 +228,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
 
             _append_order_log(order, "order_pushing_started", "Order pushing started by celery worker")
 
-            logger.info(f"[Celery] Order {order_id} status updated to PENDING")
+            logger.info(f"[Celery] Order {order_id} pushing to QPMN (current status: {order.status.value})")
 
             # Build payload via order_service (lazy import to avoid circular dependency)
             from app.services.order import order_service
@@ -255,13 +255,13 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                 success = result.get("success", False)
 
                 if success:
-                    # Order pushed successfully - mark as received
-                    order.status = OrderStatus.PRINTREADY
+                    # Order pushed successfully - mark as processing
+                    order.status = OrderStatus.PROCESSING
                     order.store_order_id = result.get("data",{}).get("orderId",None)
                     _append_order_log(order, "order_push_success", "Order pushed to QPMN successfully")
                     session.add(order)
                     session.commit()
-                    logger.info(f"[Celery] Order {order_id} pushed to QPMN successfully")
+                    logger.info(f"[Celery] Order {order_id} pushed to QPMN successfully, status -> PRINTREADY")
                 else:
                     # Order push failed - mark as FAILED and log message
                     error_message = result.get("data", {}).get("message", "Unknown error")

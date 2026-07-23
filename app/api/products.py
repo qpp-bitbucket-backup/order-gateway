@@ -236,6 +236,7 @@ def jwt_get_products(
 def jwt_get_skus(
     page: int = Query(1, ge=1, description="Page number"),
     pagesize: int = Query(100, ge=1, le=1000, description="Items per page"),
+    store_id: Optional[str] = Query(None, description="Filter by store ID"),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -244,24 +245,28 @@ def jwt_get_skus(
 
     Requires JWT Bearer token. Admin/Editor/Viewer all have access.
     If user has a store_id, only returns SKUs for that store.
+    Admin users can optionally filter by store_id query parameter.
     """
     try:
         offset = (page - 1) * pagesize
 
         # Scope by user's store_id (null store_id = all stores)
         user_store_id = current_user.store_id
+        # Non-admin users are always scoped to their own store
+        # Admin users can optionally filter by store_id param
+        effective_store_id = user_store_id or store_id
 
-        if user_store_id:
+        if effective_store_id:
             from sqlmodel import col
             query = (
                 select(Sku)
                 .join(Product, col(Sku.product_id) == col(Product.product_id))
-                .where(Sku.active == True, Product.store_id == user_store_id)
+                .where(Sku.active == True, Product.store_id == effective_store_id)
             )
             count_query = (
                 select(Sku)
                 .join(Product, col(Sku.product_id) == col(Product.product_id))
-                .where(Sku.active == True, Product.store_id == user_store_id)
+                .where(Sku.active == True, Product.store_id == effective_store_id)
             )
         else:
             query = select(Sku).where(Sku.active == True)

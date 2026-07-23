@@ -11,6 +11,7 @@ class OrderStatus(str, Enum):
     RECEIVED = "received"
     PENDING = "pending"
     VALIDATED = "validated"
+    PROCESSING = "processing"
     PRINTREADY = "printready"
     PRINTED = "printed"
     CANCELLED = "cancelled"
@@ -35,12 +36,19 @@ ORDER_STATE_TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
         OrderStatus.FAILED,       # 驗證失敗
         OrderStatus.ERRORED       # 驗證過程異常
     ],
-    # 驗證通過：準備列印
+    # 驗證通過：進入處理階段
     OrderStatus.VALIDATED: [
-        OrderStatus.PRINTREADY,   # 進入列印隊列
+        OrderStatus.PROCESSING,   # 進入處理中
         OrderStatus.CANCELLED,    # 取消訂單
-        OrderStatus.FAILED,       # 準備列印失敗
+        OrderStatus.FAILED,       # 準備處理失敗
         OrderStatus.ERRORED       # 準備過程異常
+    ],
+    # 處理中：正在處理訂單（如檔案準備、排版等）
+    OrderStatus.PROCESSING: [
+        OrderStatus.PRINTREADY,   # 處理完成，進入列印隊列
+        OrderStatus.CANCELLED,    # 取消訂單
+        OrderStatus.FAILED,       # 處理失敗
+        OrderStatus.ERRORED       # 處理過程異常
     ],
     # 列印就緒：開始列印， 已經Push 到QPMN 不能進行取消
     OrderStatus.PRINTREADY: [

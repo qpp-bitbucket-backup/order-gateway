@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, status, Depends
 from sqlmodel import Session, select
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timezone
 import json
 import logging
@@ -510,7 +510,8 @@ jwt_router = APIRouter(
 def platform_get_orders(
     page: int = Query(1, ge=1, description="The page number to return"),
     pagesize: int = Query(10, ge=1, le=100, description="Number of orders per page"),
-    status_filter: Optional[OrderStatus] = Query(None, alias="status", description="Filter by order status"),
+    status_filter: Optional[List[OrderStatus]] = Query(None, alias="status[]", description="Filter by order status (supports multiple values, e.g. status[]=failed&status[]=errored)"),
+    store_id: Optional[str] = Query(None, description="Filter by store ID"),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -519,17 +520,22 @@ def platform_get_orders(
 
     Requires JWT Bearer token. Admin/Editor/Viewer all have access.
     If user has a store_id, only returns orders for that store.
+    Admin users can optionally filter by store_id query parameter.
+    Supports filtering by multiple statuses: ?status[]=failed&status[]=errored
     Returns additional fields: sourceOrderId, logs, files, version, storeId.
     """
     try:
         user_store_id = current_user.store_id
+        # Non-admin users are always scoped to their own store
+        # Admin users can optionally filter by store_id param
+        effective_store_id = user_store_id or store_id
 
         orders, total_count, total_pages = order_service.get_all_orders(
             session,
-            store_id=user_store_id,
+            store_id=effective_store_id,
             page=page,
             pagesize=pagesize,
-            status=status_filter,
+            statuses=status_filter,
         )
 
         order_summaries = [
