@@ -1,5 +1,5 @@
 from sqlmodel import SQLModel, Field, Relationship, Column
-from sqlalchemy import JSON, Text
+from sqlalchemy import JSON, Text, Enum as SAEnum
 from typing import Optional, List, Dict, Any
 from datetime import datetime,timezone
 from enum import Enum
@@ -204,7 +204,14 @@ class Order(BaseModel, table=True):
     destination: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Destination information")
     source: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Source information")
     order_data: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Complete order data")
-    status: OrderStatus = Field(default=OrderStatus.PENDING, nullable=False, description="Current order status")
+    status: OrderStatus = Field(
+        default=OrderStatus.PENDING,
+        description="Current order status",
+        sa_column=Column(
+            SAEnum(OrderStatus, values_callable=lambda x: [e.value for e in x], name="orderstatus"),
+            nullable=False,
+        ),
+    )
     logs: Optional[List[Dict[str, Any]]] = Field(None, sa_column=Column(JSON), description="Order processing logs")
     files: Optional[List[Dict[str, Any]]] = Field(None, sa_column=Column(JSON), description="Associated files")
     version: int = Field(default=1, description="Document version (__v)")
