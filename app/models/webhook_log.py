@@ -29,6 +29,7 @@ class WebhookLog(BaseModel, table=True):
     source: str = Field(nullable=False, index=True, max_length=20, description="Counterparty system: qpmn / oms / vfs")
     order_id: Optional[str] = Field(None, index=True, max_length=64, description="Internal order ID")
     source_order_id: Optional[str] = Field(None, index=True, max_length=64, description="External order ID (VFS sourceOrderId / OMS orderNo)")
+    store_order_id: Optional[str] = Field(None, index=True, max_length=64, description="Store order ID (QPMN orderId)")
     event_status: Optional[str] = Field(None, index=True, max_length=32, description="Order status carried by the event")
     payload: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Raw request/response body")
     headers: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Request headers including signature")

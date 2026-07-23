@@ -54,15 +54,15 @@ class VFSService:
             return {"success": False, "message": "VFS_POSTBACK_URL not configured"}
 
         payload: Dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "sourceOrderId": order.source_order_id,
             "status": event_status,
         }
 
-        if USE_MOCK:
-            return _mock_postback_response(order.source_order_id, event_status)
-
         headers = self._build_auth_headers()
+
+        if USE_MOCK:
+            return _mock_postback_response(order.source_order_id, event_status, headers, payload)
 
         logger.info(
             "[VFS] POST postback status=%s sourceOrderId=%s",
@@ -85,13 +85,20 @@ class VFSService:
                 "success": False,
                 "message": f"HTTP {response.status_code}",
                 "status_code": response.status_code,
+                "request_headers": headers,
+                "request_payload": payload,
             }
 
         # 5xx / other — raise so the Celery task retries.
         response.raise_for_status()
 
         logger.info("[VFS] Postback delivered for order %s", order.source_order_id)
-        return {"success": True, "status_code": response.status_code}
+        return {
+            "success": True,
+            "status_code": response.status_code,
+            "request_headers": headers,
+            "request_payload": payload,
+        }
 
     @staticmethod
     def _build_auth_headers() -> Dict[str, str]:
@@ -115,11 +122,22 @@ vfs_service = VFSService()
 # Mock helpers (used when USE_MOCK is enabled)
 # ---------------------------------------------------------------------------
 
-def _mock_postback_response(source_order_id: Optional[str], event_status: str) -> dict:
+def _mock_postback_response(
+    source_order_id: Optional[str],
+    event_status: str,
+    request_headers: Optional[Dict[str, Any]] = None,
+    request_payload: Optional[Dict[str, Any]] = None,
+) -> dict:
     """Return a fake VFS postback acknowledgement for local development / testing."""
     logger.info(
         "[VFS][MOCK] Postback acknowledged for order %s (status=%s)",
         source_order_id,
         event_status,
     )
-    return {"success": True, "status_code": 200, "mock": True}
+    return {
+        "success": True,
+        "status_code": 200,
+        "mock": True,
+        "request_headers": request_headers,
+        "request_payload": request_payload,
+    }
