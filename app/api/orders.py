@@ -99,94 +99,117 @@ def validate_order(
     Returns validation result without persisting the order.
     """
     _log_request("POST /order/validate", request.model_dump())
-    try:
-        # Perform validation logic
-        validation_errors = []
 
-        # Validate items
-        for item in request.orderData.items:
-            # Check if SKU is provided and refers to a valid, active SKU
-            if not item.sku:
-                validation_errors.append("SKU is required for all items")
-            else:
-                # Look up the SKU by its business code, scoped to the client's store if set
-                sku_query = select(Sku).where(
-                    (Sku.sku_id == item.sku) & Sku.active.is_(True)
-                )
-                if store_id:
-                    sku_query = sku_query.where(Sku.store_id == store_id)
-                existing_sku = session.exec(sku_query).first()
-
-                if not existing_sku:
-                    validation_errors.append(f"Invalid or inactive SKU: {item.sku}")
-                else:
-                    # Ensure all components marked as required on the product are present
-                    product = session.exec(
-                        select(Product).where(
-                            Product.product_id == existing_sku.product_id
-                        )
-                    ).first()
-
-                    if product and product.components:
-                        provided_codes = {
-                            component.code for component in (item.components or [])
-                        }
-                        for product_component in product.components:
-                            if product_component.get("required") and (
-                                product_component.get("code") not in provided_codes
-                            ):
-                                validation_errors.append(
-                                    f"Missing required component "
-                                    f"'{product_component.get('code')}' for SKU {item.sku}"
-                                )
-
-            # Validate components
-            if item.components:
-                for component in item.components:
-                    if component.fetch:
-                        if not component.path:
-                            validation_errors.append(f"Path required when fetch=true for component {component.code}")
-                        elif not is_file_accessible(component.path):
-                            validation_errors.append(
-                                f"File not accessible for component {component.code}: {component.path}"
-                            )
-
-        # Validate shipments
-        if request.orderData.shipments:
-            for shipment in request.orderData.shipments:
-                if shipment.shipTo:
-                    if not shipment.shipTo.name and not shipment.shipTo.companyName:
-                        validation_errors.append("Either name or companyName required in shipTo")
-                    if not shipment.shipTo.isoCountry:
-                        validation_errors.append("isoCountry is required in shipTo")
-
-        # If there are validation errors, return failure
-        if validation_errors:
-            return OrderValidationResponse(
-                success=False,
-                order={"errors": validation_errors}
-            )
-
-        # Validation successful - return validated order structure
-        validated_order = {
-            "destination": request.destination.model_dump(),
-            "orderData": request.orderData.model_dump(),
-            "validated_at": datetime.now(timezone.utc).isoformat(),
-            "status": "validated"
+    def _error(loc: list, msg: str, error_type: str, input_value=None, ctx: Optional[dict] = None) -> dict:
+        """Build one error object matching FastAPI's standard validation error shape."""
+        return {
+            "loc": ["body"] + loc,
+            "msg": msg,
+            "type": error_type,
+            "input": input_value,
+            "ctx": ctx or {},
         }
 
-        resp = OrderValidationResponse(
-            success=True,
-            order=validated_order
-        )
-        _log_response("POST /order/validate", resp.model_dump())
-        return resp
+    # Perform validation logic
+    validation_errors: list = []
 
-    except Exception as e:
+    # Validate items
+    for idx, item in enumerate(request.orderData.items):
+        item_loc = ["orderData", "items", idx]
+
+        # Check if SKU is provided and refers to a valid, active SKU
+        if not item.sku:
+            validation_errors.append(
+                _error(item_loc + ["sku"], "SKU is required for all items", "missing")
+            )
+        else:
+            # Look up the SKU by its business code, scoped to the client's store if set
+            sku_query = select(Sku).where(
+                (Sku.sku_id == item.sku) & Sku.active.is_(True)
+            )
+            if store_id:
+                sku_query = sku_query.where(Sku.store_id == store_id)
+            existing_sku = session.exec(sku_query).first()
+
+            if not existing_sku:
+                validation_errors.append(
+                    _error(item_loc + ["sku"], "Invalid or inactive SKU", "value_error", item.sku)
+                )
+            else:
+                # Ensure all components marked as required on the product are present
+                product = session.exec(
+                    select(Product).where(
+                        Product.product_id == existing_sku.product_id
+                    )
+                ).first()
+
+                if product and product.components:
+                    provided_codes = {
+                        component.code for component in (item.components or [])
+                    }
+                    for product_component in product.components:
+                        required_code = product_component.get("code")
+                        if product_component.get("required") and (
+                            required_code not in provided_codes
+                        ):
+                            validation_errors.append(
+                                _error(
+                                    item_loc + ["components"],
+                                    f"Missing required component '{required_code}'",
+                                    "missing",
+                                    sorted(provided_codes),
+                                )
+                            )
+
+        # Validate components
+        if item.components:
+            for cidx, component in enumerate(item.components):
+                component_loc = item_loc + ["components", cidx, "path"]
+                if component.fetch:
+                    if not component.path:
+                        validation_errors.append(
+                            _error(component_loc, "Path required when fetch=true", "missing")
+                        )
+                    elif not is_file_accessible(component.path):
+                        validation_errors.append(
+                            _error(component_loc, "File not accessible", "value_error", component.path)
+                        )
+
+    # Validate shipments
+    if request.orderData.shipments:
+        for sidx, shipment in enumerate(request.orderData.shipments):
+            shipment_loc = ["orderData", "shipments", sidx, "shipTo"]
+            if shipment.shipTo:
+                if not shipment.shipTo.name and not shipment.shipTo.companyName:
+                    validation_errors.append(
+                        _error(shipment_loc, "Either name or companyName required", "missing")
+                    )
+                if not shipment.shipTo.isoCountry:
+                    validation_errors.append(
+                        _error(shipment_loc + ["isoCountry"], "isoCountry is required", "missing")
+                    )
+
+    # If there are validation errors, respond with the standard FastAPI validation shape.
+    if validation_errors:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Validation failed: {str(e)}"
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=validation_errors,
         )
+
+    # Validation successful - return validated order structure
+    validated_order = {
+        "destination": request.destination.model_dump(),
+        "orderData": request.orderData.model_dump(),
+        "validated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "validated"
+    }
+
+    resp = OrderValidationResponse(
+        success=True,
+        order=validated_order
+    )
+    _log_response("POST /order/validate", resp.model_dump())
+    return resp
 
 
 @router.post("/order", response_model=OrderSubmissionResponse)
