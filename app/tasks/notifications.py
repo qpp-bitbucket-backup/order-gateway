@@ -72,6 +72,9 @@ def notify_oms(
                 shipments=shipments,
             )
 
+            if result.get("request_headers") is not None:
+                log.headers = result.get("request_headers")
+
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
                 log.processed_at = datetime.now(timezone.utc)
@@ -178,6 +181,9 @@ def notify_vfs(
                 order=order,
                 event_status=event_status,
             )
+
+            if result.get("request_headers") is not None:
+                log.headers = result.get("request_headers")
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED

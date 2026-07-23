@@ -128,7 +128,17 @@ class OMSService:
         }
 
         if USE_MOCK:
-            return _mock_status_response(order.order_id, event_status)
+            mock_params = hub4.build_query_params(
+                method_name=settings.OMS_STATUS_METHOD_NAME,
+                source_app=settings.OMS_SOURCE_APP,
+                interface_type=settings.OMS_INTERFACE_TYPE,
+            )
+            mock_headers = {
+                "Content-Type": "text/plain",
+                **{"Version" if k == "version" else k: v for k, v in mock_params.items()},
+                "sign": "mock-signature",
+            }
+            return _mock_status_response(order.order_id, event_status, mock_headers)
 
         app_secret = settings.OMS_APP_SECRET
         body_ciphertext = hub4.aes_encrypt(
@@ -151,6 +161,8 @@ class OMSService:
 
         logger.info("[OMS] POST API-002 status=%s orderNo=%s", event_status, order.order_id)
 
+        request_headers = {"Content-Type": "text/plain", **url_params}
+
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = client.post(
                 self.base_url,
@@ -171,6 +183,7 @@ class OMSService:
                 "success": False,
                 "message": f"HTTP {response.status_code}",
                 "status_code": response.status_code,
+                "request_headers": request_headers,
             }
 
         # 5xx / network — raise so the Celery task can retry.
@@ -185,10 +198,14 @@ class OMSService:
                 order.order_id,
                 body,
             )
-            return {"success": False, "message": body.get("message", "OMS returned success=false")}
+            return {
+                "success": False,
+                "message": body.get("message", "OMS returned success=false"),
+                "request_headers": request_headers,
+            }
 
         logger.info("[OMS] Status update acknowledged for order %s -> %s", order.order_id, event_status)
-        return {"success": True, "data": body.get("data")}
+        return {"success": True, "data": body.get("data"), "request_headers": request_headers}
 
     @staticmethod
     def _map_to_address(data: dict, order_id: str, address_type: AddressType) -> Address:
@@ -256,7 +273,7 @@ def _mock_response(order_id: str) -> dict:
     }
 
 
-def _mock_status_response(order_id: str, event_status: str) -> dict:
+def _mock_status_response(order_id: str, event_status: str, request_headers: Optional[Dict[str, Any]] = None) -> dict:
     """Return a fake OMS API-002 response for local development / testing."""
     logger.info("[OMS][MOCK] Returning mock status update for order %s -> %s", order_id, event_status)
     return {
@@ -265,4 +282,5 @@ def _mock_status_response(order_id: str, event_status: str) -> dict:
             "orderNo": order_id,
             "status": event_status,
         },
+        "request_headers": request_headers,
     }
