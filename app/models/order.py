@@ -86,16 +86,20 @@ def can_transition(from_status: OrderStatus, to_status: OrderStatus) -> bool:
     return to_status in allowed
 
 
-# Internal status -> external event status code (Site Flow / Partner API naming).
-# Statuses not listed here (PENDING, FAILED) are internal only and never notified.
+# Internal status -> external event status code (QPMN's real Site Flow status
+# vocabulary, not the earlier placeholder strings). Statuses not listed here
+# (PENDING, FAILED) are internal only and never notified.
+# Note: SHIPPED's "package_shipped" is reported by QPMN via a separate
+# shipment feedback event (发货单反馈), not the same order-status feed as the
+# other rows here — confirm how that arrives before wiring it up.
 STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
-    OrderStatus.RECEIVED: "received",
+    OrderStatus.RECEIVED: "order_item_received",
     OrderStatus.VALIDATED: "dataready",
-    OrderStatus.PRINTREADY: "printready",
-    OrderStatus.PRINTED: "printed",
-    OrderStatus.SHIPPED: "shipped",
-    OrderStatus.CANCELLED: "cancelled",
-    OrderStatus.ERRORED: "error",
+    OrderStatus.PRINTREADY: "order_item_reviewed",
+    OrderStatus.PRINTED: "order_item_produced",
+    OrderStatus.SHIPPED: "package_shipped",
+    OrderStatus.CANCELLED: "order_item_canceled",
+    OrderStatus.ERRORED: "order_item_failed",
 }
 
 # Reverse lookup: external event status code -> internal status
