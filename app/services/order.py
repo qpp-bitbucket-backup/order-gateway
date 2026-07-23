@@ -145,7 +145,7 @@ class OrderService:
             },
             order_data=order_data,
             status=OrderStatus.RECEIVED,
-            version=0,
+            version=1,
             store_id=store_id,
         )
 

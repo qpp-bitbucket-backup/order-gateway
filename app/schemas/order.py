@@ -99,6 +99,7 @@ class FullOrder(BaseModel):
     destination: Optional[Dict[str, Any]] = Field(None, description="Destination information")
     source: Optional[Dict[str, Any]] = Field(None, description="Source information")
     orderData: Optional[Dict[str, Any]] = Field(None, description="Complete order data")
+    version: int = Field(1, alias="__v", description="Document version")
 
     class Config:
         populate_by_name = True

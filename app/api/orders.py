@@ -233,12 +233,13 @@ def submit_order(
             store_id=store_id,
         )
 
-        # Build response (exclude logs, version, files, store_order_id)
+        # Build response (exclude logs, files, store_order_id)
         full_order = FullOrder(
             id=order.order_id,
             destination=order.destination,
             source=order.source,
             orderData=order.order_data,
+            version=order.version,
         )
 
         resp = OrderSubmissionResponse(success=True, order=full_order)
@@ -316,7 +317,7 @@ def get_order_by_id(
     Returns complete order details including all items, components, and status.
     Only returns orders belonging to the authenticated client's store.
     """
-    _log_request("GET /order/{order_id}", {"order_id": order_id})
+    _log_request("GET /order/{order_id}", {"order_id": order_id, "store_id": store_id})
     try:
         order = order_service.get_order_by_id(session, order_id, store_id=store_id)
 
@@ -332,6 +333,7 @@ def get_order_by_id(
             destination=order.destination,
             source=order.source,
             orderData=order.order_data,
+            version=order.version,
         )
 
         resp = OrderDetailsResponse(success=True, order=full_order)
@@ -396,6 +398,7 @@ def update_order(
             destination=order.destination,
             source=order.source,
             orderData=order.order_data,
+            version=order.version,
         )
 
         resp = OrderUpdateResponse(
@@ -436,6 +439,7 @@ def cancel_order(
             (Order.source_account == source_account)
             & (Order.source_order_id == source_order_id)
         )
+        print(query)
         if store_id:
             query = query.where(Order.store_id == store_id)
         order = session.exec(query).first()
