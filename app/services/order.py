@@ -4,6 +4,7 @@ import os
 import tempfile
 import uuid
 import fitz  # PyMuPDF
+import httpx
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -15,6 +16,7 @@ from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
 from app.services.file import file_service
 from app.services.client import client_service
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,7 @@ UPDATABLE_STATUSES = {
     OrderStatus.RECEIVED,
     OrderStatus.PENDING,
     OrderStatus.VALIDATED,
+    OrderStatus.PROCESSING,
     OrderStatus.FAILED,
     OrderStatus.ERRORED,
 }
@@ -49,10 +52,13 @@ class OrderService:
         store_id: Optional[str] = None,
         page: int = 1,
         pagesize: int = 10,
-        status: Optional[OrderStatus] = None,
+        statuses: Optional[List[OrderStatus]] = None,
     ) -> Tuple[List[Order], int, int]:
         """
         Retrieve a paginated list of orders.
+
+        Args:
+            statuses: Optional list of order statuses to filter by (IN clause).
 
         Returns:
             A tuple of (orders, total_count, total_pages).
@@ -60,8 +66,8 @@ class OrderService:
         query = select(Order)
         if store_id:
             query = query.where(Order.store_id == store_id)
-        if status:
-            query = query.where(Order.status == status)
+        if statuses:
+            query = query.where(Order.status.in_(statuses))
 
         # Total count
         total_count = len(session.exec(query).all())
@@ -308,8 +314,9 @@ class OrderService:
         payload = {
             "thirdOrderId": order.order_id,
             "thirdOrderNumber": order.source_order_id,
-            "items": line_items,
-            "currency": "CNY"
+            "items": line_items,    
+            "currency": self.fetch_currency_from_qpmn(order.store_id),
+            "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
         }
 
         # Query addresses for this order
@@ -368,6 +375,91 @@ class OrderService:
         dimension = 320
         extension = 'png'
         return f"{file_url}/{dimension}/{dimension}/{extension}"
+
+    def fetch_shipping_method_from_qpmn(self, store_id: str) -> str:
+        """
+        Fetch the default shipping method code from QPMN CGP API.
+
+        Args:
+            store_id: Store identifier
+
+        Returns:
+            The first shipping method code found, or "Standard" as fallback.
+        """
+        try:
+            store_key = client_service.get_store_key_by_id(store_id)
+            if not store_key:
+                logger.warning("[OrderService] No store_key found for store_id=%s, falling back to 'Standard'", store_id)
+                return "Standard"
+
+            api_url = f"{settings.QPMN_API_URL}/store/{store_id}/default/shippingMethod"
+            headers = {
+                "Authorization": f"Basic {store_key}",
+                "Content-Type": "application/json",
+            }
+
+            with httpx.Client(timeout=15.0) as client:
+                response = client.get(api_url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
+            shippings = (
+                data.get("data", {})
+                .get("storeDefaultShippings", [])
+            )
+            if shippings:
+                code = shippings[0].get("code", "Standard")
+                logger.info("[OrderService] Fetched shipping method '%s' for store_id=%s", code, store_id)
+                return code
+
+            logger.warning("[OrderService] No storeDefaultShippings in response for store_id=%s, falling back to 'Standard'", store_id)
+            return "Standard"
+
+        except Exception as e:
+            logger.warning("[OrderService] Failed to fetch shipping method for store_id=%s: %s, falling back to 'Standard'", store_id, e)
+            return "Standard"
+
+    def fetch_currency_from_qpmn(self, store_id: str) -> str:
+        """
+        Fetch the store currency code from QPMN CGP API.
+
+        GET {QPMN_API_URL}/partner/stores/{store_id}
+        Returns data.currencyCode, or "CNY" as fallback.
+
+        Args:
+            store_id: Store identifier
+
+        Returns:
+            ISO currency code (e.g. "HKD", "USD"), or "CNY" if unavailable.
+        """
+        try:
+            store_key = client_service.get_store_key_by_id(store_id)
+            if not store_key:
+                logger.warning("[OrderService] No store_key found for store_id=%s, falling back to 'CNY'", store_id)
+                return "CNY"
+
+            api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
+            headers = {
+                "Authorization": f"Basic {store_key}",
+                "Content-Type": "application/json",
+            }
+
+            with httpx.Client(timeout=15.0) as client:
+                response = client.get(api_url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
+            currency_code = data.get("data", {}).get("currencyCode")
+            if currency_code:
+                logger.info("[OrderService] Fetched currency '%s' for store_id=%s", currency_code, store_id)
+                return currency_code
+
+            logger.warning("[OrderService] No currencyCode in response for store_id=%s, falling back to 'CNY'", store_id)
+            return "CNY"
+
+        except Exception as e:
+            logger.warning("[OrderService] Failed to fetch currency for store_id=%s: %s, falling back to 'CNY'", store_id, e)
+            return "CNY"
         
 # Singleton instance
 order_service = OrderService()
