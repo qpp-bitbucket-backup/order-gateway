@@ -180,7 +180,7 @@ def receive_order_status(
         event_status=effective_status,
         payload={
             "orderNo": order.order_id,
-            "status": effective_status,
+            "status": new_status.value,
             "shipments": shipments_data or [],
         },
         process_status=WebhookProcessStatus.RECEIVED,
@@ -192,7 +192,7 @@ def receive_order_status(
     notify_oms.delay(
         webhook_log_id=oms_outbound_log.id,
         order_id=order.order_id,
-        event_status=effective_status,
+        event_status=new_status.value,
         shipments=shipments_data,
     )
 
@@ -206,7 +206,7 @@ def receive_order_status(
         event_status=effective_status,
         payload={
             "sourceOrderId": order.source_order_id,
-            "status": effective_status,
+            "status": new_status.value,
         },
         process_status=WebhookProcessStatus.RECEIVED,
     )
@@ -217,7 +217,7 @@ def receive_order_status(
     notify_vfs.delay(
         webhook_log_id=vfs_outbound_log.id,
         order_id=order.order_id,
-        event_status=effective_status,
+        event_status=new_status.value,
     )
 
     return WebhookResponse(success=True, message=f"Status updated to '{new_status.value}'")
