@@ -100,14 +100,13 @@ def validate_order(
     """
     _log_request("POST /order/validate", request.model_dump())
 
-    def _error(loc: list, msg: str, error_type: str, input_value=None, ctx: Optional[dict] = None) -> dict:
+    def _error(loc: list, msg: str, error_type: str, input_value=None) -> dict:
         """Build one error object matching FastAPI's standard validation error shape."""
         return {
             "loc": ["body"] + loc,
             "msg": msg,
             "type": error_type,
             "input": input_value,
-            "ctx": ctx or {},
         }
 
     # Perform validation logic
