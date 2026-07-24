@@ -16,7 +16,7 @@ pipeline {
         ACR_NAMESPACE  = 'uat'
         ACR_REPO       = 'order-gateway'
 
-        DEPLOYMENT_FILE = 'topps/order-gateway/uat/deployment.yml'
+        DEPLOYMENT_FILE = 'topps/order-gateway/uat/deployment.yml, topps/order-gateway-worker/uat/deployment.yml, topps/order-gateway-beat/uat/beat_deployment.yml'
     }
 
     stages {
@@ -117,24 +117,43 @@ pipeline {
             }
         }
 
-        stage('Update Deployment Image Tag - topps/order-gateway/uat') {
+        stage('Update Deployment Image Tag - UAT: order-gateway,worker and beat') {
             steps {
                 dir('gitops-ack') {
                     sh """
-                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:' ${env.DEPLOYMENT_FILE}; then
-                            echo "ERROR: Expected image pattern not found in ${env.DEPLOYMENT_FILE}"
-                            exit 1
-                        fi
+                        // Function to update image tag in a file
+                        update_image_tag() {
+                            local file=\$1
+                            local pattern="image:[[:space:]]*\${ACR_VPC_REGISTRY}/\${ACR_NAMESPACE}/\${ACR_REPO}:"
+                            local replacement="image: \${ACR_VPC_REGISTRY}/\${ACR_NAMESPACE}/\${ACR_REPO}:\${IMAGE_TAG}"
+                            
+                            if ! grep -qE "\${pattern}\s*\S*" "\$file"; then
+                                echo "ERROR: Expected image pattern not found in \$file"
+                                exit 1
+                            fi
 
-                        sed -i 's|\\(image:[[:space:]]*${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:\\)[^[:space:]]*|\\1${env.IMAGE_TAG}|g' ${env.DEPLOYMENT_FILE}
+                            sed -i "s|\${pattern}\S*|\${replacement}|g" "\$file"
+                            
+                            if ! grep -q "\${ACR_VPC_REGISTRY}/\${ACR_NAMESPACE}/\${ACR_REPO}:\${IMAGE_TAG}" "\$file"; then
+                                echo "ERROR: Image tag replacement failed in \$file"
+                                exit 1
+                            fi
+                        }
+
+                        # Update all deployment files
+                        for file in \$(echo "\${DEPLOYMENT_FILES}" | tr ',' '\n'); do
+                            echo "Updating image tag in: \$file"
+                            if [ -f "\$file" ]; then
+                                update_image_tag "\$file"
+                                echo "Updated: \$file"
+                                grep 'image:' "\$file"
+                            else
+                                echo "ERROR: File not found: \$file"
+                                exit 1
+                            fi
+                        done
                         
-                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}' ${env.DEPLOYMENT_FILE}; then
-                            echo "ERROR: Image tag replacement failed! Please check ${env.DEPLOYMENT_FILE}"
-                            exit 1
-                        fi
-
-                        echo "Verified: image tag updated successfully"
-                        grep 'image:' ${env.DEPLOYMENT_FILE}
+                        echo "All deployment files verified successfully"
                     """
                 }
             }
@@ -155,11 +174,13 @@ pipeline {
                                 git config user.name "Jenkins CI"
                                 
                                 git add topps/order-gateway/uat/deployment.yml
+                                git add topps/order-gateway-worker/uat/deployment.yml
+                                git add topps/order-gateway-beat/uat/deployment.yml
 
                                 if git diff --staged --quiet; then
                                     echo "No changes to commit"
                                 else
-                                    git commit -m "Update order-gateway deployment image tag to ${IMAGE_TAG}"
+                                    git commit -m "Update order-gateway, worker and beat deployment image tag to ${IMAGE_TAG}"
 
                                     git config credential.helper '!f() { echo "username=\$GIT_USERNAME"; echo "password=\$GIT_PASSWORD"; }; f'
 
