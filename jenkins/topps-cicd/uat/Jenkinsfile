@@ -122,35 +122,34 @@ pipeline {
                 dir('gitops-ack') {
                     sh """
                         // Function to update image tag in a file
-                        update_image_tag() {
-                            local file=\$1
-                            local pattern="image:[[:space:]]*\${ACR_VPC_REGISTRY}/\${ACR_NAMESPACE}/\${ACR_REPO}:"
-                            local replacement="image: \${ACR_VPC_REGISTRY}/\${ACR_NAMESPACE}/\${ACR_REPO}:\${IMAGE_TAG}"
+                        IFS=',' read -ra FILES <<< "$DEPLOYMENT_FILES"
+                        
+                        for file in "${FILES[@]}"; do
+                            echo "Processing: $file"
                             
-                            if ! grep -qE "\${pattern}\s*\S*" "\$file"; then
-                                echo "ERROR: Expected image pattern not found in \$file"
+                            # Check if file exists
+                            if [ ! -f "$file" ]; then
+                                echo "ERROR: File not found: $file"
                                 exit 1
                             fi
-
-                            sed -i "s|\${pattern}\S*|\${replacement}|g" "\$file"
                             
-                            if ! grep -q "\${ACR_VPC_REGISTRY}/\${ACR_NAMESPACE}/\${ACR_REPO}:\${IMAGE_TAG}" "\$file"; then
-                                echo "ERROR: Image tag replacement failed in \$file"
+                            # Verify original image pattern exists
+                            if ! grep -q "$ACR_VPC_REGISTRY/$ACR_NAMESPACE/$ACR_REPO:" "$file"; then
+                                echo "ERROR: Expected image pattern not found in $file"
                                 exit 1
                             fi
-                        }
-
-                        # Update all deployment files
-                        for file in \$(echo "\${DEPLOYMENT_FILES}" | tr ',' '\n'); do
-                            echo "Updating image tag in: \$file"
-                            if [ -f "\$file" ]; then
-                                update_image_tag "\$file"
-                                echo "Updated: \$file"
-                                grep 'image:' "\$file"
-                            else
-                                echo "ERROR: File not found: \$file"
+                            
+                            # Update image tag using sed
+                            sed -i "s|\\(image:[[:space:]]*${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:\\)[^[:space:]]*|\\1${IMAGE_TAG}|g" "$file"
+                            
+                            # Verify replacement was successful
+                            if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG}" "$file"; then
+                                echo "ERROR: Image tag replacement failed in $file"
                                 exit 1
                             fi
+                            
+                            echo "Updated: $file"
+                            grep 'image:' "$file"
                         done
                         
                         echo "All deployment files verified successfully"
