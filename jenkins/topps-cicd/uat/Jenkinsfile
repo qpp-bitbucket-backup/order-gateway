@@ -121,37 +121,57 @@ pipeline {
             steps {
                 dir('gitops-ack') {
                     sh """
-                        // Function to update image tag in a file
-                        IFS=',' read -ra FILES <<< "$DEPLOYMENT_FILES"
+                        // Process first file
+                        FILE1=topps/order-gateway/uat/deployment.yml
+                        echo "Processing: ${FILE1}"
+                        if [ ! -f "${FILE1}" ]; then
+                            echo "ERROR: File not found: ${FILE1}"
+                            exit 1
+                        fi
+                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:" "${FILE1}"; then
+                            echo "ERROR: Expected image pattern not found in ${FILE1}"
+                            exit 1
+                        fi
+                        sed -i "s|\\(image:[[:space:]]*${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:\\)[^[:space:]]*|\\1${IMAGE_TAG}|g" "${FILE1}"
+                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG}" "${FILE1}"; then
+                            echo "ERROR: Image tag replacement failed in ${FILE1}"
+                            exit 1
+                        fi
+                        echo "Updated: ${FILE1}"
                         
-                        for file in "${FILES[@]}"; do
-                            echo "Processing: $file"
-                            
-                            # Check if file exists
-                            if [ ! -f "$file" ]; then
-                                echo "ERROR: File not found: $file"
-                                exit 1
-                            fi
-                            
-                            # Verify original image pattern exists
-                            if ! grep -q "$ACR_VPC_REGISTRY/$ACR_NAMESPACE/$ACR_REPO:" "$file"; then
-                                echo "ERROR: Expected image pattern not found in $file"
-                                exit 1
-                            fi
-                            
-                            # Update image tag using sed
-                            sed -i "s|\\(image:[[:space:]]*${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:\\)[^[:space:]]*|\\1${IMAGE_TAG}|g" "$file"
-                            
-                            # Verify replacement was successful
-                            if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG}" "$file"; then
-                                echo "ERROR: Image tag replacement failed in $file"
-                                exit 1
-                            fi
-                            
-                            echo "Updated: $file"
-                            grep 'image:' "$file"
-                        done
+                        // Process second file
+                        FILE2=topps/order-gateway-worker/uat/deployment.yml
+                        echo "Processing: ${FILE2}"
+                        if [ ! -f "${FILE2}" ]; then
+                            echo "ERROR: File not found: ${FILE2}"
+                            exit 1
+                        fi
+                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:" "${FILE2}"; then
+                            echo "ERROR: Expected image pattern not found in ${FILE2}"
+                            exit 1
+                        fi
+                        sed -i "s|\\(image:[[:space:]]*${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:\\)[^[:space:]]*|\\1${IMAGE_TAG}|g" "${FILE2}"
+                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG}" "${FILE2}"; then
+                            echo "ERROR: Image tag replacement failed in ${FILE2}"
+                            exit 1
+                        fi
+                        echo "Updated: ${FILE2}"
                         
+                        // Process third file
+                        FILE3=topps/order-gateway-beat/uat/deployment.yml
+                        echo "Processing: ${FILE3}"
+                        if [ ! -f "${FILE3}" ]; then
+                            echo "ERROR: File not found: ${FILE3}"
+                            exit 1
+                        fi
+                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:" "${FILE3}"; then
+                            echo "ERROR: Expected image pattern not found in ${FILE3}"
+                            exit 1
+                        fi
+                        sed -i "s|\\(image:[[:space:]]*${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:\\)[^[:space:]]*|\\1${IMAGE_TAG}|g" "${FILE3}"
+                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG}" "${FILE3}"; then
+                            echo "ERROR: Image tag replacement failed in ${FILE3}"
+                            exit 1
                         echo "All deployment files verified successfully"
                     """
                 }
