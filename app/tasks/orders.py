@@ -176,7 +176,7 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
                 _mark_order_failed(order_id,  "No delivery address returned by OMS")
                 return False
 
-            order.status = OrderStatus.PROCESSING
+            order.status = OrderStatus.VALIDATED
             session.add(order)
             session.commit()
 
@@ -222,7 +222,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             if not can_transition(order.status, OrderStatus.PROCESSING):
                 logger.error(
                     f"[Celery] Invalid state transition for order {order_id}: "
-                    f"{order.status.value} -> {OrderStatus.PRINTREADY.value}"
+                    f"{order.status.value} -> {OrderStatus.PROCESSING.value}"
                 )
                 return False
 
