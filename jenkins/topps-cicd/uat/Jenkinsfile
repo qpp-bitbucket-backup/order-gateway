@@ -16,11 +16,10 @@ pipeline {
         ACR_NAMESPACE  = 'uat'
         ACR_REPO       = 'order-gateway'
 
-        // DEPLOYMENT_FILE = 'topps/order-gateway/uat/deployment.yml, topps/order-gateway-worker/uat/deployment.yml, topps/order-gateway-beat/uat/beat_deployment.yml'
-        FILE1='topps/order-gateway/uat/deployment.yml'
-        FILE2='topps/order-gateway-worker/uat/deployment.yml'
-        FILE3='topps/order-gateway-beat/uat/deployment.yml'
+        DEPLOYMENT_FILE1 = 'topps/order-gateway/uat/deployment.yml'
 
+        DEPLOYMENT_FILE2 = 'topps/order-gateway-worker/uat/deployment.yml'
+        DEPLOYMENT_FILE3 = 'topps/order-gateway-beat/uat/deployment.yml'
     }
 
     stages {
@@ -121,62 +120,54 @@ pipeline {
             }
         }
 
-        stage('Update Deployment Image Tag - UAT: order-gateway,worker and beat') {
+        stage('Update Deployment Image Tag - topps/order-gateway/uat') {
             steps {
                 dir('gitops-ack') {
                     sh """
-                        // Process first file
+                        echo "update DEPLOYMENT_FILE1"
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:' ${env.DEPLOYMENT_FILE1}; then
+                            echo "ERROR: Expected image pattern not found in ${env.DEPLOYMENT_FILE1}"
+                            exit 1
+                        fi
+
+                        sed -i 's|\\(image:[[:space:]]*${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:\\)[^[:space:]]*|\\1${env.IMAGE_TAG}|g' ${env.DEPLOYMENT_FILE1}
                         
-                        echo "Processing: ${FILE1}"
-                        if [ ! -f "${FILE1}" ]; then
-                            echo "ERROR: File not found: ${FILE1}"
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}' ${env.DEPLOYMENT_FILE1}; then
+                            echo "ERROR: Image tag replacement failed! Please check ${env.DEPLOYMENT_FILE1}"
                             exit 1
                         fi
-                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:" "${FILE1}"; then
-                            echo "ERROR: Expected image pattern not found in ${FILE1}"
-                            exit 1
-                        fi
-                        sed -i "s|\\(image:[[:space:]]*${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:\\)[^[:space:]]*|\\1${IMAGE_TAG}|g" "${FILE1}"
-                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG}" "${FILE1}"; then
-                            echo "ERROR: Image tag replacement failed in ${FILE1}"
-                            exit 1
-                        fi
-                        echo "Updated: ${FILE1}"
                         
-                        // Process second file
+                        echo "update DEPLOYMENT_FILE2"
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:' ${env.DEPLOYMENT_FILE2}; then
+                            echo "ERROR: Expected image pattern not found in ${env.DEPLOYMENT_FILE2}"
+                            exit 1
+                        fi
+
+                        sed -i 's|\\(image:[[:space:]]*${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:\\)[^[:space:]]*|\\1${env.IMAGE_TAG}|g' ${env.DEPLOYMENT_FILE2}
                         
-                        echo "Processing: ${FILE2}"
-                        if [ ! -f "${FILE2}" ]; then
-                            echo "ERROR: File not found: ${FILE2}"
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}' ${env.DEPLOYMENT_FILE2}; then
+                            echo "ERROR: Image tag replacement failed! Please check ${env.DEPLOYMENT_FILE2}"
+                            exit 1
+                        fi                        
+
+                        echo "update DEPLOYMENT_FILE3"
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:' ${env.DEPLOYMENT_FILE3}; then
+                            echo "ERROR: Expected image pattern not found in ${env.DEPLOYMENT_FILE3}"
                             exit 1
                         fi
-                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:" "${FILE2}"; then
-                            echo "ERROR: Expected image pattern not found in ${FILE2}"
-                            exit 1
-                        fi
-                        sed -i "s|\\(image:[[:space:]]*${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:\\)[^[:space:]]*|\\1${IMAGE_TAG}|g" "${FILE2}"
-                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG}" "${FILE2}"; then
-                            echo "ERROR: Image tag replacement failed in ${FILE2}"
-                            exit 1
-                        fi
-                        echo "Updated: ${FILE2}"
+
+                        sed -i 's|\\(image:[[:space:]]*${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:\\)[^[:space:]]*|\\1${env.IMAGE_TAG}|g' ${env.DEPLOYMENT_FILE3}
                         
-                        // Process third file
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}' ${env.DEPLOYMENT_FILE3}; then
+                            echo "ERROR: Image tag replacement failed! Please check ${env.DEPLOYMENT_FILE3}"
+                            exit 1
+                        fi
                         
-                        echo "Processing: ${FILE3}"
-                        if [ ! -f "${FILE3}" ]; then
-                            echo "ERROR: File not found: ${FILE3}"
-                            exit 1
-                        fi
-                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:" "${FILE3}"; then
-                            echo "ERROR: Expected image pattern not found in ${FILE3}"
-                            exit 1
-                        fi
-                        sed -i "s|\\(image:[[:space:]]*${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:\\)[^[:space:]]*|\\1${IMAGE_TAG}|g" "${FILE3}"
-                        if ! grep -q "${ACR_VPC_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG}" "${FILE3}"; then
-                            echo "ERROR: Image tag replacement failed in ${FILE3}"
-                            exit 1
-                        echo "All deployment files verified successfully"
+
+                        echo "Verified: image tag updated successfully"
+                        grep 'image:' ${env.DEPLOYMENT_FILE1}
+                        grep 'image:' ${env.DEPLOYMENT_FILE2}
+                        grep 'image:' ${env.DEPLOYMENT_FILE3}
                     """
                 }
             }
@@ -198,12 +189,12 @@ pipeline {
                                 
                                 git add topps/order-gateway/uat/deployment.yml
                                 git add topps/order-gateway-worker/uat/deployment.yml
-                                git add topps/order-gateway-beat/uat/deployment.yml
+                                git add topps/order-gateway-beat/uat/deployment.yml                                
 
                                 if git diff --staged --quiet; then
                                     echo "No changes to commit"
                                 else
-                                    git commit -m "Update order-gateway, worker and beat deployment image tag to ${IMAGE_TAG}"
+                                    git commit -m "Update order-gateway deployment image tag to ${IMAGE_TAG}"
 
                                     git config credential.helper '!f() { echo "username=\$GIT_USERNAME"; echo "password=\$GIT_PASSWORD"; }; f'
 
