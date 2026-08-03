@@ -13,9 +13,14 @@ from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QU
 from app.models.order import Order, OrderStatus, can_transition
 from app.services.file import file_service
 from app.services.client import client_service
-from app.services.oms import oms_service
+from app.services.oms import oms_service, OMSRetryableError
 
 logger = logging.getLogger(__name__)
+
+
+def _exponential_backoff(base: int, retry_count: int, cap: int) -> int:
+    """Calculate exponential backoff delay: min(base * 2^retry_count, cap)."""
+    return min(base * (2 ** retry_count), cap)
 
 
 @celery_app.task(bind=True, name="tasks.orders.publish_order", queue=QUEUE_ORDER_PUBLISHING)
@@ -89,8 +94,12 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                                     _mark_order_failed(order_id,"Cannot split PDF file")
                                     logger.error(f"File: [{file_url}] PDF split failed") 
                                     return True
-                            else:
+                            elif result.lower().endswith((".jpg", ".jpeg", ".png")):
                                 page_files = [result]
+                            else:
+                                _mark_order_failed(order_id, f"Unsupported file format: {file_url}")
+                                logger.error(f"File: [{file_url}] unsupported format, only pdf/jpg/png are supported")
+                                return True
 
                             for page_file in page_files:
                                 upload_result = file_service.upload_to_qpmn(page_file, store_key)
@@ -168,8 +177,38 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
             session.commit()
             logger.info(f"[Celery] Order {order_id} validating started")
 
-            # Fetch addresses from OMS
-            addresses = oms_service.fetch_order_addresses(order_id, session)
+            # Fetch addresses from OMS (with retry on 503/timeout)
+            try:
+                addresses = oms_service.fetch_order_addresses(order_id, session)
+            except OMSRetryableError as oms_exc:
+                retry_count = order_data.get("_oms_retry_count", 0)
+                max_retries = settings.OMS_VALIDATE_RETRY_COUNT
+                base_delay = settings.OMS_VALIDATE_RETRY_COUNTDOWN
+                max_delay = settings.OMS_VALIDATE_RETRY_MAX_COUNTDOWN
+                if retry_count < max_retries:
+                    countdown = _exponential_backoff(base_delay, retry_count, max_delay)
+                    order_data["_oms_retry_count"] = retry_count + 1
+                    logger.warning(
+                        f"[Celery] OMS retryable error for order {order_id} "
+                        f"(attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s: {oms_exc}"
+                    )
+                    _append_order_log(
+                        order,
+                        "order_oms_retry",
+                        f"OMS retryable error (attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s: {oms_exc}",
+                    )
+                    session.add(order)
+                    session.commit()
+                    validate_order.apply_async(args=[order_data], countdown=countdown)
+                    return True
+                else:
+                    logger.error(
+                        f"[Celery] OMS retryable error for order {order_id} "
+                        f"after {max_retries} attempts, marking as FAILED: {oms_exc}"
+                    )
+                    _mark_order_failed(order_id, f"OMS API failed after {max_retries} retries: {oms_exc}")
+                    return False
+
             logger.info(f"[Celery] OMS addresses for order {order_id}: {addresses}")
 
             if not addresses.get("delivery"):
@@ -238,18 +277,39 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             store_key = client_service.get_store_key_by_id(order.store_id)
             api_url = f"{settings.QPMN_API_URL}/store/orders"
             headers = {"Authorization": f"Basic {store_key}"}
+            max_retries = settings.QPMN_PUSH_RETRY_COUNT
+            base_delay = settings.QPMN_PUSH_RETRY_COUNTDOWN
+            max_delay = settings.QPMN_PUSH_RETRY_MAX_COUNTDOWN
+            retry_count = order_data.get("_qpmn_retry_count", 0)
+
             try:
                 with httpx.Client(timeout=30.0) as client:
                     response = client.post(api_url, json=payload, headers=headers)
 
-                # Handle timeout or 503 - retry with 15 min delay
+                # Handle 503 - retry with delay
                 if response.status_code == 503:
-                    logger.warning(f"[Celery] QPMN returned 503 for order {order_id}, retrying in 15 minutes")
-                    _append_order_log(order, "order_push_retry", "QPMN returned 503, retrying in 15 minutes")
-                    session.add(order)
-                    session.commit()
-                    push_order.apply_async(args=[order_data], countdown=900)  # 15 minutes = 900 seconds
-                    return True
+                    if retry_count < max_retries:
+                        countdown = _exponential_backoff(base_delay, retry_count, max_delay)
+                        order_data["_qpmn_retry_count"] = retry_count + 1
+                        logger.warning(
+                            f"[Celery] QPMN returned 503 for order {order_id} "
+                            f"(attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s"
+                        )
+                        _append_order_log(
+                            order, "order_push_retry",
+                            f"QPMN returned 503 (attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s",
+                        )
+                        session.add(order)
+                        session.commit()
+                        push_order.apply_async(args=[order_data], countdown=countdown)
+                        return True
+                    else:
+                        logger.error(
+                            f"[Celery] QPMN returned 503 for order {order_id} "
+                            f"after {max_retries} attempts, marking as FAILED"
+                        )
+                        _mark_order_failed(order_id, f"QPMN returned 503 after {max_retries} retries")
+                        return False
 
                 result = response.json()
                 success = result.get("success", False)
@@ -261,7 +321,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     _append_order_log(order, "order_push_success", "Order pushed to QPMN successfully")
                     session.add(order)
                     session.commit()
-                    logger.info(f"[Celery] Order {order_id} pushed to QPMN successfully, status -> PRINTREADY")
+                    logger.info(f"[Celery] Order {order_id} pushed to QPMN successfully, status -> PROCESSING")
                 else:
                     # Order push failed - mark as FAILED and log message
                     error_message = result.get("data", {}).get("message", "Unknown error")
@@ -273,12 +333,28 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     logger.info(f"[Celery] Order {order_id} payload: {payload}")
 
             except httpx.TimeoutException:
-                logger.warning(f"[Celery] QPMN timeout for order {order_id}, retrying in 15 minutes")
-                _append_order_log(order, "order_push_timeout", "QPMN request timeout, retrying in 15 minutes")
-                session.add(order)
-                session.commit()
-                push_order.apply_async(args=[order_data], countdown=900)  # 15 minutes
-                return True
+                if retry_count < max_retries:
+                    countdown = _exponential_backoff(base_delay, retry_count, max_delay)
+                    order_data["_qpmn_retry_count"] = retry_count + 1
+                    logger.warning(
+                        f"[Celery] QPMN timeout for order {order_id} "
+                        f"(attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s"
+                    )
+                    _append_order_log(
+                        order, "order_push_timeout",
+                        f"QPMN request timeout (attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s",
+                    )
+                    session.add(order)
+                    session.commit()
+                    push_order.apply_async(args=[order_data], countdown=countdown)
+                    return True
+                else:
+                    logger.error(
+                        f"[Celery] QPMN timeout for order {order_id} "
+                        f"after {max_retries} attempts, marking as FAILED"
+                    )
+                    _mark_order_failed(order_id, f"QPMN timeout after {max_retries} retries")
+                    return False
 
             return True
 

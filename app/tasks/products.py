@@ -93,6 +93,8 @@ def sync_products_task(self, store_id: str = None) -> Dict[str, Any]:
 
 
 def format_html_desc(html_text):
+    if not html_text:
+        return None
     html_text = re.sub(r'<style[^>]*>.*?</style>', '', html_text, flags=re.DOTALL)
     
     tree = html.fromstring(html_text)
@@ -117,7 +119,6 @@ def fetch_products_from_qpmn(store_id: str, store_key: str, page: int =1) -> Lis
     api_key = store_key
     
     api_url = f"{settings.QPMN_API_URL}/stores/{store_id}/products"
-    
     logger.info(f"Fetching products from QPMN API: {api_url}")
     
     try:
@@ -208,7 +209,7 @@ def sync_products_to_db(
                 if existing_product:
                     # Update existing product
                     existing_product.product_code = product_code
-                    existing_product.description = format_html_desc(qpmn_product.get("description"))
+                    existing_product.description = format_html_desc(qpmn_product.get("description",""))
                     existing_product.components = qpmn_product.get("components", [])
                     existing_product.is_active = qpmn_product.get("isActive", True)
                     existing_product.updated_at = datetime.utcnow()
@@ -220,7 +221,7 @@ def sync_products_to_db(
                     new_product = Product(
                         product_id=product_id,
                         product_code=product_code,
-                        description=format_html_desc(qpmn_product.get("description")),
+                        description=format_html_desc(qpmn_product.get("description","")),
                         components=qpmn_product.get("components", []),
                         is_active=qpmn_product.get("isActive", True),
                         store_id=store_id,

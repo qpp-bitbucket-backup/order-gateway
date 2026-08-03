@@ -14,6 +14,11 @@ from app.models.order import Order
 logger = logging.getLogger(__name__)
 USE_MOCK = True
 
+
+class OMSRetryableError(Exception):
+    """Raised when OMS API returns a retryable error (503 / timeout)."""
+    pass
+
 class OMSService:
     """Service for interacting with OMS API to retrieve address information."""
 
@@ -41,20 +46,54 @@ class OMSService:
             logger.warning("[OMS] OMS_API_URL is not configured – skipping address fetch.")
             return {"delivery": None, "billing": None}
 
+        payload = {"orderNo": order_id}
+
         # Use mock data when DEBUG is enabled
         if USE_MOCK:
             body = _mock_response(order_id)
         else:
-            url = f"{self.base_url}/order/addresses"
-            payload = {"orderNo": order_id}
+            app_secret = settings.OMS_APP_SECRET
+            body_ciphertext = hub4.aes_encrypt(
+                json.dumps(payload, ensure_ascii=False),
+                app_secret,
+            )
 
-            with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-                response = client.post(url, json=payload)
-                response.raise_for_status()
+            params = hub4.build_query_params(
+                method_name=settings.OMS_STATUS_METHOD_NAME,
+                source_app=settings.OMS_SOURCE_APP,
+                interface_type=settings.OMS_INTERFACE_TYPE,
+            )
+            sign = hub4.make_sign(params, body_ciphertext, app_secret)
+
+            # HUB4 spec: URL uses capital "Version", sign uses lowercase "version".
+            url_params: Dict[str, str] = {}
+            for key, value in params.items():
+                url_params["Version" if key == "version" else key] = value
+            url_params["sign"] = sign
+
+            logger.info("[OMS] POST API-001 status=%s orderNo=%s", event_status, order.order_id)
+
+
+            try:
+                with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                    response = client.post(
+                        f"{self.base_url}/order/addresses",
+                        params=url_params,
+                        content=body_ciphertext,
+                        headers={"Content-Type": "text/plain"},
+                    )
+            except httpx.TimeoutException:
+                logger.warning("[OMS] API-001 timeout for order %s", order_id)
+                raise OMSRetryableError(f"OMS API timeout for order {order_id}")
+
+            if response.status_code == 503:
+                logger.warning("[OMS] API-001 returned 503 for order %s", order_id)
+                raise OMSRetryableError(f"OMS API returned 503 for order {order_id}")
+
+            response.raise_for_status()
             body = response.json()
 
         result = {"delivery": None, "billing": None}
-        print(body)
         try:
             if not body.get("success"):
                 logger.warning("[OMS] API returned success=false for order %s: %s", order_id, body)
@@ -250,31 +289,31 @@ def _mock_response(order_id: str) -> dict:
         "data": {
             "deliveryAddress": {
                 "country": "CN",
-                "state": "Zhejiang",
-                "city": "Hangzhou",
-                "address1": "Xixi Shouzuo, Building A, Room 1001",
-                "address2": "Floor 10",
-                "postcode": "310000",
-                "firstName": "San",
-                "lastName": "Zhang",
-                "phone": "0571-88888888",
-                "mobile": "13800138000",
-                "email": "zhangsan@example.com",
-                "company": "ABC Trading Ltd.",
+                "state": "Guangdong",
+                "city": "Dongguan",
+                "address1": "Dongshan Industrial District, Aobeiwei, Zhangmutou",
+                "address2": "",
+                "postcode": "523619",
+                "firstName": "Topps",
+                "lastName": "Now",
+                "phone": "86-88888888",
+                "mobile": "1888888888",
+                "email": "ivanliyp@qpp.com",
+                "company": "Q P Group Holdings Limited.",
             },
             "billingAddress": {
                 "country": "CN",
-                "state": "Zhejiang",
-                "city": "Hangzhou",
-                "address1": "Xixi Shouzuo, Building B, Room 2001",
-                "address2": "Floor 20",
-                "postcode": "310000",
-                "firstName": "Si",
-                "lastName": "Li",
-                "phone": "0571-88888888",
-                "mobile": "13900139000",
-                "email": "lisi@example.com",
-                "company": "ABC Trading Ltd.",
+                "state": "Guangdong",
+                "city": "Dongguan",
+                "address1": "Dongshan Industrial District, Aobeiwei, Zhangmutou",
+                "address2": "",
+                "postcode": "523619",
+                "firstName": "Topps",
+                "lastName": "Now",
+                "phone": "86-88888888",
+                "mobile": "1888888888",
+                "email": "ivanliyp@qpp.com",
+                "company": "Q P Group Holdings Limited.",
             },
         },
     }
