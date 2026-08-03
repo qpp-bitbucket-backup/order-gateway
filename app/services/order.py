@@ -317,6 +317,7 @@ class OrderService:
             "items": line_items,    
             "currency": self.fetch_currency_from_qpmn(order.store_id),
             "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
+            "paymentMethod": settings.QPMN_PAYMENT_METHOD
         }
 
         # Query addresses for this order

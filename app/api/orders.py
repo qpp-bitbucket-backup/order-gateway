@@ -61,6 +61,30 @@ def _log_response(endpoint: str, response: dict):
         )
 
 
+# Mapping from internal OrderStatus to external status exposed via API
+_EXTERNAL_STATUS_MAP: dict = {
+    OrderStatus.RECEIVED: "received",
+    OrderStatus.PENDING: "received",
+    OrderStatus.VALIDATED: "dataready",
+    OrderStatus.PROCESSING: "dataready",
+    OrderStatus.PRINTREADY: "printready",
+    OrderStatus.PRINTED: "printed",
+    OrderStatus.SHIPPED: "shipped",
+    OrderStatus.ERRORED: "error",
+    OrderStatus.CANCELLED: "cancelled",
+    OrderStatus.FAILED: "error",
+}
+
+
+def _enrich_order_data_with_status(order_data: Optional[dict], status: OrderStatus) -> Optional[dict]:
+    """Return a copy of *order_data* with ``status`` injected as external value."""
+    if order_data is None:
+        return {"status": _EXTERNAL_STATUS_MAP.get(status, status.value)}
+    enriched = dict(order_data)
+    enriched["status"] = _EXTERNAL_STATUS_MAP.get(status, status.value)
+    return enriched
+
+
 def is_file_accessible(url: str) -> bool:
     """
     Check whether a file URL is reachable without downloading its full content.
@@ -260,7 +284,7 @@ def submit_order(
             id=order.order_id,
             destination=order.destination,
             source=order.source,
-            orderData=order.order_data,
+            orderData=_enrich_order_data_with_status(order.order_data, order.status),
             version=order.version,
         )
 
@@ -305,7 +329,7 @@ def get_all_orders(
                 id=order.order_id,
                 destination=order.destination,
                 source=order.source,
-                orderData=order.order_data,
+                orderData=_enrich_order_data_with_status(order.order_data, order.status),
             )
             for order in orders
         ]
@@ -354,7 +378,7 @@ def get_order_by_id(
             id=order.order_id,
             destination=order.destination,
             source=order.source,
-            orderData=order.order_data,
+            orderData=_enrich_order_data_with_status(order.order_data, order.status),
             version=order.version,
         )
 

@@ -76,8 +76,12 @@ class Settings(BaseSettings):
     CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES: int = 5  # Sync products every N minutes
 
     # QPMN API Configuration
-    QPMN_API_URL: str = "https://api.qpmn.com/v1"
+    QPMN_API_URL: str = "https://stage.qpmarketnetwork.com/cgp-rest/ap"
     QPMN_API_KEY: str = ""
+    QPMN_PUSH_RETRY_COUNT: int = 5        # Max retry attempts when QPMN returns 503/timeout
+    QPMN_PUSH_RETRY_COUNTDOWN: int = 900   # Base delay in seconds for exponential backoff
+    QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
+    QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
 
     # PDF Processing Configuration
     MODIFY_PDF_RESOLUTION: bool = False
@@ -86,6 +90,9 @@ class Settings(BaseSettings):
 
     # OMS API Configuration
     OMS_API_URL: str = ""
+    OMS_VALIDATE_RETRY_COUNT: int = 5       # Max retry attempts when OMS returns 503/timeout
+    OMS_VALIDATE_RETRY_COUNTDOWN: int = 300  # Base delay in seconds for exponential backoff
+    OMS_VALIDATE_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
 
     # Alibaba Cloud OSS Configuration
     OSS_ACCESS_KEY_ID: str = "your-oss-access-key-id"
