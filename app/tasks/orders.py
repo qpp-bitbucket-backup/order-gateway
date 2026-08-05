@@ -108,15 +108,16 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                                     logger.error(f"File: [{page_file}] upload failed")
                                     return True
                                 item_files.append(upload_result)
-                            uploaded_files[f"{sku}-{file_index}"]= item_files
-                            file_index+=1
-                            file_quantity += len(item_files)
+                            uploaded_files.setdefault(f"{sku}-{file_index}", []).extend(item_files)
+                            # uploaded_files[f"{sku}-{file_index}"] += item_files
+                            
                         except Exception as file_err:
                             logger.error(
                                 f"[Celery] Failed to process file {file_url}: {file_err}",
                                 exc_info=True,
                             )
-
+                    file_index+=1
+                    file_quantity += len(item_files)
                 if uploaded_files:
                     order.files = uploaded_files
                     session.add(order)

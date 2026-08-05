@@ -578,6 +578,12 @@
             "items": {
               "$ref": "#/components/schemas/Shipment"
             }
+          },
+          "status": {
+            "type": "string",
+            "description": "Order status (read-only, returned in responses only). Mapping: received/pending→received, validated/processing→dataready, printready→printready, printed→printed, shipped→shipped, errored/failed→error, cancelled→cancelled.",
+            "enum": ["received", "dataready", "printready", "printed", "shipped", "error", "cancelled"],
+            "readOnly": true
           }
         }
       },
