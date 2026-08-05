@@ -12,7 +12,7 @@ from app.models.address import Address, AddressType
 from app.models.order import Order
 
 logger = logging.getLogger(__name__)
-USE_MOCK = True
+USE_MOCK = False
 
 
 class OMSRetryableError(Exception):
@@ -71,13 +71,13 @@ class OMSService:
                 url_params["Version" if key == "version" else key] = value
             url_params["sign"] = sign
 
-            logger.info("[OMS] POST API-001 status=%s orderNo=%s", event_status, order.order_id)
+            logger.info("[OMS] POST API-001 orderNo=%s", order_id)
 
 
             try:
                 with httpx.Client(timeout=30.0, follow_redirects=True) as client:
                     response = client.post(
-                        f"{self.base_url}/order/addresses",
+                        f"{self.base_url}/api/logistics",
                         params=url_params,
                         content=body_ciphertext,
                         headers={"Content-Type": "text/plain"},
@@ -92,7 +92,6 @@ class OMSService:
 
             response.raise_for_status()
             body = response.json()
-
         result = {"delivery": None, "billing": None}
         try:
             if not body.get("success"):
@@ -204,7 +203,7 @@ class OMSService:
 
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = client.post(
-                self.base_url,
+                f"{self.base_url}/api/order/status",
                 params=url_params,
                 content=body_ciphertext,
                 headers={"Content-Type": "text/plain"},
