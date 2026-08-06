@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 
 from app.core.database import get_session
 from app.models.client import Client
-from app.models.order import Order, can_transition, EVENT_STATUS_MAP
+from app.models.order import Order, can_transition, EVENT_STATUS_MAP, OMS_STATUS_MAP
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.schemas.webhook import QpmnStatusWebhookRequest, WebhookResponse
 from app.tasks.notifications import notify_oms, notify_vfs
@@ -171,6 +171,7 @@ def receive_order_status(
     shipments_data = (
         [s.model_dump() for s in order_event.shipments] if order_event.shipments else None
     )
+    oms_status = OMS_STATUS_MAP[new_status]
     oms_outbound_log = WebhookLog(
         direction=WebhookDirection.OUTBOUND,
         source="oms",
@@ -180,7 +181,7 @@ def receive_order_status(
         event_status=effective_status,
         payload={
             "orderNo": order.order_id,
-            "status": new_status.value,
+            "status": oms_status,
             "shipments": shipments_data or [],
         },
         process_status=WebhookProcessStatus.RECEIVED,
@@ -192,7 +193,7 @@ def receive_order_status(
     notify_oms.delay(
         webhook_log_id=oms_outbound_log.id,
         order_id=order.order_id,
-        event_status=new_status.value,
+        event_status=oms_status,
         shipments=shipments_data,
     )
 
