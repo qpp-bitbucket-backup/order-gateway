@@ -80,6 +80,7 @@ def notify_oms(
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
                 log.processed_at = datetime.now(timezone.utc)
+                log.error_message = None
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] OMS notified for order %s", order_id)
