@@ -7,6 +7,8 @@ class WebhookShipment(BaseModel):
 
     trackingNumber: Optional[str] = Field(None, description="Carrier tracking number")
     carrierName: Optional[str] = Field(None, description="Carrier name")
+    service: Optional[str] = Field(None, description="Logistics service type")
+    trackingUrl: Optional[str] = Field(None, description="Tracking URL")
     shipDate: Optional[str] = Field(None, description="Ship date (ISO 8601 string)")
 
 
