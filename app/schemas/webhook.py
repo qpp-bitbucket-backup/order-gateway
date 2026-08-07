@@ -1,72 +1,56 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 
-class WebhookShipment(BaseModel):
-    """Shipment details carried by a QPMN status webhook."""
+class QpmnShipmentItem(BaseModel):
+    """Per-item quantity within a shipment (QPMN webhook spec §5.4.2)."""
 
+    itemId: str = Field(..., description="Store retail order item id")
+    quantity: int = Field(..., description="Quantity shipped")
+
+
+class QpmnWebhookShipment(BaseModel):
+    """Shipment object — shared shape for ``order_item_*``'s embedded
+    ``shipments[]`` (§5.4.1) and the standalone ``package_shipped`` event
+    body (§5.4.2)."""
+
+    id: Optional[int] = Field(None, description="Shipment id")
+    orderId: Optional[int] = Field(None, description="Store retail order id (QPMN's own order id)")
     trackingNumber: Optional[str] = Field(None, description="Carrier tracking number")
-    carrierName: Optional[str] = Field(None, description="Carrier name")
-    service: Optional[str] = Field(None, description="Logistics service type")
     trackingUrl: Optional[str] = Field(None, description="Tracking URL")
-    shipDate: Optional[str] = Field(None, description="Ship date (ISO 8601 string)")
+    company: Optional[str] = Field(None, description="Shipping carrier")
+    shipDate: Optional[int] = Field(None, description="Ship date, epoch milliseconds")
+    items: Optional[List[QpmnShipmentItem]] = Field(None, description="Items included in this shipment")
 
 
-class WebhookOrderItemEvent(BaseModel):
-    """Item-level status carried inside a QPMN order_updated webhook."""
+class QpmnOrderItemEvent(BaseModel):
+    """Body for ``order_item_*`` events (QPMN webhook spec §5.4.1).
 
-    id: Optional[str] = Field(None, description="QPMN's own line item ID")
-    external_id: Optional[str] = Field(None, description="Our OrderItem.sourceItemId")
+    NOTE: ``orderId`` isn't in QPMN's documented spec for this event type
+    (only ``package_shipped``'s payload has it) — assumed here pending QPMN
+    confirming they'll add it (see docs/order-gateway-oms-todo.md #3).
+    """
+
+    id: str = Field(..., description="Store retail order item id")
+    orderId: Optional[int] = Field(None, description="Store retail order id — ASSUMED, unconfirmed by QPMN")
+    externalId: Optional[str] = Field(None, description="Our OrderItem.sourceItemId")
+    unitPrice: Optional[float] = Field(None, description="Unit price")
+    storeProductId: Optional[str] = Field(None, description="Store product id")
+    quantity: Optional[int] = Field(None, description="Quantity")
     status: str = Field(
         ...,
         description=(
-            "QPMN's own item status code (order_item_received/"
-            "order_item_reviewed/order_item_produced/package_shipped/"
-            "order_item_canceled/order_item_failed) — see EVENT_STATUS_MAP "
-            "in app/models/order.py for the mapping to our internal OrderStatus."
+            "QPMN's item status code (order_item_received/order_item_reviewed/"
+            "order_item_produced/order_item_canceled/order_item_failed) — see "
+            "EVENT_STATUS_MAP in app/models/order.py for the mapping to our "
+            "internal OrderStatus."
         ),
     )
+    shipments: Optional[List[QpmnWebhookShipment]] = Field(None, description="Shipments, empty until shipped")
 
 
-class WebhookOrderEvent(BaseModel):
-    """Order payload nested under ``data.order`` in a QPMN order_updated webhook."""
-
-    order_id: Optional[str] = Field(None, description="QPMN's own order ID (maps to our Order.store_order_id)")
-    external_id: Optional[str] = Field(None, description="Our Order.source_order_id, echoed back by QPMN")
-    created: Optional[int] = Field(None, description="Order creation time (unix epoch seconds)")
-    updated: Optional[int] = Field(None, description="Order last-updated time (unix epoch seconds)")
-    items: List[WebhookOrderItemEvent] = Field(..., min_length=1, description="Item-level status updates")
-    shipments: Optional[List[WebhookShipment]] = Field(
-        None, description="Shipment details (present on shipped events)"
-    )
-
-    @model_validator(mode="after")
-    def _require_order_identifier(self):
-        if not self.order_id and not self.external_id:
-            raise ValueError("At least one of order_id or external_id must be provided")
-        return self
-
-
-class WebhookOrderUpdatedData(BaseModel):
-    """``data`` envelope of a QPMN order_updated webhook."""
-
-    order: WebhookOrderEvent
-
-
-class QpmnStatusWebhookRequest(BaseModel):
-    """QPMN order_updated webhook payload, aligned with Printful's Webhook-API shape.
-
-    Order lookup uses ``data.order.order_id`` (QPMN's own ID, → ``store_order_id``)
-    first, falling back to ``data.order.external_id`` (our ``source_order_id``).
-    The order-level status transition is driven by the *last* item in
-    ``data.order.items`` (multi-item partial-shipment rollup is out of scope for now).
-    """
-
-    type: str = Field(..., description="Event type, e.g. 'order_updated'")
-    created: int = Field(..., description="Event time (unix epoch seconds)")
-    retries: int = Field(0, description="Number of previous delivery attempts for this event")
-    store_id: str = Field(..., description="QPMN store ID the event occurred on")
-    data: WebhookOrderUpdatedData
+class QpmnPackageShippedEvent(QpmnWebhookShipment):
+    """Body for ``package_shipped`` events (§5.4.2) — identical shape to ``QpmnWebhookShipment``."""
 
 
 class WebhookResponse(BaseModel):
