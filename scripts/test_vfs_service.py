@@ -1,19 +1,18 @@
 """
-Tests for VFSService.send_status_postback()'s per-order postback + HUB4 auth.
+Tests for VFSService.send_status_postback()'s per-order postback (no auth).
 
 Part 1 (mocked httpx, no network): verifies the per-order postbackAddress
-lookup/skip logic and that the request is HUB4-signed/encrypted correctly.
+lookup/skip logic and that the request is a plain unsigned JSON POST.
 
 Part 2 (real network, opt-in): actually calls Ivan's mock
-(order-uat.popprint.cn/mock/api/order/status) using an existing order —
-confirmed to be the same endpoint OMS uses, requiring the same HUB4 auth.
+(order-uat.popprint.cn/mock/api/order/status/webhook) using an existing
+order — confirmed distinct from the OMS endpoint and to require no auth.
 
 Usage:
     python scripts/test_vfs_service.py                # mocked tests only
     python scripts/test_vfs_service.py --order-id <id> --status shipped  # + real mock call
 """
 import argparse
-import json
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -25,8 +24,6 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-from app.core import hub4
-from app.core.config import settings
 from app.services.vfs import vfs_service
 from app.models.order import Order, OrderStatus
 
@@ -50,8 +47,7 @@ def test_with_postback_address_and_shipments():
 
     def fake_post(url, **kwargs):
         captured["url"] = url
-        captured["params"] = kwargs.get("params")
-        captured["content"] = kwargs.get("content")
+        captured["json"] = kwargs.get("json")
         resp = MagicMock()
         resp.status_code = 200
         resp.json.return_value = {"success": True, "errorCode": None, "errorMsg": None}
@@ -80,16 +76,12 @@ def test_with_postback_address_and_shipments():
     with patch("app.services.vfs.httpx.Client", return_value=mock_client):
         result = vfs_service.send_status_postback(order=order, event_status="shipped", shipments=shipments)
 
-    decrypted_payload = json.loads(hub4.aes_decrypt(captured["content"], settings.OMS_APP_SECRET))
-
     ok = (
         result.get("success") is True
         and captured["url"] == "https://example.com/vfs-callback"
-        and captured["params"]["sign"]
-        and decrypted_payload["shipments"] == shipments
+        and captured["json"]["shipments"] == shipments
     )
-    logger.info(f"[with postbackAddress] posted to {captured['url']}, params={captured['params']}")
-    logger.info(f"[with postbackAddress] decrypted payload={decrypted_payload}")
+    logger.info(f"[with postbackAddress] posted to {captured['url']}, payload={captured['json']}")
     logger.info(f"[with postbackAddress] PASS={ok}")
     return ok
 

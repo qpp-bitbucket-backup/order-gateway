@@ -1,22 +1,14 @@
 """VFS service for sending order status postback webhooks (SiteFlow style)."""
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 import httpx
 
-from app.core.config import settings
-from app.core import hub4
 from app.models.order import Order
 
 logger = logging.getLogger(__name__)
 USE_MOCK = False
-
-# HUB4 methodName for VFS postback calls. The mock doesn't actually validate
-# this value (confirmed empirically — any methodName is accepted as long as
-# the signature is valid), but keep it distinct from OMS's for log clarity.
-VFS_METHOD_NAME = "vfs_status_postback"
 
 
 class VFSService:
@@ -36,9 +28,9 @@ class VFSService:
         (docs/system-design-and-postback-investigation.md §8.1). No fallback:
         orders without a postbackAddress are skipped.
 
-        Auth: HUB4, same scheme as OMS API-002 — the VFS mock turned out to
-        be the same endpoint as OMS and requires HUB4 regardless of
-        methodName. Reuses OMS's credentials until VFS gets its own.
+        Auth: none — confirmed empirically. The shared OMS endpoint 401s
+        without HUB4, but the dedicated VFS webhook path accepts plain
+        unsigned JSON.
 
         Returns ``success=False`` on non-retryable failures (4xx, missing
         postbackAddress, business error); raises on 5xx/network so the
@@ -61,22 +53,6 @@ class VFSService:
         if USE_MOCK:
             return _mock_postback_response(order.source_order_id, event_status, {}, payload)
 
-        app_secret = settings.OMS_APP_SECRET
-        body_ciphertext = hub4.aes_encrypt(json.dumps(payload, ensure_ascii=False), app_secret)
-
-        params = hub4.build_query_params(
-            method_name=VFS_METHOD_NAME,
-            source_app=settings.OMS_SOURCE_APP,
-            interface_type=settings.OMS_INTERFACE_TYPE,
-        )
-        sign = hub4.make_sign(params, body_ciphertext, app_secret)
-
-        # HUB4 spec: URL uses capital "Version", sign uses lowercase "version".
-        url_params: Dict[str, str] = {}
-        for key, value in params.items():
-            url_params["Version" if key == "version" else key] = value
-        url_params["sign"] = sign
-
         logger.info(
             "[VFS] POST postback status=%s sourceOrderId=%s url=%s",
             event_status,
@@ -84,15 +60,10 @@ class VFSService:
             postback_url,
         )
 
-        request_headers = {"Content-Type": "text/plain", **url_params}
+        request_headers = {"Content-Type": "application/json"}
 
         with httpx.Client(timeout=15.0, follow_redirects=True) as client:
-            response = client.post(
-                postback_url,
-                params=url_params,
-                content=body_ciphertext,
-                headers={"Content-Type": "text/plain"},
-            )
+            response = client.post(postback_url, json=payload)
 
         # 4xx — business error, do not retry.
         if 400 <= response.status_code < 500:
