@@ -1,4 +1,6 @@
 """QPMN order status webhook endpoints."""
+import hashlib
+import hmac
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -22,32 +24,35 @@ router = APIRouter(
 )
 
 
-def _verify_qpmn_token(session: Session, authorization: Optional[str]) -> Optional[Client]:
-    """Verify the ``Authorization: Basic {token}`` header against a client's ``store_key``.
+def _verify_qpmn_signature(
+    session: Session, store_id: str, raw_body: bytes, signature: Optional[str]
+) -> Optional[Client]:
+    """Verify ``x-qpmn-hmac-sha256`` against ``hex(HMAC-SHA256(key=store_token, message=raw_body))``.
 
-    Each QPMN store has its own authorization token (see QPMN's "店铺授权Token"),
-    stored per-client in ``Client.store_key`` rather than a single shared secret.
-    Returns the matched (active) ``Client`` on success, ``None`` on failure.
+    Per the QPMN webhook push spec (§5.5), the store token used as the HMAC
+    key is the same one issued for calling QPMN's own open API — stored
+    per-client in ``Client.store_key``. Returns the matched (active)
+    ``Client`` on success, ``None`` on failure.
     """
-    if not authorization:
+    if not signature:
         return None
-    parts = authorization.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "basic":
-        return None
-    token = parts[1].strip()
-    if not token:
-        return None
-    return session.exec(
-        select(Client).where(Client.store_key == token, Client.is_active == True)
+    client = session.exec(
+        select(Client).where(Client.store_id == store_id, Client.is_active == True)
     ).first()
+    if not client or not client.store_key:
+        return None
+    expected = hmac.new(client.store_key.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature.lower()):
+        return None
+    return client
 
 
 @router.post("/order-status", response_model=WebhookResponse)
-def receive_order_status(
+async def receive_order_status(
     payload: QpmnStatusWebhookRequest,
     request: Request,
     session: Session = Depends(get_session),
-    authorization: Optional[str] = Header(None),
+    x_qpmn_hmac_sha256: Optional[str] = Header(None, alias="x-qpmn-hmac-sha256"),
 ):
     """
     Receive a QPMN order_updated webhook (aligned with Printful's Webhook-API shape).
@@ -55,7 +60,7 @@ def receive_order_status(
     Processing order:
     1. Insert an inbound ``webhook_log`` (raw payload + headers) — always the
        full raw payload, item-level statuses are never persisted separately.
-    2. Verify the Basic token (result recorded on the log).
+    2. Verify the ``x-qpmn-hmac-sha256`` signature (result recorded on the log).
     3. Look up the order (``data.order.order_id`` → ``data.order.external_id`` fallback).
     4. Derive the effective status from ``data.order.items`` (whichever item's
        status changed drives the order status) and validate the transition.
@@ -63,7 +68,8 @@ def receive_order_status(
     6. Create outbound logs (``source=oms`` / ``source=vfs``) and enqueue
        ``notify_oms`` and ``notify_vfs``.
     """
-    client = _verify_qpmn_token(session, authorization)
+    raw_body = await request.body()
+    client = _verify_qpmn_signature(session, payload.store_id, raw_body, x_qpmn_hmac_sha256)
     signature_valid = client is not None
     headers_dict = {k: v for k, v in request.headers.items()}
 
@@ -95,12 +101,12 @@ def receive_order_status(
     # Auth failure
     if not signature_valid:
         inbound_log.process_status = WebhookProcessStatus.FAILED
-        inbound_log.error_message = "Invalid or missing Authorization token"
+        inbound_log.error_message = "Invalid or missing x-qpmn-hmac-sha256 signature"
         session.add(inbound_log)
         session.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing Authorization token",
+            detail="Invalid or missing x-qpmn-hmac-sha256 signature",
         )
 
     # Look up order: QPMN's own order_id (→ store_order_id) first, then our
