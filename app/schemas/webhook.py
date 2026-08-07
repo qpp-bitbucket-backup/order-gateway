@@ -20,7 +20,7 @@ class WebhookOrderItemEvent(BaseModel):
     status: str = Field(
         ...,
         description=(
-            "QPMN's own item status code (order_item_received/dataready/"
+            "QPMN's own item status code (order_item_received/"
             "order_item_reviewed/order_item_produced/package_shipped/"
             "order_item_canceled/order_item_failed) — see EVENT_STATUS_MAP "
             "in app/models/order.py for the mapping to our internal OrderStatus."
