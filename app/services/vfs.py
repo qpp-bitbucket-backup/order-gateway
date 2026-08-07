@@ -29,33 +29,20 @@ class VFSService:
         shipments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
-        POST an order status postback webhook to VFS.
+        POST an order status postback to VFS.
 
-        Per VFS/Ivan's 2026-08 decision, the postback destination is supplied
-        per-order at order-creation time (``orderData.postbackAddress``, read
-        from ``order.order_data``) rather than a single system-level URL —
-        this deliberately diverges from HP Site Flow's own documented
-        behavior (see docs/system-design-and-postback-investigation.md §8.1,
-        which found real Site Flow does NOT support per-order postback URLs).
-        There is no fallback: an order with no ``postbackAddress`` is skipped.
+        URL comes from ``order.order_data["postbackAddress"]``, set per-order
+        at order creation — diverges from HP Site Flow's documented behavior
+        (docs/system-design-and-postback-investigation.md §8.1). No fallback:
+        orders without a postbackAddress are skipped.
 
-        Authentication: HUB4 (same AES-encrypted-body + signed-query-params
-        scheme as OMS API-002), confirmed empirically against Ivan's mock —
-        it turned out to be the same underlying endpoint as OMS
-        (``order-uat.popprint.cn/mock/api/order/status``), which requires
-        HUB4 auth for any call regardless of methodName. Reuses OMS's app
-        secret/source app/interface type until VFS gets its own credentials.
+        Auth: HUB4, same scheme as OMS API-002 — the VFS mock turned out to
+        be the same endpoint as OMS and requires HUB4 regardless of
+        methodName. Reuses OMS's credentials until VFS gets its own.
 
-        Args:
-            order: The order model instance (uses ``order.order_data["postbackAddress"]``).
-            event_status: External status code (e.g. ``printed``, ``shipped``).
-            shipments: Optional list of shipment dicts (trackingNumber/carrierName/
-                service/trackingUrl/shipDate), included when status is ``shipped``.
-
-        Returns:
-            ``{"success": True/False, ...}``.  Non-retryable failures (4xx,
-            missing postbackAddress, business error) return ``success=False``;
-            transient failures (5xx, network) raise so the caller can retry.
+        Returns ``success=False`` on non-retryable failures (4xx, missing
+        postbackAddress, business error); raises on 5xx/network so the
+        caller can retry.
         """
         postback_url = (order.order_data or {}).get("postbackAddress")
         if not postback_url:

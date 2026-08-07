@@ -113,11 +113,9 @@ STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
 # Reverse lookup: external event status code -> internal status
 EVENT_STATUS_MAP: Dict[str, OrderStatus] = {v: k for k, v in STATUS_EVENT_MAP.items()}
 
-# Internal status -> OMS API-002 status code. Confirmed against Ivan's OMS
-# mock (order-uat.popprint.cn/mock), which only accepts this exact 7-value
-# enum. Distinct from STATUS_EVENT_MAP (QPMN's own order_item_* vocabulary,
-# used for the inbound QPMN webhook) -- QPMN and OMS use different wire
-# vocabularies even though "dataready" happens to overlap.
+# Internal status -> OMS API-002 status code. Distinct from STATUS_EVENT_MAP
+# (QPMN's own vocabulary) -- QPMN and OMS use different wire vocabularies
+# even though "dataready" happens to overlap.
 OMS_STATUS_MAP: Dict[OrderStatus, str] = {
     OrderStatus.RECEIVED: "received",
     OrderStatus.VALIDATED: "dataready",
