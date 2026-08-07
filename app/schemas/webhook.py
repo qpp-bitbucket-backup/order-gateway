@@ -7,6 +7,8 @@ class WebhookShipment(BaseModel):
 
     trackingNumber: Optional[str] = Field(None, description="Carrier tracking number")
     carrierName: Optional[str] = Field(None, description="Carrier name")
+    service: Optional[str] = Field(None, description="Logistics service type")
+    trackingUrl: Optional[str] = Field(None, description="Tracking URL")
     shipDate: Optional[str] = Field(None, description="Ship date (ISO 8601 string)")
 
 
@@ -15,7 +17,15 @@ class WebhookOrderItemEvent(BaseModel):
 
     id: Optional[str] = Field(None, description="QPMN's own line item ID")
     external_id: Optional[str] = Field(None, description="Our OrderItem.sourceItemId")
-    status: str = Field(..., description="Item status code (received/dataready/printready/printed/shipped/cancelled/error)")
+    status: str = Field(
+        ...,
+        description=(
+            "QPMN's own item status code (order_item_received/"
+            "order_item_reviewed/order_item_produced/package_shipped/"
+            "order_item_canceled/order_item_failed) — see EVENT_STATUS_MAP "
+            "in app/models/order.py for the mapping to our internal OrderStatus."
+        ),
+    )
 
 
 class WebhookOrderEvent(BaseModel):

@@ -96,13 +96,13 @@ def can_transition(from_status: OrderStatus, to_status: OrderStatus) -> bool:
 
 # Internal status -> external event status code (QPMN's real Site Flow status
 # vocabulary, not the earlier placeholder strings). Statuses not listed here
-# (PENDING, FAILED) are internal only and never notified.
+# (PENDING, VALIDATED, FAILED) are internal only and never notified — QPMN
+# confirmed it does not send a DataReady event.
 # Note: SHIPPED's "package_shipped" is reported by QPMN via a separate
 # shipment feedback event (发货单反馈), not the same order-status feed as the
 # other rows here — confirm how that arrives before wiring it up.
 STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
     OrderStatus.RECEIVED: "order_item_received",
-    OrderStatus.VALIDATED: "dataready",
     OrderStatus.PRINTREADY: "order_item_reviewed",
     OrderStatus.PRINTED: "order_item_produced",
     OrderStatus.SHIPPED: "package_shipped",
@@ -112,6 +112,19 @@ STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
 
 # Reverse lookup: external event status code -> internal status
 EVENT_STATUS_MAP: Dict[str, OrderStatus] = {v: k for k, v in STATUS_EVENT_MAP.items()}
+
+# Internal status -> OMS API-002 status code. Distinct from STATUS_EVENT_MAP
+# (QPMN's own vocabulary) -- QPMN and OMS use different wire vocabularies
+# even though "dataready" happens to overlap.
+OMS_STATUS_MAP: Dict[OrderStatus, str] = {
+    OrderStatus.RECEIVED: "received",
+    OrderStatus.VALIDATED: "dataready",
+    OrderStatus.PRINTREADY: "printready",
+    OrderStatus.PRINTED: "printed",
+    OrderStatus.SHIPPED: "shipped",
+    OrderStatus.CANCELLED: "cancelled",
+    OrderStatus.ERRORED: "error",
+}
 
 
 class Destination(SQLModel):

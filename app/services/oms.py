@@ -228,8 +228,7 @@ class OMSService:
         # 5xx / network — raise so the Celery task can retry.
         response.raise_for_status()
 
-        decrypted = hub4.aes_decrypt(response.text, app_secret)
-        body = json.loads(decrypted)
+        body = response.json()
 
         if not body.get("success"):
             logger.warning(
@@ -239,7 +238,8 @@ class OMSService:
             )
             return {
                 "success": False,
-                "message": body.get("message", "OMS returned success=false"),
+                "message": body.get("errorMsg", "OMS returned success=false"),
+                "error_code": body.get("errorCode"),
                 "request_headers": request_headers,
                 "request_payload": payload,
             }

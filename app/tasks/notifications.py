@@ -80,6 +80,7 @@ def notify_oms(
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
                 log.processed_at = datetime.now(timezone.utc)
+                log.error_message = None
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] OMS notified for order %s", order_id)
@@ -141,6 +142,7 @@ def notify_vfs(
     webhook_log_id: int,
     order_id: str,
     event_status: str,
+    shipments: Optional[List[Dict[str, Any]]] = None,
 ) -> bool:
     """
     Notify VFS of an order status update via the postback webhook.
@@ -181,6 +183,7 @@ def notify_vfs(
             result = vfs_service.send_status_postback(
                 order=order,
                 event_status=event_status,
+                shipments=shipments,
             )
 
             if result.get("request_headers") is not None:
@@ -191,6 +194,7 @@ def notify_vfs(
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
                 log.processed_at = datetime.now(timezone.utc)
+                log.error_message = None
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] VFS notified for order %s", order_id)
