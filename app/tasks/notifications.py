@@ -33,7 +33,7 @@ def notify_oms(
 
     Success → mark the outbound log ``processed``.
     4xx / business error → mark ``failed`` (no retry).
-    5xx / network error → update ``retry_count`` + ``error_message`` then
+    5xx / network error → update ``retry_count`` + ``details`` then
     re-enqueue itself 15 minutes out (same pattern as ``push_order`` for
     QPMN) — unlike ``notify_vfs``, there's no retry cap; it keeps retrying
     every 15 minutes until OMS accepts it.
@@ -60,7 +60,8 @@ def notify_oms(
             if not order:
                 logger.error("[Celery] Order not found: %s", order_id)
                 log.process_status = WebhookProcessStatus.FAILED
-                log.error_message = "Order not found"
+                log.details = "Order not found"
+                log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
                 return False
@@ -77,8 +78,8 @@ def notify_oms(
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
-                log.processed_at = datetime.now(timezone.utc)
-                log.error_message = None
+                log.details = result.get("response")
+                log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] OMS notified for order %s", order_id)
@@ -86,8 +87,9 @@ def notify_oms(
 
             # Non-retryable failure (4xx, business error, not configured)
             log.process_status = WebhookProcessStatus.FAILED
-            log.error_message = result.get("message", "OMS returned failure")
+            log.details = result.get("message", "OMS returned failure")
             log.retry_count = self.request.retries
+            log.updated_at = datetime.now(timezone.utc)
             session.add(log)
             session.commit()
             logger.warning("[Celery] OMS business error for order %s: %s", order_id, result)
@@ -107,7 +109,8 @@ def notify_oms(
                 ).first()
                 if log:
                     log.retry_count = (log.retry_count or 0) + 1
-                    log.error_message = str(e)[:512]
+                    log.details = str(e)[:512]
+                    log.updated_at = datetime.now(timezone.utc)
                     session.add(log)
                     session.commit()
         except Exception as log_err:
@@ -173,7 +176,8 @@ def notify_vfs(
             if not order:
                 logger.error("[Celery] Order not found: %s", order_id)
                 log.process_status = WebhookProcessStatus.FAILED
-                log.error_message = "Order not found"
+                log.details = "Order not found"
+                log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
                 return False
@@ -189,8 +193,8 @@ def notify_vfs(
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
-                log.processed_at = datetime.now(timezone.utc)
-                log.error_message = None
+                log.details = result.get("response")
+                log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] VFS notified for order %s", order_id)
@@ -198,8 +202,9 @@ def notify_vfs(
 
             # Non-retryable failure (4xx, business error, not configured)
             log.process_status = WebhookProcessStatus.FAILED
-            log.error_message = result.get("message", "VFS postback failed")
+            log.details = result.get("message", "VFS postback failed")
             log.retry_count = self.request.retries
+            log.updated_at = datetime.now(timezone.utc)
             session.add(log)
             session.commit()
             logger.warning("[Celery] VFS postback error for order %s: %s", order_id, result)
@@ -219,9 +224,10 @@ def notify_vfs(
                 ).first()
                 if log:
                     log.retry_count = self.request.retries
-                    log.error_message = str(e)[:512]
+                    log.details = str(e)[:512]
                     if self.request.retries >= self.max_retries:
                         log.process_status = WebhookProcessStatus.FAILED
+                    log.updated_at = datetime.now(timezone.utc)
                     session.add(log)
                     session.commit()
         except Exception as log_err:

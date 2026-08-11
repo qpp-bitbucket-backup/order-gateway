@@ -105,7 +105,8 @@ async def receive_order_status(
     # Auth failure
     if not signature_valid:
         inbound_log.process_status = WebhookProcessStatus.FAILED
-        inbound_log.error_message = "Invalid or missing x-qpmn-hmac-sha256 signature"
+        inbound_log.details = "Invalid or missing x-qpmn-hmac-sha256 signature"
+        inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
         raise HTTPException(
@@ -118,11 +119,13 @@ async def receive_order_status(
     effective_status = x_qpmn_event_type
     new_status = EVENT_STATUS_MAP.get(effective_status) if effective_status else None
     if not new_status:
+        response = WebhookResponse(success=False, message=f"Unmapped event type: '{effective_status}'")
         inbound_log.process_status = WebhookProcessStatus.SKIPPED
-        inbound_log.error_message = f"Unmapped event type: {effective_status}"
+        inbound_log.details = response.model_dump()
+        inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
-        return WebhookResponse(success=False, message=f"Unmapped event type: '{effective_status}'")
+        return response
 
     if is_shipped_event:
         event = QpmnPackageShippedEvent.model_validate(raw_payload)
@@ -133,7 +136,8 @@ async def receive_order_status(
 
     if not order_id_value:
         inbound_log.process_status = WebhookProcessStatus.FAILED
-        inbound_log.error_message = "Missing orderId on event body"
+        inbound_log.details = "Missing orderId on event body"
+        inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
         return WebhookResponse(success=False, message="Missing orderId on event body")
@@ -144,7 +148,8 @@ async def receive_order_status(
 
     if not order:
         inbound_log.process_status = WebhookProcessStatus.FAILED
-        inbound_log.error_message = "Order not found"
+        inbound_log.details = "Order not found"
+        inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
         return WebhookResponse(
@@ -156,23 +161,27 @@ async def receive_order_status(
 
     if not can_transition(order.status, new_status):
         if not is_shipped_event and is_item_event_superseded(order.status, new_status):
-            inbound_log.process_status = WebhookProcessStatus.SKIPPED
-            inbound_log.error_message = f"Superseded: order already at '{order.status.value}', ignoring '{new_status.value}' from another item"
-            session.add(inbound_log)
-            session.commit()
-            return WebhookResponse(
+            response = WebhookResponse(
                 success=True,
                 message=f"Item status recorded; order already at '{order.status.value}', not moved back to '{new_status.value}'",
             )
+            inbound_log.process_status = WebhookProcessStatus.SKIPPED
+            inbound_log.details = response.model_dump()
+            inbound_log.updated_at = datetime.now(timezone.utc)
+            session.add(inbound_log)
+            session.commit()
+            return response
 
-        inbound_log.process_status = WebhookProcessStatus.SKIPPED
-        inbound_log.error_message = f"Invalid transition: {order.status.value} -> {new_status.value}"
-        session.add(inbound_log)
-        session.commit()
-        return WebhookResponse(
+        response = WebhookResponse(
             success=False,
             message=f"Invalid transition: {order.status.value} -> {new_status.value}",
         )
+        inbound_log.process_status = WebhookProcessStatus.SKIPPED
+        inbound_log.details = response.model_dump()
+        inbound_log.updated_at = datetime.now(timezone.utc)
+        session.add(inbound_log)
+        session.commit()
+        return response
 
     # Update order status + append log
     order.status = new_status
@@ -190,8 +199,10 @@ async def receive_order_status(
     session.commit()
 
     # Mark inbound log as processed
+    response = WebhookResponse(success=True, message=f"Status updated to '{new_status.value}'")
     inbound_log.process_status = WebhookProcessStatus.PROCESSED
-    inbound_log.processed_at = datetime.now(timezone.utc)
+    inbound_log.details = response.model_dump()
+    inbound_log.updated_at = datetime.now(timezone.utc)
     session.add(inbound_log)
     session.commit()
 
@@ -248,4 +259,4 @@ async def receive_order_status(
         shipments=shipments_data,
     )
 
-    return WebhookResponse(success=True, message=f"Status updated to '{new_status.value}'")
+    return response

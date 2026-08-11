@@ -103,6 +103,7 @@ class VFSService:
         return {
             "success": True,
             "status_code": response.status_code,
+            "response": body,
             "request_headers": request_headers,
             "request_payload": payload,
         }

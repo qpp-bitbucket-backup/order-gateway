@@ -248,6 +248,7 @@ class OMSService:
         return {
             "success": True,
             "data": body.get("data"),
+            "response": body,
             "request_headers": request_headers,
             "request_payload": payload,
         }
