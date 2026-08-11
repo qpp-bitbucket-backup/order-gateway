@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 
 from app.core.database import get_session
 from app.models.client import Client
-from app.models.order import Order, can_transition, EVENT_STATUS_MAP, OMS_STATUS_MAP
+from app.models.order import Order, can_transition, is_item_event_superseded, EVENT_STATUS_MAP, OMS_STATUS_MAP
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.schemas.webhook import QpmnOrderItemEvent, QpmnPackageShippedEvent, WebhookResponse
 from app.tasks.notifications import notify_oms, notify_vfs
@@ -86,6 +86,7 @@ async def receive_order_status(
 
     is_shipped_event = x_qpmn_event_type == "package_shipped"
     order_id_value: Optional[int] = raw_payload.get("orderId")
+    item_id_value: Optional[str] = None if is_shipped_event else raw_payload.get("id")
 
     # Insert inbound log (raw payload, unchanged regardless of downstream outcome)
     inbound_log = WebhookLog(
@@ -93,6 +94,7 @@ async def receive_order_status(
         source="qpmn",
         order_id="",
         store_order_id=str(order_id_value) if order_id_value is not None else None,
+        store_item_id=str(item_id_value) if item_id_value is not None else None,
         event_status=x_qpmn_event_type,
         payload=raw_payload,
         headers=headers_dict,
@@ -156,6 +158,16 @@ async def receive_order_status(
     inbound_log.order_id = order.order_id
 
     if not can_transition(order.status, new_status):
+        if not is_shipped_event and is_item_event_superseded(order.status, new_status):
+            inbound_log.process_status = WebhookProcessStatus.SKIPPED
+            inbound_log.error_message = f"Superseded: order already at '{order.status.value}', ignoring '{new_status.value}' from another item"
+            session.add(inbound_log)
+            session.commit()
+            return WebhookResponse(
+                success=True,
+                message=f"Item status recorded; order already at '{order.status.value}', not moved back to '{new_status.value}'",
+            )
+
         inbound_log.process_status = WebhookProcessStatus.SKIPPED
         inbound_log.error_message = f"Invalid transition: {order.status.value} -> {new_status.value}"
         session.add(inbound_log)
