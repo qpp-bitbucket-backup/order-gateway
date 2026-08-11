@@ -26,11 +26,12 @@ class WebhookLog(BaseModel, table=True):
     __tablename__ = "webhook_logs"
 
     direction: WebhookDirection = Field(nullable=False, index=True, description="inbound (QPMN -> gateway) or outbound (gateway -> OMS/VFS)")
-    source: str = Field(nullable=False, index=True, max_length=20, description="Counterparty system: qpmn / oms / vfs")
+    source: str = Field(nullable=False, index=True, max_length=20, description="Counterparty system: QPMN / OMS / VFS")
     order_id: Optional[str] = Field(None, index=True, max_length=64, description="Internal order ID")
     source_order_id: Optional[str] = Field(None, index=True, max_length=64, description="External order ID (VFS sourceOrderId / OMS orderNo)")
     store_order_id: Optional[str] = Field(None, index=True, max_length=64, description="Store order ID (QPMN orderId)")
     store_order_item_id: Optional[str] = Field(None, index=True, max_length=64, description="Store order item ID (QPMN order_item id), set for order_item_* events only")
+    event_id: Optional[str] = Field(None, index=True, max_length=128, description="QPMN's x-qpmn-event-id header, used to dedup retried inbound QPMN deliveries")
     event_status: Optional[str] = Field(None, index=True, max_length=32, description="Order status carried by the event")
     payload: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Raw request/response body")
     process_status: WebhookProcessStatus = Field(default=WebhookProcessStatus.RECEIVED, nullable=False, index=True, description="Processing result")
