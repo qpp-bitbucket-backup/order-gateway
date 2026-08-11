@@ -2,10 +2,10 @@
 Test script for publish_order Celery task.
 
 Usage:
-    python test_publish_order.py                          # 用預設 order_id 測試
-    python test_publish_order.py --order-id YOUR_ORDER_ID # 指定 order_id
-    python test_publish_order.py --direct                 # 直接調用函數（不走 Celery）
-    python test_publish_order.py --delay                  # 發送到 broker（需要 RabbitMQ + worker）
+    python publish_order.py                          # 用預設 order_id 測試
+    python publish_order.py --order-id YOUR_ORDER_ID # 指定 order_id
+    python publish_order.py --direct                 # 直接調用函數（不走 Celery）
+    python publish_order.py --delay                  # 發送到 broker（需要 RabbitMQ + worker）
 """
 import os
 import sys
