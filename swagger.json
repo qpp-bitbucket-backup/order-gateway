@@ -329,11 +329,83 @@
         ],
         "responses": {
           "200": {
-            "description": "Order cancelled successfully",
+            "description": "Order cancelled successfully.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CancelledOrderResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found or access denied (wrong store).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteFlowErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "message": "Order with sourceOrderId 'ORD-001' not found or access denied",
+                    "name": "NotFound",
+                    "code": 404
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Order status does not allow cancellation (e.g. already printed, shipped, or cancelled).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteFlowErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "message": "Cannot cancel order with status 'printed'.",
+                    "name": "Conflict",
+                    "code": 409
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "QPMN cancel API call failed. The order was not cancelled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteFlowErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "message": "QPMN cancel API returned 500: Internal Server Error",
+                    "name": "BadGateway",
+                    "code": 502
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error during cancellation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteFlowErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "message": "Order cancellation failed: unexpected database error",
+                    "name": "InternalServerError",
+                    "code": 500
+                  }
                 }
               }
             }
@@ -823,7 +895,51 @@
         "type": "object"
       },
       "CancelledOrderResponse": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Cancellation success status.",
+            "example": true
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable result message.",
+            "example": "Order cancelled successfully"
+          },
+          "order_id": {
+            "type": "string",
+            "description": "The internal order ID of the cancelled order."
+          }
+        }
+      },
+      "SiteFlowErrorResponse": {
+        "type": "object",
+        "description": "HP SiteFlow-compatible error response.",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Always false for errors.",
+            "example": false
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "Human-readable error message."
+              },
+              "name": {
+                "type": "string",
+                "description": "Error name / classifier (e.g. NotFound, Conflict, BadGateway, InternalServerError)."
+              },
+              "code": {
+                "type": "integer",
+                "description": "HTTP status code."
+              }
+            }
+          }
+        }
       },
       "OrderUpdateRequest": {
         "type": "object",
