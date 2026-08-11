@@ -157,6 +157,22 @@ class PlatformOrdersListResponse(BaseModel):
     data: List[PlatformOrderSummary] = Field(..., description="List of order summaries")
 
 
+class MaskedAddress(BaseModel):
+    """Masked address schema for PII protection."""
+    first_name: Optional[str] = Field(None, description="Masked first name")
+    last_name: Optional[str] = Field(None, description="Masked last name")
+    phone: Optional[str] = Field(None, description="Masked phone number")
+    mobile: Optional[str] = Field(None, description="Masked mobile number")
+    email: Optional[str] = Field(None, description="Masked email address")
+    address1: Optional[str] = Field(None, description="Masked street address")
+    address2: Optional[str] = Field(None, description="Masked street address line 2")
+    postcode: Optional[str] = Field(None, description="Masked postal code")
+    city: Optional[str] = Field(None, description="City (not masked)")
+    state: Optional[str] = Field(None, description="State (not masked)")
+    country: Optional[str] = Field(None, description="Country (not masked)")
+    company: Optional[str] = Field(None, description="Masked company name")
+
+
 class PlatformFullOrder(BaseModel):
     """Complete platform order with all fields."""
     id: str = Field(..., alias="_id", description="Internal order ID")
@@ -172,6 +188,8 @@ class PlatformFullOrder(BaseModel):
     storeOrderId: Optional[str] = Field(None, description="Store order ID")
     createdAt: Optional[str] = Field(None, description="Created timestamp")
     updatedAt: Optional[str] = Field(None, description="Updated timestamp")
+    deliveryAddress: Optional[MaskedAddress] = Field(None, description="Latest delivery address with PII masked")
+    billingAddress: Optional[MaskedAddress] = Field(None, description="Latest billing address with PII masked")
 
     class Config:
         populate_by_name = True

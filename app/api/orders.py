@@ -28,10 +28,12 @@ from app.schemas.order import (
     PlatformOrderSummary,
     PlatformOrderDetailsResponse,
     PlatformFullOrder,
+    MaskedAddress,
 )
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
 from app.core.auth_jwt import get_current_user
 from app.models.user import User
+from app.models.address import Address as AddressModel, AddressType
 from app.services.order import order_service
 
 router = APIRouter(
@@ -83,6 +85,52 @@ def _enrich_order_data_with_status(order_data: Optional[dict], status: OrderStat
     enriched = dict(order_data)
     enriched["status"] = _EXTERNAL_STATUS_MAP.get(status, status.value)
     return enriched
+
+
+def _mask_pii(value: Optional[str], visible_chars: int = 2) -> Optional[str]:
+    """Mask a PII string, keeping only the first *visible_chars* characters."""
+    if not value:
+        return value
+    if len(value) <= visible_chars:
+        return value[0] + "***"
+    return value[:visible_chars] + "***"
+
+
+def _mask_email(email: Optional[str]) -> Optional[str]:
+    """Mask email: show first 2 chars of local part, mask the rest."""
+    if not email:
+        return email
+    local, _, domain = email.partition("@")
+    if not domain:
+        return email
+    return _mask_pii(local, 2) + "@" + domain
+
+
+def _mask_postcode(postcode: Optional[str]) -> Optional[str]:
+    """Mask postcode: keep first 3 chars."""
+    if not postcode:
+        return postcode
+    if len(postcode) <= 3:
+        return postcode[0] + "***"
+    return postcode[:3] + "***"
+
+
+def _build_masked_address(addr: AddressModel) -> MaskedAddress:
+    """Build a MaskedAddress from an Address model instance."""
+    return MaskedAddress(
+        first_name=_mask_pii(addr.first_name, 2),
+        last_name=_mask_pii(addr.last_name, 2),
+        phone=_mask_pii(addr.phone, 4),
+        mobile=_mask_pii(addr.mobile, 4),
+        email=_mask_email(addr.email),
+        address1=_mask_pii(addr.address1, 4),
+        address2=_mask_pii(addr.address2, 4),
+        postcode=_mask_postcode(addr.postcode),
+        city=addr.city,
+        state=addr.state,
+        country=addr.country,
+        company=_mask_pii(addr.company, 3),
+    )
 
 
 def is_file_accessible(url: str) -> bool:
@@ -619,6 +667,26 @@ def platform_get_order(
                 detail=f"Order with ID '{order_id}' not found",
             )
 
+        # Fetch the latest delivery and billing address records for this order
+        delivery_address = session.exec(
+            select(AddressModel)
+            .where(
+                (AddressModel.order_id == order.order_id)
+                & (AddressModel.type == AddressType.DELIVERY)
+            )
+            .order_by(AddressModel.created_at.desc())  # type: ignore[union-attr]
+        ).first()
+        billing_address = session.exec(
+            select(AddressModel)
+            .where(
+                (AddressModel.order_id == order.order_id)
+                & (AddressModel.type == AddressType.BILLING)
+            )
+            .order_by(AddressModel.created_at.desc())  # type: ignore[union-attr]
+        ).first()
+        masked_delivery = _build_masked_address(delivery_address) if delivery_address else None
+        masked_billing = _build_masked_address(billing_address) if billing_address else None
+
         full_order = PlatformFullOrder(
             id=order.order_id,
             sourceOrderId=order.source_order_id,
@@ -633,6 +701,8 @@ def platform_get_order(
             storeOrderId=order.store_order_id,
             createdAt=order.created_at.isoformat() if order.created_at else None,
             updatedAt=order.updated_at.isoformat() if order.updated_at else None,
+            deliveryAddress=masked_delivery,
+            billingAddress=masked_billing,
         )
 
         return PlatformOrderDetailsResponse(success=True, order=full_order)
