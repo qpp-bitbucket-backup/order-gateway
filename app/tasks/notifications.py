@@ -72,8 +72,6 @@ def notify_oms(
                 shipments=shipments,
             )
 
-            if result.get("request_headers") is not None:
-                log.headers = result.get("request_headers")
             if result.get("request_payload") is not None:
                 log.payload = result.get("request_payload")
 
@@ -186,8 +184,6 @@ def notify_vfs(
                 shipments=shipments,
             )
 
-            if result.get("request_headers") is not None:
-                log.headers = result.get("request_headers")
             if result.get("request_payload") is not None:
                 log.payload = result.get("request_payload")
 

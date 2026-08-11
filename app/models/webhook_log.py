@@ -33,8 +33,6 @@ class WebhookLog(BaseModel, table=True):
     store_item_id: Optional[str] = Field(None, index=True, max_length=64, description="Store order item ID (QPMN order_item id), set for order_item_* events only")
     event_status: Optional[str] = Field(None, index=True, max_length=32, description="Order status carried by the event")
     payload: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Raw request/response body")
-    headers: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Request headers including signature")
-    signature_valid: Optional[bool] = Field(None, description="Inbound signature/token verification result")
     process_status: WebhookProcessStatus = Field(default=WebhookProcessStatus.RECEIVED, nullable=False, index=True, description="Processing result")
     error_message: Optional[str] = Field(None, max_length=512, description="Failure reason")
     retry_count: int = Field(default=0, nullable=False, description="Delivery retry count (outbound)")

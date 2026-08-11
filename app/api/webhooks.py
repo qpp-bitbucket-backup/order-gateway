@@ -75,7 +75,6 @@ async def receive_order_status(
        ``notify_oms`` and ``notify_vfs``.
     """
     raw_body = await request.body()
-    headers_dict = {k: v for k, v in request.headers.items()}
     client = _verify_qpmn_signature(session, raw_body, x_qpmn_hmac_sha256)
     signature_valid = client is not None
 
@@ -97,8 +96,6 @@ async def receive_order_status(
         store_item_id=str(item_id_value) if item_id_value is not None else None,
         event_status=x_qpmn_event_type,
         payload=raw_payload,
-        headers=headers_dict,
-        signature_valid=signature_valid,
         process_status=WebhookProcessStatus.RECEIVED,
     )
     session.add(inbound_log)
