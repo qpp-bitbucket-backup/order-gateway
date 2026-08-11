@@ -272,11 +272,15 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
 
             # Build payload via order_service (lazy import to avoid circular dependency)
             from app.services.order import order_service
-            payload = order_service.merge_order(session, order_id)
+            payload = order_service.build_push_payload(session, order_id)
 
-            # POST to QPMN /store/orders API
+            # Select API URL based on configured API version
+            use_open_api = settings.QPMN_ORDER_API_VERSION == "open"
+            if use_open_api:
+                api_url = f"{settings.QPMN_OPEN_API_URL}/store/orders"
+            else:
+                api_url = f"{settings.QPMN_API_URL}/store/orders"
             store_key = client_service.get_store_key_by_id(order.store_id)
-            api_url = f"{settings.QPMN_API_URL}/store/orders"
             headers = {"Authorization": f"Basic {store_key}"}
             max_retries = settings.QPMN_PUSH_RETRY_COUNT
             base_delay = settings.QPMN_PUSH_RETRY_COUNTDOWN
@@ -318,7 +322,12 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                 if success:
                     # Order pushed successfully - mark as processing
                     order.status = OrderStatus.PROCESSING
-                    order.store_order_id = result.get("data",{}).get("orderId",None)
+                    # Legacy API returns orderId in data; Open API returns id in data
+                    data = result.get("data", {})
+                    store_order_id = data.get("orderId") or data.get("id")
+                    if not store_order_id and not isinstance(data, dict):
+                        store_order_id = result.get("orderId")
+                    order.store_order_id = str(store_order_id) if store_order_id else None
                     _append_order_log(order, "order_push_success", "Order pushed to QPMN successfully")
                     session.add(order)
                     session.commit()
@@ -326,6 +335,8 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                 else:
                     # Order push failed - mark as FAILED and log message
                     error_message = result.get("data", {}).get("message", "Unknown error")
+                    if not error_message and isinstance(result.get("data"), dict):
+                        error_message = result["data"].get("error", "Unknown error")
                     order.status = OrderStatus.FAILED
                     _append_order_log(order, "order_push_failed", f"QPMN returned success=false: {error_message}")
                     session.add(order)

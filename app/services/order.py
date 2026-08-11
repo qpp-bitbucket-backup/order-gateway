@@ -4,6 +4,7 @@ import os
 import tempfile
 import uuid
 import fitz  # PyMuPDF
+import base64
 import httpx
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
@@ -36,7 +37,21 @@ NON_CANCELLABLE_STATUSES = {
     OrderStatus.PRINTREADY,
     OrderStatus.PRINTED,
     OrderStatus.SHIPPED,
+    OrderStatus.CANCELLED,
 }
+
+
+class OrderNotCancellableError(ValueError):
+    """Raised when the order status does not allow cancellation (HTTP 409)."""
+    pass
+
+
+class QPMNCancelError(ValueError):
+    """Raised when the QPMN cancel API call fails (HTTP 502)."""
+    def __init__(self, message: str, status_code: Optional[int] = None, error: Any = None):
+        super().__init__(message)
+        self.qpmn_status_code = status_code
+        self.qpmn_error = error
 
 
 class OrderService:
@@ -53,12 +68,14 @@ class OrderService:
         page: int = 1,
         pagesize: int = 10,
         statuses: Optional[List[OrderStatus]] = None,
+        source_order_id: Optional[str] = None,
     ) -> Tuple[List[Order], int, int]:
         """
         Retrieve a paginated list of orders.
 
         Args:
             statuses: Optional list of order statuses to filter by (IN clause).
+            source_order_id: Optional fuzzy match on source_order_id (LIKE %text%).
 
         Returns:
             A tuple of (orders, total_count, total_pages).
@@ -68,6 +85,8 @@ class OrderService:
             query = query.where(Order.store_id == store_id)
         if statuses:
             query = query.where(Order.status.in_(statuses))
+        if source_order_id:
+            query = query.where(Order.source_order_id.like(f"%{source_order_id}%"))
 
         # Total count
         total_count = len(session.exec(query).all())
@@ -225,6 +244,92 @@ class OrderService:
         logger.info("[OrderService] Updated order %s fields: %s", order.order_id, changes)
         return order, changes
 
+    def cancel_qpmn_order(self, order: Order) -> Dict[str, Any]:
+        """
+        Call QPMN cancel API to cancel the order on the QPMN side.
+
+        PUT {QPMN_OPEN_API_URL}/store/orders/{store_order_id}/cancel
+        Authorization: Basic {store_token}
+
+        Returns:
+            A dict with keys:
+            - ``success``: True only when QPMN returns HTTP 200 with ``success=true``.
+            - ``status_code``: HTTP status code from QPMN.
+            - ``data``: Response body data (on success).
+            - ``error``: Error message (on failure).
+        """
+        # No store_order_id means the order was never pushed to QPMN,
+        # so there is nothing to cancel on the QPMN side — treat as success.
+        if not order.store_order_id:
+            logger.info("[OrderService] Order %s has no store_order_id (never pushed to QPMN), skip cancel API call", order.order_id)
+            return {"success": True, "status_code": None, "data": None, "skipped": True}
+
+        store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
+        if not store_key:
+            logger.warning("[OrderService] No store_key for order %s, cannot call QPMN cancel API", order.order_id)
+            return {"success": False, "status_code": None, "error": "No store_key configured"}
+
+        api_url = f"{settings.QPMN_OPEN_API_URL}/store/orders/{order.store_order_id}/cancel"
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": "application/json",
+        }
+
+        logger.info(
+            "[OrderService] Calling QPMN cancel API for order %s (store_order_id=%s)",
+            order.order_id,
+            order.store_order_id,
+        )
+
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                response = client.put(api_url, headers=headers)
+        except httpx.TimeoutException:
+            logger.error("[OrderService] QPMN cancel API timeout for order %s", order.order_id)
+            return {"success": False, "status_code": None, "error": "QPMN API timeout"}
+        except Exception as exc:
+            logger.error("[OrderService] QPMN cancel API request failed for order %s: %s", order.order_id, exc)
+            return {"success": False, "status_code": None, "error": str(exc)}
+
+        # Non-200 responses are failures
+        if response.status_code != 200:
+            error_body = None
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            logger.warning(
+                "[OrderService] QPMN cancel API returned %s for order %s: %s",
+                response.status_code,
+                order.order_id,
+                error_body,
+            )
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": error_body,
+            }
+
+        body = response.json()
+        if not body.get("success"):
+            logger.warning(
+                "[OrderService] QPMN cancel API returned success=false for order %s: %s",
+                order.order_id,
+                body,
+            )
+            return {
+                "success": False,
+                "status_code": 200,
+                "error": body,
+            }
+
+        logger.info("[OrderService] QPMN cancel API succeeded for order %s", order.order_id)
+        return {
+            "success": True,
+            "status_code": 200,
+            "data": body.get("data"),
+        }
+
     def cancel_order(
         self,
         session: Session,
@@ -233,41 +338,123 @@ class OrderService:
         """
         Cancel an existing order.
 
+        Calls the QPMN cancel API first. Only when QPMN returns HTTP 200 with
+        ``success=true`` does the local order status change to CANCELLED.
+        All results (request, response, success/failure) are appended to
+        ``order.logs``.
+
         Raises:
-            ValueError: If the order status does not allow cancellation.
+            ValueError: If the order status does not allow cancellation, or
+                if the QPMN cancel API call fails.
         """
         if order.status in NON_CANCELLABLE_STATUSES:
-            raise ValueError(
+            order.logs = (order.logs or []) + [
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "action": "cancel_rejected",
+                    "message": (
+                        f"Cannot cancel order with status '{order.status.value}'."
+                    ),
+                },
+            ]
+            session.add(order)
+            session.commit()
+            session.refresh(order)
+            raise OrderNotCancellableError(
                 f"Cannot cancel order with status '{order.status.value}'."
             )
 
-        order.status = OrderStatus.CANCELLED
+        # --- 1. Call QPMN cancel API ---
+        qpmn_result = self.cancel_qpmn_order(order)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        if qpmn_result.get("success"):
+            # --- QPMN confirmed cancellation ---
+            order.status = OrderStatus.CANCELLED
+            order.logs = (order.logs or []) + [
+                {
+                    "timestamp": now_iso,
+                    "action": "order_cancelled",
+                    "message": "Order status updated to cancelled",
+                },
+            ]
+            session.add(order)
+            session.commit()
+            session.refresh(order)
+
+            logger.info("[OrderService] Cancelled order %s", order.order_id)
+            return order
+
+        # --- QPMN cancellation failed ---
+        error_detail = qpmn_result.get("error", "Unknown error")
+        qpmn_status_code = qpmn_result.get("status_code")
+        order.logs = (order.logs or []) + [
+            {
+                "timestamp": now_iso,
+                "action": "qpmn_cancel_failed",
+                "message": (
+                    f"QPMN cancel API failed (HTTP {qpmn_status_code}): "
+                    f"{error_detail}."
+                ),
+                "status_code": qpmn_status_code,
+                "error": error_detail,
+                "response": qpmn_result.get("data"),
+            },
+        ]
         session.add(order)
         session.commit()
+        session.refresh(order)
 
-        logger.info("[OrderService] Cancelled order %s", order.order_id)
-        return order
+        raise QPMNCancelError(
+            f"QPMN cancel API failed (HTTP {qpmn_status_code}): {error_detail}.",
+            status_code=qpmn_status_code,
+            error=error_detail,
+        )
 
-    def merge_order(
+    # ------------------------------------------------------------------
+    # Order push payload builders (legacy & open API)
+    # ------------------------------------------------------------------
+
+    def build_push_payload(
         self,
         session: Session,
         order_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
-        Merge order customization data into the order's items customizeProject.
-        Build the payload for pushing order to QPMN platform.
-        Returns the payload dict, or None if order/SKU not found.
-        """
+        Dispatch to the correct payload builder based on ``QPMN_ORDER_API_VERSION``.
 
+        Returns:
+            The payload dict ready for the corresponding QPMN create-order API.
+        """
+        if settings.QPMN_ORDER_API_VERSION == "open":
+            logger.info("[OrderService] Building Open API payload for order %s", order_id)
+            return self._build_open_api_payload(session, order_id)
+        logger.info("[OrderService] Building legacy API payload for order %s", order_id)
+        return self._build_legacy_payload(session, order_id)
+
+    def _prepare_order_and_skus(
+        self,
+        session: Session,
+        order_id: str,
+    ) -> Tuple[Order, List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Shared helper: load order, iterate items, inject design file URLs.
+
+        Returns:
+            (order, line_item_contexts, addresses) where line_item_contexts
+            is a list of dicts with keys: ``item``, ``sku``, ``files``,
+            ``properties``, ``customize_project``.
+        """
         order = session.exec(select(Order).where(Order.order_id == order_id)).first()
         if not order:
             raise ValueError(f"Order: [{order_id}] not found")
 
-        files_dict = order.files
+        files_dict = order.files or {}
         order_data = order.order_data or {}
-        line_items = []
+        contexts: List[Dict[str, Any]] = []
 
-        for item_index, item in enumerate(order_data.get("items",[])):
+        for item_index, item in enumerate(order_data.get("items", [])):
             sku_id = item.get("sku")
             if not sku_id:
                 continue
@@ -277,9 +464,11 @@ class OrderService:
                 raise ValueError(f"SKU: [{sku_id}] not found")
 
             properties = sku.properties or {}
-            customize_properties = sku.customize_project or {}
-            designs = customize_properties.get("designs", [])
-            files = files_dict.get(f"{sku_id}-{item_index}", []);
+            customize_project = sku.customize_project or {}
+            designs = customize_project.get("designs", [])
+            files = files_dict.get(f"{sku_id}-{item_index}", [])
+
+            # Inject uploaded file URLs into pageContentDesigns images
             for index, design in enumerate(designs):
                 file_obj = files[index] if index < len(files) else None
                 if not file_obj:
@@ -287,67 +476,212 @@ class OrderService:
                 file_url = file_obj.get("url", None)
                 if not file_url:
                     raise ValueError(f"SKU: [{sku_id}] design file not found")
-                # Replace pageContentDesigns image with file url
                 page_content_designs = design.get("pageContentDesigns", [])
                 for pcd in page_content_designs:
                     if "image" in pcd:
                         pcd["image"] = file_url
                 design["pageContentDesigns"] = page_content_designs
 
-            # Generate comparisonThumbnail from first file if it's a PDF
-            first_file_obj = files[0] if files else None
-            if first_file_obj:
-                first_file_url = first_file_obj.get("url", "")
-                thumbnail_url = self._get_order_thumbnail(first_file_url)
-                if thumbnail_url:
-                    customize_properties["comparisonThumbnail"] = thumbnail_url
-
-            line_item = {
-                "thirdOrderItemId": sku_id,
-                "qty": item.get("quantity", 1),
-                "unitPrice": sku.unit_price or 0,
-                "storeProductId": sku.sku_id,
+            contexts.append({
+                "item": item,
+                "sku": sku,
+                "files": files,
                 "properties": properties,
-                "customizeProject": customize_properties,
-            }
-            line_items.append(line_item)
-        payload = {
-            "thirdOrderId": order.order_id,
-            "thirdOrderNumber": order.source_order_id,
-            "items": line_items,    
-            "currency": self.fetch_currency_from_qpmn(order.store_id),
-            "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
-            "paymentMethod": settings.QPMN_PAYMENT_METHOD
-        }
+                "customize_project": customize_project,
+            })
 
         # Query addresses for this order
         delivery_address = session.exec(
             select(Address).where(
                 Address.order_id == order_id,
-                Address.type == AddressType.DELIVERY
+                Address.type == AddressType.DELIVERY,
             )
         ).first()
         billing_address = session.exec(
             select(Address).where(
                 Address.order_id == order_id,
-                Address.type == AddressType.BILLING
+                Address.type == AddressType.BILLING,
             )
         ).first()
         if not delivery_address:
             raise ValueError(f"Order: [{order_id}] delivery address not found")
-        
-        payload["deliveryAddress"] = self._address_to_payload(delivery_address)
-        
         if not billing_address:
             billing_address = delivery_address
-        
-        payload["billingAddress"] = self._address_to_payload(billing_address)
 
-        logger.info("[OrderService] Built push payload for order %s", order_id)
+        addresses = [delivery_address, billing_address]
+        return order, contexts, addresses
+
+    def _build_legacy_payload(
+        self,
+        session: Session,
+        order_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Build payload for the legacy create-order API.
+
+        POST {QPMN_API_URL}/store/orders
+        Uses: thirdOrderId, thirdOrderNumber, qty, customizeProject, etc.
+        """
+        order, contexts, addresses = self._prepare_order_and_skus(session, order_id)
+        delivery_address, billing_address = addresses
+
+        line_items: List[Dict[str, Any]] = []
+        for ctx in contexts:
+            item = ctx["item"]
+            sku = ctx["sku"]
+            files = ctx["files"]
+            properties = ctx["properties"]
+            customize_project = ctx["customize_project"]
+
+            # Generate comparisonThumbnail from first file
+            first_file_obj = files[0] if files else None
+            if first_file_obj:
+                first_file_url = first_file_obj.get("url", "")
+                thumbnail_url = self._get_order_thumbnail(first_file_url)
+                if thumbnail_url:
+                    customize_project["comparisonThumbnail"] = thumbnail_url
+
+            line_item = {
+                "thirdOrderItemId": sku.sku_id,
+                "qty": item.get("quantity", 1),
+                "unitPrice": sku.unit_price or 0,
+                "storeProductId": sku.sku_id,
+                "properties": properties,
+                "customizeProject": customize_project,
+            }
+            line_items.append(line_item)
+
+        payload = {
+            "thirdOrderId": order.order_id,
+            "thirdOrderNumber": order.source_order_id,
+            "items": line_items,
+            "currency": self.fetch_currency_from_qpmn(order.store_id),
+            "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
+            "paymentMethod": settings.QPMN_PAYMENT_METHOD,
+            "deliveryAddress": self._address_to_legacy_payload(delivery_address),
+            "billingAddress": self._address_to_legacy_payload(billing_address),
+        }
+
+        logger.info("[OrderService] Built legacy payload for order %s", order_id)
         return payload
 
-    def _address_to_payload(self, address: Address) -> Dict[str, Any]:
-        """Convert Address model to payload format."""
+    def _build_open_api_payload(
+        self,
+        session: Session,
+        order_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Build payload for the Open API create-order endpoint.
+
+        POST {QPMN_OPEN_API_URL}/store/orders
+        Uses: externalId, externalOrderNumber, quantity, productDesignData, etc.
+        """
+        order, contexts, addresses = self._prepare_order_and_skus(session, order_id)
+        delivery_address, billing_address = addresses
+
+        line_items: List[Dict[str, Any]] = []
+        for ctx in contexts:
+            item = ctx["item"]
+            sku = ctx["sku"]
+            properties = ctx["properties"]
+            customize_project = ctx["customize_project"]
+
+            product_design_data = self._convert_customize_to_product_design_data(
+                customize_project, properties,
+            )
+
+            line_item = {
+                "externalId": sku.sku_id,
+                "unitPrice": sku.unit_price or 0,
+                "storeProductId": sku.sku_id,
+                "quantity": item.get("quantity", 1),
+                "productDesignData": product_design_data,
+            }
+            line_items.append(line_item)
+
+        payload = {
+            "externalId": order.order_id,
+            "externalOrderNumber": order.source_order_id,
+            "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
+            "paymentMethod": settings.QPMN_PAYMENT_METHOD,
+            "currency": self.fetch_currency_from_qpmn(order.store_id),
+            "deliveryAddress": self._address_to_open_api_payload(delivery_address),
+            "billingAddress": self._address_to_open_api_payload(billing_address),
+            "items": line_items,
+        }
+
+        logger.info("[OrderService] Built Open API payload for order %s", order_id)
+        return payload
+
+    def _convert_customize_to_product_design_data(
+        self,
+        customize_project: Dict[str, Any],
+        properties: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Convert legacy ``customizeProject`` to Open API ``productDesignData``.
+
+        Legacy ``customizeProject.designs`` → new ``designData``:
+          - ``materialPath`` → ``code`` (Base64-encoded)
+          - ``side`` → ``views[].code``
+          - ``pageContentDesigns[].pageContentIndex`` → ``designs[].index``
+          - ``pageContentDesigns[].effect`` → ``effectImages[].effect``
+          - ``pageContentDesigns[].image`` → ``effectImages[].imageUrl``
+
+        Legacy ``properties`` → new ``designAttributeValues``.
+        """
+        designs = customize_project.get("designs", [])
+
+        # Group designs by materialPath — each unique material becomes one
+        # designData entry with multiple views.
+        material_groups: Dict[str, List[Dict[str, Any]]] = {}
+        material_order: List[str] = []
+        for design in designs:
+            material_path = design.get("materialPath", "")
+            if material_path not in material_groups:
+                material_groups[material_path] = []
+                material_order.append(material_path)
+            material_groups[material_path].append(design)
+
+        design_data: List[Dict[str, Any]] = []
+        for material_path in material_order:
+            group_designs = material_groups[material_path]
+            code = base64.b64encode(material_path.encode()).decode() if material_path else ""
+
+            views: List[Dict[str, Any]] = []
+            for gdesign in group_designs:
+                side = gdesign.get("side", "")
+                page_content_designs = gdesign.get("pageContentDesigns", [])
+
+                view_designs: List[Dict[str, Any]] = []
+                for pcd in page_content_designs:
+                    effect_images: List[Dict[str, Any]] = []
+                    effect = pcd.get("effect")
+                    image = pcd.get("image")
+                    if effect and image:
+                        effect_images.append({"effect": effect, "imageUrl": image})
+
+                    view_designs.append({
+                        "index": pcd.get("pageContentIndex", 0),
+                        "effectImages": effect_images,
+                    })
+
+                views.append({"code": side, "designs": view_designs})
+
+            design_data.append({"code": code, "views": views})
+
+        # Convert properties dict to designAttributeValues list
+        design_attribute_values: List[Dict[str, Any]] = []
+        for key, value in properties.items():
+            design_attribute_values.append({"code": key, "value": value})
+
+        return {
+            "designData": design_data,
+            "designAttributeValues": design_attribute_values,
+        }
+
+    def _address_to_legacy_payload(self, address: Address) -> Dict[str, Any]:
+        """Convert Address model to legacy API payload format."""
         return {
             "country": address.country,
             "state": address.state,
@@ -357,6 +691,23 @@ class OrderService:
             "postcode": address.postcode,
             "first_name": address.first_name,
             "last_name": address.last_name,
+            "phone": address.phone,
+            "mobile": address.mobile,
+            "email": address.email,
+            "company": address.company,
+        }
+
+    def _address_to_open_api_payload(self, address: Address) -> Dict[str, Any]:
+        """Convert Address model to Open API payload format."""
+        return {
+            "countryCode": address.country,
+            "state": address.state,
+            "city": address.city,
+            "address_1": address.address1,
+            "address_2": address.address2,
+            "postCode": address.postcode,
+            "firstName": address.first_name,
+            "lastName": address.last_name,
             "phone": address.phone,
             "mobile": address.mobile,
             "email": address.email,

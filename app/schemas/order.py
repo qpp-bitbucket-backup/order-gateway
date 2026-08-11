@@ -223,6 +223,19 @@ class CancelledOrderResponse(BaseModel):
     order_id: Optional[str] = Field(None, description="Cancelled order ID")
 
 
+class SiteFlowErrorDetail(BaseModel):
+    """SiteFlow-compatible error detail object."""
+    message: str = Field(..., description="Human-readable error message")
+    name: str = Field(..., description="Error name/classifier")
+    code: int = Field(..., description="HTTP status code")
+
+
+class SiteFlowErrorResponse(BaseModel):
+    """SiteFlow-compatible error response wrapper."""
+    success: bool = Field(False, description="Always false for errors")
+    error: SiteFlowErrorDetail = Field(..., description="Error detail")
+
+
 class OrderUpdateRequest(BaseModel):
     """Schema for order update request.
 
