@@ -72,8 +72,8 @@ class Settings(BaseSettings):
 
     # QPMN API Configuration
     QPMN_API_URL: str = "https://stage.qpmarketnetwork.com/cgp-rest/api"
-    QPMN_OPEN_API_URL: str = ""
     QPMN_API_KEY: str = ""
+    QPMN_OPEN_API_URL: str = "https://test-qpmn.qppdev.com/stage/cgp-rest/open-api/v1/"
     QPMN_PUSH_RETRY_COUNT: int = 5        # Max retry attempts when QPMN returns 503/timeout
     QPMN_PUSH_RETRY_COUNTDOWN: int = 900   # Base delay in seconds for exponential backoff
     QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
