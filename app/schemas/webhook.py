@@ -40,7 +40,7 @@ class QpmnOrderItemEvent(BaseModel):
     status: str = Field(
         ...,
         description=(
-            "QPMN's item status code (order_item_received/order_item_reviewed/"
+            "QPMN's item status code (order_item_received/order_item_audited/"
             "order_item_produced/order_item_canceled/order_item_failed) — see "
             "EVENT_STATUS_MAP in app/models/order.py for the mapping to our "
             "internal OrderStatus."

@@ -103,7 +103,7 @@ def can_transition(from_status: OrderStatus, to_status: OrderStatus) -> bool:
 # other rows here — confirm how that arrives before wiring it up.
 STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
     OrderStatus.RECEIVED: "order_item_received",
-    OrderStatus.PRINTREADY: "order_item_reviewed",
+    OrderStatus.PRINTREADY: "order_item_audited",
     OrderStatus.PRINTED: "order_item_produced",
     OrderStatus.SHIPPED: "package_shipped",
     OrderStatus.CANCELLED: "order_item_canceled",
