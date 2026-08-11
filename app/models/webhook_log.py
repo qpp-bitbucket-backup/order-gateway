@@ -1,5 +1,5 @@
 from sqlmodel import SQLModel, Field, Column
-from sqlalchemy import JSON
+from sqlalchemy import JSON, Text
 from typing import Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -30,9 +30,9 @@ class WebhookLog(BaseModel, table=True):
     order_id: Optional[str] = Field(None, index=True, max_length=64, description="Internal order ID")
     source_order_id: Optional[str] = Field(None, index=True, max_length=64, description="External order ID (VFS sourceOrderId / OMS orderNo)")
     store_order_id: Optional[str] = Field(None, index=True, max_length=64, description="Store order ID (QPMN orderId)")
-    store_item_id: Optional[str] = Field(None, index=True, max_length=64, description="Store order item ID (QPMN order_item id), set for order_item_* events only")
+    store_order_item_id: Optional[str] = Field(None, index=True, max_length=64, description="Store order item ID (QPMN order_item id), set for order_item_* events only")
     event_status: Optional[str] = Field(None, index=True, max_length=32, description="Order status carried by the event")
     payload: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Raw request/response body")
     process_status: WebhookProcessStatus = Field(default=WebhookProcessStatus.RECEIVED, nullable=False, index=True, description="Processing result")
-    details: Optional[Any] = Field(None, sa_column=Column(JSON), description="Failure reason when FAILED; the response sent to QPMN (inbound) or received from OMS/VFS (outbound) otherwise")
+    details: Optional[str] = Field(None, sa_column=Column(Text), description="Failure reason when FAILED; the response sent to QPMN (inbound) or received from OMS/VFS (outbound) otherwise, JSON-encoded")
     retry_count: int = Field(default=0, nullable=False, description="Delivery retry count (outbound)")

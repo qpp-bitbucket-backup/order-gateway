@@ -93,7 +93,7 @@ async def receive_order_status(
         source="qpmn",
         order_id="",
         store_order_id=str(order_id_value) if order_id_value is not None else None,
-        store_item_id=str(item_id_value) if item_id_value is not None else None,
+        store_order_item_id=str(item_id_value) if item_id_value is not None else None,
         event_status=x_qpmn_event_type,
         payload=raw_payload,
         process_status=WebhookProcessStatus.RECEIVED,
@@ -121,7 +121,7 @@ async def receive_order_status(
     if not new_status:
         response = WebhookResponse(success=False, message=f"Unmapped event type: '{effective_status}'")
         inbound_log.process_status = WebhookProcessStatus.SKIPPED
-        inbound_log.details = response.model_dump()
+        inbound_log.details = json.dumps(response.model_dump())
         inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
@@ -166,7 +166,7 @@ async def receive_order_status(
                 message=f"Item status recorded; order already at '{order.status.value}', not moved back to '{new_status.value}'",
             )
             inbound_log.process_status = WebhookProcessStatus.SKIPPED
-            inbound_log.details = response.model_dump()
+            inbound_log.details = json.dumps(response.model_dump())
             inbound_log.updated_at = datetime.now(timezone.utc)
             session.add(inbound_log)
             session.commit()
@@ -177,7 +177,7 @@ async def receive_order_status(
             message=f"Invalid transition: {order.status.value} -> {new_status.value}",
         )
         inbound_log.process_status = WebhookProcessStatus.SKIPPED
-        inbound_log.details = response.model_dump()
+        inbound_log.details = json.dumps(response.model_dump())
         inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
@@ -201,7 +201,7 @@ async def receive_order_status(
     # Mark inbound log as processed
     response = WebhookResponse(success=True, message=f"Status updated to '{new_status.value}'")
     inbound_log.process_status = WebhookProcessStatus.PROCESSED
-    inbound_log.details = response.model_dump()
+    inbound_log.details = json.dumps(response.model_dump())
     inbound_log.updated_at = datetime.now(timezone.utc)
     session.add(inbound_log)
     session.commit()

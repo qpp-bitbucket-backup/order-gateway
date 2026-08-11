@@ -1,4 +1,5 @@
 """Outbound notification Celery tasks."""
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
@@ -78,7 +79,7 @@ def notify_oms(
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
-                log.details = result.get("response")
+                log.details = json.dumps(result.get("response")) if result.get("response") is not None else None
                 log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
@@ -193,7 +194,7 @@ def notify_vfs(
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
-                log.details = result.get("response")
+                log.details = json.dumps(result.get("response")) if result.get("response") is not None else None
                 log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
