@@ -34,6 +34,5 @@ class WebhookLog(BaseModel, table=True):
     event_status: Optional[str] = Field(None, index=True, max_length=32, description="Order status carried by the event")
     payload: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Raw request/response body")
     process_status: WebhookProcessStatus = Field(default=WebhookProcessStatus.RECEIVED, nullable=False, index=True, description="Processing result")
-    error_message: Optional[str] = Field(None, max_length=512, description="Failure reason")
+    details: Optional[Any] = Field(None, sa_column=Column(JSON), description="Failure reason when FAILED; the response sent to QPMN (inbound) or received from OMS/VFS (outbound) otherwise")
     retry_count: int = Field(default=0, nullable=False, description="Delivery retry count (outbound)")
-    processed_at: Optional[datetime] = Field(None, description="When processing finished")
