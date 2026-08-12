@@ -90,6 +90,14 @@ class Settings(BaseSettings):
     OMS_VALIDATE_RETRY_COUNT: int = 5       # Max retry attempts when OMS returns 503/timeout
     OMS_VALIDATE_RETRY_COUNTDOWN: int = 300  # Base delay in seconds for exponential backoff
     OMS_VALIDATE_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
+    OMS_NOTIFY_RETRY_COUNT: int = 5         # Max retry attempts when OMS API-002 returns 503/timeout
+    OMS_NOTIFY_RETRY_COUNTDOWN: int = 300    # Base delay in seconds for exponential backoff
+    OMS_NOTIFY_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
+
+    # VFS postback retry (same exponential backoff design as OMS, see docs/EXPONENTIAL_BACKOFF_RETRY.md)
+    VFS_NOTIFY_RETRY_COUNT: int = 5         # Max retry attempts when VFS postback returns 503/timeout
+    VFS_NOTIFY_RETRY_COUNTDOWN: int = 300    # Base delay in seconds for exponential backoff
+    VFS_NOTIFY_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
 
     # Alibaba Cloud OSS Configuration
     OSS_ACCESS_KEY_ID: str = "your-oss-access-key-id"

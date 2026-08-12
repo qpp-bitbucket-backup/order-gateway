@@ -11,6 +11,8 @@
 | `validate_order` | OMS API 返回 503 或請求超時 | OMS API-001 `/order/addresses` |
 | `push_order` | QPMN API 返回 503 | QPMN `/store/orders` |
 | `push_order` | QPMN API 請求超時 | QPMN `/store/orders` |
+| `notify_oms` | OMS API 返回 503 或請求超時 | OMS API-002 `/api/order/status` |
+| `notify_vfs` | VFS postback 返回 503 或請求超時 | VFS `postbackAddress` |
 
 ## 重試公式
 
@@ -40,6 +42,24 @@ delay = min(base_delay × 2^retry_count, max_delay)
 | `QPMN_PUSH_RETRY_COUNTDOWN` | 基礎延遲秒數 | `900`（15 分鐘） |
 | `QPMN_PUSH_RETRY_MAX_COUNTDOWN` | 最大延遲上限秒數 | `7200`（2 小時） |
 
+### OMS 狀態回報重試（notify_oms）
+
+| 環境變量 | 說明 | 默認值 |
+|---------|------|-------|
+| `OMS_NOTIFY_RETRY_COUNT` | 最大重試次數 | `5` |
+| `OMS_NOTIFY_RETRY_COUNTDOWN` | 基礎延遲秒數 | `300`（5 分鐘） |
+| `OMS_NOTIFY_RETRY_MAX_COUNTDOWN` | 最大延遲上限秒數 | `3600`（1 小時） |
+
+### VFS postback 重試（notify_vfs）
+
+| 環境變量 | 說明 | 默認值 |
+|---------|------|-------|
+| `VFS_NOTIFY_RETRY_COUNT` | 最大重試次數 | `5` |
+| `VFS_NOTIFY_RETRY_COUNTDOWN` | 基礎延遲秒數 | `300`（5 分鐘） |
+| `VFS_NOTIFY_RETRY_MAX_COUNTDOWN` | 最大延遲上限秒數 | `3600`（1 小時） |
+
+> `notify_vfs` 原本用 Site Flow 官方曲線（6m → 15m → 30m → 24h，靠 Celery 原生 `self.retry()`），2026-08-12 改為同 `notify_oms` 一致嘅指數退避設計。
+
 ## 實際延遲效果
 
 | 重試次數 | OMS 延遲（base=300, cap=3600） | QPMN 延遲（base=900, cap=7200） |
@@ -67,12 +87,12 @@ delay = min(base_delay × 2^retry_count, max_delay)
 
 ## 重試次數追蹤
 
-重試次數通過 `order_data` 字典中的內部欄位追蹤，不會持久化到資料庫：
+- `validate_order`/`push_order`：重試次數通過 `order_data` 字典中的內部欄位追蹤，不會持久化到資料庫（`order_data["_oms_retry_count"]` / `order_data["_qpmn_retry_count"]`），每次重試時 Celery 任務會將計數器 +1 後隨 `order_data` 一併傳遞給下一次投遞。
+- `notify_oms`/`notify_vfs`：重試次數改用已存在的 `WebhookLog.retry_count` 欄位追蹤（會持久化），每次重試時讀取目前值、+1 後寫回再重新投遞。
 
-- OMS：`order_data["_oms_retry_count"]`
-- QPMN：`order_data["_qpmn_retry_count"]`
+## ⚠️ 待確認事項
 
-每次重試時 Celery 任務會將計數器 +1 後隨 `order_data` 一併傳遞給下一次投遞。
+`notify_oms`/`notify_vfs` 重試耗盡後，目前**只會將 `WebhookLog.process_status` 標成 `failed`，不會呼叫 `_mark_order_failed()` 將 `Order` 本身標成 FAILED**——因為此時訂單實際的列印/出貨等生產流程通常已經完成，只是「通知」OMS/VFS 失敗，是否也要讓訂單狀態一併變成 FAILED 尚未與 Ivan 確認，見 `docs/order-gateway-oms-todo.md`。
 
 ## 涉及文件
 
