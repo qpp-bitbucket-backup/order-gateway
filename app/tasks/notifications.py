@@ -89,7 +89,10 @@ def notify_oms(
 
             # Non-retryable failure (4xx, business error, not configured)
             log.process_status = WebhookProcessStatus.FAILED
-            log.details = result.get("message", "OMS returned failure")
+            log.details = json.dumps({
+                "errorCode": result.get("error_code"),
+                "errorMsg": result.get("message", "OMS returned failure"),
+            })
             log.updated_at = datetime.now(timezone.utc)
             session.add(log)
             session.commit()
@@ -216,7 +219,10 @@ def notify_vfs(
 
             # Non-retryable failure (4xx, business error, not configured)
             log.process_status = WebhookProcessStatus.FAILED
-            log.details = result.get("message", "VFS postback failed")
+            log.details = json.dumps({
+                "errorCode": result.get("error_code"),
+                "errorMsg": result.get("message", "VFS postback failed"),
+            })
             log.updated_at = datetime.now(timezone.utc)
             session.add(log)
             session.commit()

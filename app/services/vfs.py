@@ -73,9 +73,14 @@ class VFSService:
                 order.source_order_id,
                 response.text,
             )
+            try:
+                error_body = response.json()
+            except ValueError:
+                error_body = {}
             return {
                 "success": False,
-                "message": f"HTTP {response.status_code}",
+                "message": error_body.get("errorMsg", f"HTTP {response.status_code}"),
+                "error_code": error_body.get("errorCode"),
                 "status_code": response.status_code,
                 "request_headers": request_headers,
                 "request_payload": payload,
