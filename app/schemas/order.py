@@ -121,9 +121,12 @@ class FullOrder(BaseModel):
 
 
 class OrderValidationResponse(BaseModel):
-    """Schema for order validation response."""
-    success: bool = Field(..., description="Validation success status")
-    order: Optional[Dict[str, Any]] = Field(None, description="Validated order data")
+    """Schema for order validation response.
+
+    VFS requires ``orderData`` at the top level (at minimum ``sourceOrderId``
+    nested inside it) — no ``success``/``order`` wrapper.
+    """
+    orderData: Dict[str, Any] = Field(..., description="Validated order data")
 
 
 class OrderSubmissionResponse(BaseModel):
