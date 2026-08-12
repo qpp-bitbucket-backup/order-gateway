@@ -58,8 +58,6 @@ delay = min(base_delay × 2^retry_count, max_delay)
 | `VFS_NOTIFY_RETRY_COUNTDOWN` | 基礎延遲秒數 | `300`（5 分鐘） |
 | `VFS_NOTIFY_RETRY_MAX_COUNTDOWN` | 最大延遲上限秒數 | `3600`（1 小時） |
 
-> `notify_vfs` 原本用 Site Flow 官方曲線（6m → 15m → 30m → 24h，靠 Celery 原生 `self.retry()`），2026-08-12 改為同 `notify_oms` 一致嘅指數退避設計。
-
 ## 實際延遲效果
 
 | 重試次數 | OMS 延遲（base=300, cap=3600） | QPMN 延遲（base=900, cap=7200） |
@@ -89,10 +87,6 @@ delay = min(base_delay × 2^retry_count, max_delay)
 
 - `validate_order`/`push_order`：重試次數通過 `order_data` 字典中的內部欄位追蹤，不會持久化到資料庫（`order_data["_oms_retry_count"]` / `order_data["_qpmn_retry_count"]`），每次重試時 Celery 任務會將計數器 +1 後隨 `order_data` 一併傳遞給下一次投遞。
 - `notify_oms`/`notify_vfs`：重試次數改用已存在的 `WebhookLog.retry_count` 欄位追蹤（會持久化），每次重試時讀取目前值、+1 後寫回再重新投遞。
-
-## ⚠️ 待確認事項
-
-`notify_oms`/`notify_vfs` 重試耗盡後，目前**只會將 `WebhookLog.process_status` 標成 `failed`，不會呼叫 `_mark_order_failed()` 將 `Order` 本身標成 FAILED**——因為此時訂單實際的列印/出貨等生產流程通常已經完成，只是「通知」OMS/VFS 失敗，是否也要讓訂單狀態一併變成 FAILED 尚未與 Ivan 確認，見 `docs/order-gateway-oms-todo.md`。
 
 ## 涉及文件
 

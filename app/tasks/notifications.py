@@ -34,12 +34,11 @@ def notify_oms(
 
     Success → mark the outbound log ``processed``.
     4xx / business error → mark ``failed`` (no retry).
-    5xx / network error → exponential backoff retry, same design as
-    ``validate_order``/``push_order`` (see docs/EXPONENTIAL_BACKOFF_RETRY.md),
-    up to ``OMS_NOTIFY_RETRY_COUNT`` attempts; once exhausted the
-    ``WebhookLog`` is left ``failed``. Whether the *order* itself should
-    also transition to FAILED at that point is unconfirmed with Ivan — not
-    wired up here, see docs/order-gateway-oms-todo.md.
+    5xx / network error → exponential backoff retry, up to
+    ``OMS_NOTIFY_RETRY_COUNT`` attempts; once exhausted the ``WebhookLog``
+    is left ``failed``. Whether the *order* itself should also transition
+    to FAILED at that point is unconfirmed with Ivan — not wired up here,
+    see docs/order-gateway-oms-todo.md.
     """
     logger.info(
         "[Celery] notify_oms: log_id=%s order_id=%s status=%s",
@@ -163,14 +162,11 @@ def notify_vfs(
 
     Success → mark the outbound log ``processed``.
     4xx / business error → mark ``failed`` (no retry).
-    5xx / network error → exponential backoff retry, same design as
-    ``notify_oms``/``validate_order``/``push_order``
-    (see docs/EXPONENTIAL_BACKOFF_RETRY.md), up to ``VFS_NOTIFY_RETRY_COUNT``
-    attempts; once exhausted the ``WebhookLog`` is left ``failed``. Replaces
-    the previous Site Flow-curve-specific retry (6m/15m/30m/24h) to align
-    with the rest of the codebase's retry design. Whether the *order* itself
-    should also transition to FAILED at that point is unconfirmed with
-    Ivan — not wired up here, see docs/order-gateway-oms-todo.md.
+    5xx / network error → exponential backoff retry, up to
+    ``VFS_NOTIFY_RETRY_COUNT`` attempts; once exhausted the ``WebhookLog``
+    is left ``failed``. Whether the *order* itself should also transition
+    to FAILED at that point is unconfirmed with Ivan — not wired up here,
+    see docs/order-gateway-oms-todo.md.
     """
     logger.info(
         "[Celery] notify_vfs: log_id=%s order_id=%s status=%s",
