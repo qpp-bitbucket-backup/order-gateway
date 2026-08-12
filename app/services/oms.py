@@ -237,9 +237,14 @@ class OMSService:
                 order.order_id,
                 response.text,
             )
+            try:
+                error_body = response.json()
+            except ValueError:
+                error_body = {}
             return {
                 "success": False,
-                "message": f"HTTP {response.status_code}",
+                "message": error_body.get("errorMsg", f"HTTP {response.status_code}"),
+                "error_code": error_body.get("errorCode"),
                 "status_code": response.status_code,
                 "request_headers": request_headers,
                 "request_payload": payload,
@@ -267,7 +272,6 @@ class OMSService:
         logger.info("[OMS] Status update acknowledged for order %s -> %s", order.order_id, event_status)
         return {
             "success": True,
-            "data": body.get("data"),
             "response": body,
             "request_headers": request_headers,
             "request_payload": payload,
