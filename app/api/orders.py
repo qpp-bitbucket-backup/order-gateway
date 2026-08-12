@@ -28,11 +28,14 @@ from app.schemas.order import (
     PlatformOrderSummary,
     PlatformOrderDetailsResponse,
     PlatformFullOrder,
+    MaskedAddress,
+    SiteFlowErrorResponse,
 )
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
 from app.core.auth_jwt import get_current_user
 from app.models.user import User
-from app.services.order import order_service
+from app.models.address import Address as AddressModel, AddressType
+from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError
 
 router = APIRouter(
     prefix="/api",
@@ -83,6 +86,52 @@ def _enrich_order_data_with_status(order_data: Optional[dict], status: OrderStat
     enriched = dict(order_data)
     enriched["status"] = _EXTERNAL_STATUS_MAP.get(status, status.value)
     return enriched
+
+
+def _mask_pii(value: Optional[str], visible_chars: int = 2) -> Optional[str]:
+    """Mask a PII string, keeping only the first *visible_chars* characters."""
+    if not value:
+        return value
+    if len(value) <= visible_chars:
+        return value[0] + "***"
+    return value[:visible_chars] + "***"
+
+
+def _mask_email(email: Optional[str]) -> Optional[str]:
+    """Mask email: show first 2 chars of local part, mask the rest."""
+    if not email:
+        return email
+    local, _, domain = email.partition("@")
+    if not domain:
+        return email
+    return _mask_pii(local, 2) + "@" + domain
+
+
+def _mask_postcode(postcode: Optional[str]) -> Optional[str]:
+    """Mask postcode: keep first 3 chars."""
+    if not postcode:
+        return postcode
+    if len(postcode) <= 3:
+        return postcode[0] + "***"
+    return postcode[:3] + "***"
+
+
+def _build_masked_address(addr: AddressModel) -> MaskedAddress:
+    """Build a MaskedAddress from an Address model instance."""
+    return MaskedAddress(
+        first_name=_mask_pii(addr.first_name, 2),
+        last_name=_mask_pii(addr.last_name, 2),
+        phone=_mask_pii(addr.phone, 4),
+        mobile=_mask_pii(addr.mobile, 4),
+        email=_mask_email(addr.email),
+        address1=_mask_pii(addr.address1, 4),
+        address2=_mask_pii(addr.address2, 4),
+        postcode=_mask_postcode(addr.postcode),
+        city=addr.city,
+        state=addr.state,
+        country=addr.country,
+        company=_mask_pii(addr.company, 3),
+    )
 
 
 def is_file_accessible(url: str) -> bool:
@@ -465,6 +514,19 @@ def update_order(
         )
 
 
+def _siteflow_error(message: str, name: str, code: int) -> HTTPException:
+    """Build a SiteFlow-compatible HTTPException.
+
+    SiteFlow error response format:
+        {"success": false, "error": {"message": "...", "name": "...", "code": 404}}
+    """
+    error_resp = SiteFlowErrorResponse(
+        success=False,
+        error={"message": message, "name": name, "code": code},
+    )
+    return HTTPException(status_code=code, detail=error_resp.model_dump())
+
+
 @router.put("/order/{source_account}/{source_order_id}/cancel", response_model=CancelledOrderResponse)
 def cancel_order(
     source_account: str,
@@ -477,6 +539,16 @@ def cancel_order(
 
     Attempts to cancel an order that hasn't been completed or shipped.
     Only allows cancellation of orders belonging to the authenticated client's store.
+
+    Error responses follow the HP SiteFlow API format:
+    ``{"success": false, "error": {"message": "...", "name": "...", "code": 404}}``
+
+    | HTTP Code | Error Name        | Scenario                                      |
+    |-----------|-------------------|-----------------------------------------------|
+    | 404       | NotFound          | Order not found or access denied              |
+    | 409       | Conflict          | Order status does not allow cancellation      |
+    | 502       | BadGateway        | QPMN cancel API call failed                   |
+    | 500       | InternalServerError| Unexpected internal error                    |
     """
     _log_request("PUT /order/cancel", {"source_account": source_account, "source_order_id": source_order_id})
     try:
@@ -485,7 +557,7 @@ def cancel_order(
             (Order.source_account == source_account)
             & (Order.source_order_id == source_order_id)
         )
-        print(query)
+        print(store_id)
         if store_id:
             query = query.where(Order.store_id == store_id)
         order = session.exec(query).first()
@@ -495,12 +567,22 @@ def cancel_order(
                 f"Order with sourceOrderId '{source_order_id}' not found"
                 + (" or access denied" if store_id else "")
             )
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+            raise _siteflow_error(detail, "NotFound", 404)
 
         try:
             order = order_service.cancel_order(session, order)
-        except ValueError as ve:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(ve))
+        except OrderNotCancellableError:
+            raise _siteflow_error(
+                f"Cannot cancel order with status '{order.status.value}'.",
+                "Conflict",
+                409,
+            )
+        except QPMNCancelError as qpmn_err:
+            raise _siteflow_error(
+                str(qpmn_err),
+                "BadGateway",
+                502,
+            )
 
         resp = CancelledOrderResponse(
             success=True,
@@ -514,9 +596,10 @@ def cancel_order(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Order cancellation failed: {str(e)}",
+        raise _siteflow_error(
+            f"Order cancellation failed: {str(e)}",
+            "InternalServerError",
+            500,
         )
 
 
@@ -536,6 +619,7 @@ def platform_get_orders(
     pagesize: int = Query(10, ge=1, le=100, description="Number of orders per page"),
     status_filter: Optional[List[OrderStatus]] = Query(None, alias="status[]", description="Filter by order status (supports multiple values, e.g. status[]=failed&status[]=errored)"),
     store_id: Optional[str] = Query(None, description="Filter by store ID"),
+    sourceOrderId: Optional[str] = Query(None, description="Fuzzy search by source order ID"),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -546,6 +630,7 @@ def platform_get_orders(
     If user has a store_id, only returns orders for that store.
     Admin users can optionally filter by store_id query parameter.
     Supports filtering by multiple statuses: ?status[]=failed&status[]=errored
+    Supports fuzzy search on sourceOrderId: ?sourceOrderId=ORD-12
     Returns additional fields: sourceOrderId, logs, files, version, storeId.
     """
     try:
@@ -560,6 +645,7 @@ def platform_get_orders(
             page=page,
             pagesize=pagesize,
             statuses=status_filter,
+            source_order_id=sourceOrderId,
         )
 
         order_summaries = [
@@ -619,6 +705,26 @@ def platform_get_order(
                 detail=f"Order with ID '{order_id}' not found",
             )
 
+        # Fetch the latest delivery and billing address records for this order
+        delivery_address = session.exec(
+            select(AddressModel)
+            .where(
+                (AddressModel.order_id == order.order_id)
+                & (AddressModel.type == AddressType.DELIVERY)
+            )
+            .order_by(AddressModel.created_at.desc())  # type: ignore[union-attr]
+        ).first()
+        billing_address = session.exec(
+            select(AddressModel)
+            .where(
+                (AddressModel.order_id == order.order_id)
+                & (AddressModel.type == AddressType.BILLING)
+            )
+            .order_by(AddressModel.created_at.desc())  # type: ignore[union-attr]
+        ).first()
+        masked_delivery = _build_masked_address(delivery_address) if delivery_address else None
+        masked_billing = _build_masked_address(billing_address) if billing_address else None
+
         full_order = PlatformFullOrder(
             id=order.order_id,
             sourceOrderId=order.source_order_id,
@@ -633,6 +739,8 @@ def platform_get_order(
             storeOrderId=order.store_order_id,
             createdAt=order.created_at.isoformat() if order.created_at else None,
             updatedAt=order.updated_at.isoformat() if order.updated_at else None,
+            deliveryAddress=masked_delivery,
+            billingAddress=masked_billing,
         )
 
         return PlatformOrderDetailsResponse(success=True, order=full_order)

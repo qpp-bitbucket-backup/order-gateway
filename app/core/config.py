@@ -71,12 +71,14 @@ class Settings(BaseSettings):
     CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES: int = 5  # Sync products every N minutes
 
     # QPMN API Configuration
-    QPMN_API_URL: str = "https://stage.qpmarketnetwork.com/cgp-rest/ap"
+    QPMN_API_URL: str = "https://stage.qpmarketnetwork.com/cgp-rest/api"
+    QPMN_OPEN_API_URL: str = ""
     QPMN_API_KEY: str = ""
     QPMN_PUSH_RETRY_COUNT: int = 5        # Max retry attempts when QPMN returns 503/timeout
     QPMN_PUSH_RETRY_COUNTDOWN: int = 900   # Base delay in seconds for exponential backoff
     QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
+    QPMN_ORDER_API_VERSION: str = "legacy"   # Order creation API version: "legacy" or "open"
 
     # PDF Processing Configuration
     MODIFY_PDF_RESOLUTION: bool = False
