@@ -19,6 +19,26 @@ class OMSRetryableError(Exception):
     """Raised when OMS API returns a retryable error (503 / timeout)."""
     pass
 
+
+def _to_oms_shipment(shipment: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a QPMN shipment (``app.schemas.webhook.QpmnWebhookShipment`` shape,
+    ``company`` + epoch-ms ``shipDate``) to OMS API-002's ``shipments[]`` shape
+    (``carrierName`` + ISO-8601 string ``shipDate``)."""
+    ship_date = shipment.get("shipDate")
+    ship_date_iso = None
+    if ship_date is not None:
+        ship_date_iso = (
+            datetime.fromtimestamp(ship_date / 1000, tz=timezone.utc)
+            .strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        )
+    return {
+        "trackingNumber": shipment.get("trackingNumber"),
+        "carrierName": shipment.get("company"),
+        "trackingUrl": shipment.get("trackingUrl"),
+        "shipDate": ship_date_iso,
+    }
+
+
 class OMSService:
     """Service for interacting with OMS API to retrieve address information."""
 
@@ -162,7 +182,7 @@ class OMSService:
             "status": event_status,
             "statusDesc": status_desc or event_status,
             "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-            "shipments": shipments or [],
+            "shipments": [_to_oms_shipment(s) for s in shipments] if shipments else [],
         }
 
         if USE_MOCK:
