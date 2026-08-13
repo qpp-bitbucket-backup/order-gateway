@@ -20,6 +20,7 @@ from app.models.client import Client
 from app.models.address import Address
 from app.models.webhook_log import WebhookLog
 from app.models.user import User
+from app.models.shipment import OrderShipment
 from app.core.config import settings
 
 # this is the Alembic Config object, which provides
