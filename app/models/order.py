@@ -103,7 +103,7 @@ def can_transition(from_status: OrderStatus, to_status: OrderStatus) -> bool:
 # other rows here — confirm how that arrives before wiring it up.
 STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
     OrderStatus.RECEIVED: "order_item_received",
-    OrderStatus.PRINTREADY: "order_item_reviewed",
+    OrderStatus.PRINTREADY: "order_item_audited",
     OrderStatus.PRINTED: "order_item_produced",
     OrderStatus.SHIPPED: "package_shipped",
     OrderStatus.CANCELLED: "order_item_canceled",
@@ -112,6 +112,33 @@ STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
 
 # Reverse lookup: external event status code -> internal status
 EVENT_STATUS_MAP: Dict[str, OrderStatus] = {v: k for k, v in STATUS_EVENT_MAP.items()}
+
+# Linear order of the statuses an order_item_* event can drive the order
+# through. QPMN sends one event per item, so a multi-item order can receive
+# events for several items interleaved — only the most-advanced item's
+# status should ever land on the order.
+ITEM_EVENT_STATUS_ORDER: List[OrderStatus] = [
+    OrderStatus.RECEIVED,
+    OrderStatus.PRINTREADY,
+    OrderStatus.PRINTED,
+]
+
+
+def is_item_event_superseded(order_status: OrderStatus, new_status: OrderStatus) -> bool:
+    """True if an order_item_* event's ``new_status`` is at or behind where
+    the order already is — i.e. a different item already pushed the order
+    further, and this event should be acknowledged but not applied.
+
+    Only considers the forward order_item_* path (``ITEM_EVENT_STATUS_ORDER``);
+    ``order_item_canceled``/``order_item_failed`` targets always fall through
+    to the normal invalid-transition handling since those are worth surfacing
+    even if another item has moved ahead.
+    """
+    if order_status in (OrderStatus.CANCELLED, OrderStatus.SHIPPED, OrderStatus.ERRORED):
+        return new_status in ITEM_EVENT_STATUS_ORDER
+    if order_status in ITEM_EVENT_STATUS_ORDER and new_status in ITEM_EVENT_STATUS_ORDER:
+        return ITEM_EVENT_STATUS_ORDER.index(new_status) <= ITEM_EVENT_STATUS_ORDER.index(order_status)
+    return False
 
 # Internal status -> OMS API-002 status code. Distinct from STATUS_EVENT_MAP
 # (QPMN's own vocabulary) -- QPMN and OMS use different wire vocabularies

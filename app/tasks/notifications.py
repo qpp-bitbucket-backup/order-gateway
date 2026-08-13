@@ -1,4 +1,5 @@
 """Outbound notification Celery tasks."""
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
@@ -6,23 +7,23 @@ from typing import Optional, List, Dict, Any
 from sqlmodel import Session, select
 
 from app.core.celery import celery_app
+from app.core.config import settings
 from app.core.database import engine
 from app.core.rabbitmq import QUEUE_ORDER_NOTIFYING
 from app.models.order import Order
 from app.models.webhook_log import WebhookLog, WebhookProcessStatus
 from app.services.oms import oms_service
 from app.services.vfs import vfs_service
+from app.tasks.orders import _exponential_backoff
 
 logger = logging.getLogger(__name__)
 
 
 @celery_app.task(
-    bind=True,
     name="tasks.notifications.notify_oms",
     queue=QUEUE_ORDER_NOTIFYING,
 )
 def notify_oms(
-    self,
     webhook_log_id: int,
     order_id: str,
     event_status: str,
@@ -33,10 +34,11 @@ def notify_oms(
 
     Success → mark the outbound log ``processed``.
     4xx / business error → mark ``failed`` (no retry).
-    5xx / network error → update ``retry_count`` + ``error_message`` then
-    re-enqueue itself 15 minutes out (same pattern as ``push_order`` for
-    QPMN) — unlike ``notify_vfs``, there's no retry cap; it keeps retrying
-    every 15 minutes until OMS accepts it.
+    5xx / network error → exponential backoff retry, up to
+    ``OMS_NOTIFY_RETRY_COUNT`` attempts; once exhausted the ``WebhookLog``
+    is left ``failed``. Whether the *order* itself should also transition
+    to FAILED at that point is unconfirmed with Ivan — not wired up here,
+    see docs/order-gateway-oms-todo.md.
     """
     logger.info(
         "[Celery] notify_oms: log_id=%s order_id=%s status=%s",
@@ -60,7 +62,8 @@ def notify_oms(
             if not order:
                 logger.error("[Celery] Order not found: %s", order_id)
                 log.process_status = WebhookProcessStatus.FAILED
-                log.error_message = "Order not found"
+                log.details = "Order not found"
+                log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
                 return False
@@ -72,15 +75,13 @@ def notify_oms(
                 shipments=shipments,
             )
 
-            if result.get("request_headers") is not None:
-                log.headers = result.get("request_headers")
             if result.get("request_payload") is not None:
                 log.payload = result.get("request_payload")
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
-                log.processed_at = datetime.now(timezone.utc)
-                log.error_message = None
+                log.details = json.dumps(result.get("response")) if result.get("response") is not None else None
+                log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] OMS notified for order %s", order_id)
@@ -88,8 +89,11 @@ def notify_oms(
 
             # Non-retryable failure (4xx, business error, not configured)
             log.process_status = WebhookProcessStatus.FAILED
-            log.error_message = result.get("message", "OMS returned failure")
-            log.retry_count = self.request.retries
+            log.details = json.dumps({
+                "errorCode": result.get("error_code"),
+                "errorMsg": result.get("message", "OMS returned failure"),
+            })
+            log.updated_at = datetime.now(timezone.utc)
             session.add(log)
             session.commit()
             logger.warning("[Celery] OMS business error for order %s: %s", order_id, result)
@@ -107,38 +111,50 @@ def notify_oms(
                 log = session.exec(
                     select(WebhookLog).where(WebhookLog.id == webhook_log_id)
                 ).first()
-                if log:
-                    log.retry_count = (log.retry_count or 0) + 1
-                    log.error_message = str(e)[:512]
+                if not log:
+                    return True
+
+                retry_count = log.retry_count or 0
+                max_retries = settings.OMS_NOTIFY_RETRY_COUNT
+                base_delay = settings.OMS_NOTIFY_RETRY_COUNTDOWN
+                max_delay = settings.OMS_NOTIFY_RETRY_MAX_COUNTDOWN
+
+                if retry_count < max_retries:
+                    countdown = _exponential_backoff(base_delay, retry_count, max_delay)
+                    log.retry_count = retry_count + 1
+                    log.details = str(e)[:512]
+                    log.updated_at = datetime.now(timezone.utc)
                     session.add(log)
                     session.commit()
+                    logger.warning(
+                        "[Celery] notify_oms failed for order %s (attempt %s/%s), retrying in %ss",
+                        order_id, retry_count + 1, max_retries, countdown,
+                    )
+                    notify_oms.apply_async(
+                        args=[webhook_log_id, order_id, event_status, shipments],
+                        countdown=countdown,
+                    )
+                    return True
+
+                log.process_status = WebhookProcessStatus.FAILED
+                log.details = str(e)[:512]
+                log.updated_at = datetime.now(timezone.utc)
+                session.add(log)
+                session.commit()
+                logger.error(
+                    "[Celery] notify_oms exhausted %s retries for order %s", max_retries, order_id,
+                )
+                return False
         except Exception as log_err:
             logger.error("[Celery] Failed to update webhook log: %s", log_err)
-
-        logger.warning(
-            "[Celery] notify_oms failed for order %s, retrying in 15 minutes", order_id
-        )
-        notify_oms.apply_async(
-            args=[webhook_log_id, order_id, event_status, shipments],
-            countdown=900,
-        )
-        return True
-
-
-# Site Flow's official trigger retry curve: 6 min, 15 min, 30 min, then a
-# final attempt 24 h after the initial failure. VFS-specific — other
-# notification tasks keep their own retry policy.
-VFS_RETRY_COUNTDOWNS = [6 * 60, 15 * 60, 30 * 60, 24 * 60 * 60]
+            return False
 
 
 @celery_app.task(
-    bind=True,
     name="tasks.notifications.notify_vfs",
     queue=QUEUE_ORDER_NOTIFYING,
-    max_retries=len(VFS_RETRY_COUNTDOWNS),
 )
 def notify_vfs(
-    self,
     webhook_log_id: int,
     order_id: str,
     event_status: str,
@@ -149,9 +165,11 @@ def notify_vfs(
 
     Success → mark the outbound log ``processed``.
     4xx / business error → mark ``failed`` (no retry).
-    5xx / network error → retry on Site Flow's official trigger curve
-    (6 min → 15 min → 30 min → 24 h, see ``VFS_RETRY_COUNTDOWNS``); once
-    the curve is exhausted the log is left as ``failed``.
+    5xx / network error → exponential backoff retry, up to
+    ``VFS_NOTIFY_RETRY_COUNT`` attempts; once exhausted the ``WebhookLog``
+    is left ``failed``. Whether the *order* itself should also transition
+    to FAILED at that point is unconfirmed with Ivan — not wired up here,
+    see docs/order-gateway-oms-todo.md.
     """
     logger.info(
         "[Celery] notify_vfs: log_id=%s order_id=%s status=%s",
@@ -175,7 +193,8 @@ def notify_vfs(
             if not order:
                 logger.error("[Celery] Order not found: %s", order_id)
                 log.process_status = WebhookProcessStatus.FAILED
-                log.error_message = "Order not found"
+                log.details = "Order not found"
+                log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
                 return False
@@ -186,15 +205,13 @@ def notify_vfs(
                 shipments=shipments,
             )
 
-            if result.get("request_headers") is not None:
-                log.headers = result.get("request_headers")
             if result.get("request_payload") is not None:
                 log.payload = result.get("request_payload")
 
             if result.get("success"):
                 log.process_status = WebhookProcessStatus.PROCESSED
-                log.processed_at = datetime.now(timezone.utc)
-                log.error_message = None
+                log.details = json.dumps(result.get("response")) if result.get("response") is not None else None
+                log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
                 logger.info("[Celery] VFS notified for order %s", order_id)
@@ -202,8 +219,11 @@ def notify_vfs(
 
             # Non-retryable failure (4xx, business error, not configured)
             log.process_status = WebhookProcessStatus.FAILED
-            log.error_message = result.get("message", "VFS postback failed")
-            log.retry_count = self.request.retries
+            log.details = json.dumps({
+                "errorCode": result.get("error_code"),
+                "errorMsg": result.get("message", "VFS postback failed"),
+            })
+            log.updated_at = datetime.now(timezone.utc)
             session.add(log)
             session.commit()
             logger.warning("[Celery] VFS postback error for order %s: %s", order_id, result)
@@ -221,17 +241,40 @@ def notify_vfs(
                 log = session.exec(
                     select(WebhookLog).where(WebhookLog.id == webhook_log_id)
                 ).first()
-                if log:
-                    log.retry_count = self.request.retries
-                    log.error_message = str(e)[:512]
-                    if self.request.retries >= self.max_retries:
-                        log.process_status = WebhookProcessStatus.FAILED
+                if not log:
+                    return True
+
+                retry_count = log.retry_count or 0
+                max_retries = settings.VFS_NOTIFY_RETRY_COUNT
+                base_delay = settings.VFS_NOTIFY_RETRY_COUNTDOWN
+                max_delay = settings.VFS_NOTIFY_RETRY_MAX_COUNTDOWN
+
+                if retry_count < max_retries:
+                    countdown = _exponential_backoff(base_delay, retry_count, max_delay)
+                    log.retry_count = retry_count + 1
+                    log.details = str(e)[:512]
+                    log.updated_at = datetime.now(timezone.utc)
                     session.add(log)
                     session.commit()
+                    logger.warning(
+                        "[Celery] notify_vfs failed for order %s (attempt %s/%s), retrying in %ss",
+                        order_id, retry_count + 1, max_retries, countdown,
+                    )
+                    notify_vfs.apply_async(
+                        args=[webhook_log_id, order_id, event_status, shipments],
+                        countdown=countdown,
+                    )
+                    return True
+
+                log.process_status = WebhookProcessStatus.FAILED
+                log.details = str(e)[:512]
+                log.updated_at = datetime.now(timezone.utc)
+                session.add(log)
+                session.commit()
+                logger.error(
+                    "[Celery] notify_vfs exhausted %s retries for order %s", max_retries, order_id,
+                )
+                return False
         except Exception as log_err:
             logger.error("[Celery] Failed to update webhook log: %s", log_err)
-
-        # Retry on the Site Flow curve; raise the original error once exhausted.
-        if self.request.retries < len(VFS_RETRY_COUNTDOWNS):
-            raise self.retry(exc=e, countdown=VFS_RETRY_COUNTDOWNS[self.request.retries])
-        raise
+            return False

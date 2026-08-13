@@ -66,6 +66,7 @@ class Component(BaseModel):
     attributes: Optional[Dict[str, Any]] = Field(None, description="Custom attributes")
     colour: Optional[Color] = Field(None, description="Color specification")
     finish: Optional[Finish] = Field(None, description="Finish specification")
+    localFile: Optional[bool] = Field(None, description="Whether the file is local")
     extraData: Optional[List[Any]] = Field(None, description="Extra component data")
 
 
@@ -100,11 +101,12 @@ class OrderData(BaseModel):
     items: List[OrderItem] = Field(..., min_length=1, description="Order line items")
     shipments: Optional[List[Shipment]] = Field(None, description="Shipping information")
     stockItems: Optional[List[StockItem]] = Field(None, description="Stock items required for production")
+    error: Optional[List[Any]] = Field(None, description="Error list, passthrough")
+    extraData: Optional[List[Any]] = Field(None, description="Extra order data")
     printType: Optional[str] = Field(None, description="Print type (e.g., 'digital')")
     email: Optional[str] = Field(None, description="Customer email")
     amount: Optional[float] = Field(None, description="Order amount")
     customerName: Optional[str] = Field(None, description="Customer name")
-    extraData: Optional[List[Any]] = Field(None, description="Extra order data")
 
 
 class OrderValidationRequest(BaseModel):
@@ -136,9 +138,12 @@ class FullOrder(BaseModel):
 
 
 class OrderValidationResponse(BaseModel):
-    """Schema for order validation response."""
-    success: bool = Field(..., description="Validation success status")
-    order: Optional[Dict[str, Any]] = Field(None, description="Validated order data")
+    """Schema for order validation response.
+
+    VFS requires ``orderData`` at the top level (at minimum ``sourceOrderId``
+    nested inside it) — no ``success``/``order`` wrapper.
+    """
+    orderData: Dict[str, Any] = Field(..., description="Validated order data")
 
 
 class OrderSubmissionResponse(BaseModel):

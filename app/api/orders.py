@@ -265,25 +265,16 @@ def validate_order(
                         _error(shipment_loc + ["isoCountry"], "isoCountry is required", "missing")
                     )
 
-    # If there are validation errors, respond with the standard FastAPI validation shape.
+    # If there are validation errors, respond in VFS's expected shape:
+    # {"success": false, "error": {"message": "...", "name": "...", "code": 422}}
     if validation_errors:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=validation_errors,
+        message = "; ".join(
+            f"{'.'.join(str(p) for p in e['loc'][1:])}: {e['msg']}" for e in validation_errors
         )
+        raise _siteflow_error(message, "ValidationError", status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-    # Validation successful - return validated order structure
-    validated_order = {
-        "destination": request.destination.model_dump(),
-        "orderData": request.orderData.model_dump(),
-        "validated_at": datetime.now(timezone.utc).isoformat(),
-        "status": "validated"
-    }
-
-    resp = OrderValidationResponse(
-        success=True,
-        order=validated_order
-    )
+    # Validation successful - VFS requires orderData at the top level.
+    resp = OrderValidationResponse(orderData=request.orderData.model_dump())
     _log_response("POST /order/validate", resp.model_dump())
     return resp
 

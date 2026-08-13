@@ -1,6 +1,6 @@
 import secrets
 from datetime import datetime,timezone
-from typing import Union
+from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session, select
@@ -18,6 +18,14 @@ from app.schemas.client import (
     ClientSummary,
     ClientUpdateRequest,
 )
+from app.schemas.webhook_registration import (
+    WebhookRegistration,
+    WebhookRegistrationCreateRequest,
+    WebhookRegistrationResponse,
+    WebhookRegistrationsListResponse,
+    WebhookRegistrationUpdateRequest,
+)
+from app.services import qpmn_webhook
 
 router = APIRouter(
     prefix="/api/client",
@@ -317,3 +325,118 @@ def platform_deactivate_client(
     session.refresh(client)
 
     return ClientResponse(client=_to_summary(client))
+
+
+# ---------------------------------------------------------------------------
+# Webhook registration proxy (QPMN §4) — not persisted locally, QPMN is the
+# source of truth per Ivan (2026-08-11).
+# ---------------------------------------------------------------------------
+
+def _get_webhook_client_or_404(client_id: int, session: Session) -> Client:
+    client = session.get(Client, client_id)
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Client with ID '{client_id}' not found",
+        )
+    if not client.store_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Client '{client_id}' has no store_key configured",
+        )
+    return client
+
+
+def _qpmn_error_to_http(e: qpmn_webhook.QpmnApiError) -> HTTPException:
+    status_code = e.status_code if e.status_code in (400, 401, 404, 422) else status.HTTP_502_BAD_GATEWAY
+    return HTTPException(status_code=status_code, detail=e.message)
+
+
+@jwt_router.post("/clients/{client_id}/webhooks", response_model=WebhookRegistrationResponse, status_code=status.HTTP_201_CREATED)
+def platform_create_webhook(
+    client_id: int,
+    request: WebhookRegistrationCreateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+):
+    """Register a QPMN webhook for this client's store (§4.1, JWT admin only)."""
+    client = _get_webhook_client_or_404(client_id, session)
+    try:
+        data = qpmn_webhook.create_webhook(client.store_key, request.name, request.url, request.eventTypes, request.enabled)
+    except qpmn_webhook.QpmnApiError as e:
+        raise _qpmn_error_to_http(e)
+    return WebhookRegistrationResponse(webhook=WebhookRegistration(**data))
+
+
+@jwt_router.get("/clients/{client_id}/webhooks", response_model=WebhookRegistrationsListResponse)
+def platform_list_webhooks(
+    client_id: int,
+    page: int = Query(1, ge=1, description="Page number"),
+    pagesize: int = Query(20, ge=1, le=100, description="Items per page"),
+    enabled: Optional[bool] = Query(None, description="Filter by enabled status"),
+    name: Optional[str] = Query(None, description="Filter by name"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+):
+    """List QPMN webhooks registered for this client's store (§4.2, JWT admin only)."""
+    client = _get_webhook_client_or_404(client_id, session)
+    try:
+        data = qpmn_webhook.list_webhooks(client.store_key, page=page, size=pagesize, enabled=enabled, name=name)
+    except qpmn_webhook.QpmnApiError as e:
+        raise _qpmn_error_to_http(e)
+    content = data.get("content", [])
+    return WebhookRegistrationsListResponse(
+        count=data.get("totalCount", len(content)),
+        page=data.get("pageNumber", page),
+        pages=data.get("totalPages", 1),
+        data=[WebhookRegistration(**item) for item in content],
+    )
+
+
+@jwt_router.get("/clients/{client_id}/webhooks/{webhook_id}", response_model=WebhookRegistrationResponse)
+def platform_get_webhook(
+    client_id: int,
+    webhook_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+):
+    """Get a single QPMN webhook by id for this client's store (§4.3, JWT admin only)."""
+    client = _get_webhook_client_or_404(client_id, session)
+    try:
+        data = qpmn_webhook.get_webhook(client.store_key, webhook_id)
+    except qpmn_webhook.QpmnApiError as e:
+        raise _qpmn_error_to_http(e)
+    return WebhookRegistrationResponse(webhook=WebhookRegistration(**data))
+
+
+@jwt_router.put("/clients/{client_id}/webhooks/{webhook_id}", response_model=WebhookRegistrationResponse)
+def platform_update_webhook(
+    client_id: int,
+    webhook_id: int,
+    request: WebhookRegistrationUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+):
+    """Update a QPMN webhook for this client's store (§4.4, JWT admin only)."""
+    client = _get_webhook_client_or_404(client_id, session)
+    try:
+        data = qpmn_webhook.update_webhook(client.store_key, webhook_id, request.name, request.url, request.eventTypes, request.enabled)
+    except qpmn_webhook.QpmnApiError as e:
+        raise _qpmn_error_to_http(e)
+    return WebhookRegistrationResponse(webhook=WebhookRegistration(**data))
+
+
+@jwt_router.delete("/clients/{client_id}/webhooks/{webhook_id}", response_model=WebhookRegistrationResponse)
+def platform_delete_webhook(
+    client_id: int,
+    webhook_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+):
+    """Delete a QPMN webhook for this client's store (§4.5, JWT admin only)."""
+    client = _get_webhook_client_or_404(client_id, session)
+    try:
+        data = qpmn_webhook.delete_webhook(client.store_key, webhook_id)
+    except qpmn_webhook.QpmnApiError as e:
+        raise _qpmn_error_to_http(e)
+    return WebhookRegistrationResponse(webhook=WebhookRegistration(**data))

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -123,6 +123,17 @@ For API support, contact: itdev2@qpp.com
         },
     ],
 )
+
+@app.exception_handler(HTTPException)
+async def siteflow_shaped_exception_handler(request: Request, exc: HTTPException):
+    """FastAPI wraps ``HTTPException.detail`` under a ``"detail"`` key by
+    default. When ``detail`` is already a SiteFlow-shaped error dict (see
+    ``_siteflow_error()`` in app/api/orders.py — ``{"success": ..., "error": {...}}``),
+    return it as-is instead of double-wrapping it."""
+    if isinstance(exc.detail, dict) and "success" in exc.detail:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
 
 # Configure CORS
 app.add_middleware(
