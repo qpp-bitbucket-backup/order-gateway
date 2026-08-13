@@ -300,6 +300,26 @@ class OrderCreationErrorResponse(BaseModel):
     error: OrderCreationErrorDetail = Field(..., description="Error detail")
 
 
+class OrderStatusShipment(BaseModel):
+    """Shipment info for order status response (SiteFlow-compatible)."""
+    carrier: Optional[Dict[str, Any]] = Field(None, description="Carrier information (code, service, alias, serviceId)")
+    shippedDate: Optional[str] = Field(None, description="Shipped date (ISO-8601)")
+    trackingNumber: Optional[str] = Field(None, description="Carrier tracking number")
+    trackingUrl: Optional[str] = Field(None, description="Tracking URL")
+    status: Optional[str] = Field(None, description="Shipment status")
+    shipmentIndex: Optional[int] = Field(None, description="Shipment index")
+
+
+class OrderStatusResponse(BaseModel):
+    """Order status response (SiteFlow-compatible).
+
+    Top-level structure with ``order``, ``orderId``, and ``shipments``.
+    """
+    order: Dict[str, Any] = Field(..., description="Order details including _id and orderData with status")
+    orderId: Optional[str] = Field(None, description="Order ID (same as order._id)")
+    shipments: Optional[List[OrderStatusShipment]] = Field(None, description="Shipment details including carrier and tracking info")
+
+
 class OrderUpdateRequest(BaseModel):
     """Schema for order update request.
 

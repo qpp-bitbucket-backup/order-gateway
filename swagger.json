@@ -222,36 +222,6 @@
       }
     },
     "/api/order/{orderId}": {
-      "get": {
-        "summary": "Get an Order",
-        "description": "Retrieves detailed information for a specific order by its ID.",
-        "operationId": "getOrderById",
-        "parameters": [
-          {
-            "name": "orderId",
-            "in": "path",
-            "description": "The unique identifier of the order.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Order details",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OrderDetailsResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/order/{orderId}": {
       "put": {
         "summary": "Update an Order",
         "description": "Updates the destination and/or order data of an existing order.\n\nThe order can **only** be updated when it is in a cancellable state (`received`, `pending`, `validated`, `failed`, `errored`). Orders with status `printready`, `printed`, `shipped`, or `cancelled` will return HTTP **409 Conflict**.",
@@ -452,6 +422,104 @@
                     "message": "Order cancellation failed: unexpected database error",
                     "name": "InternalServerError",
                     "code": 500
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/order/details/{order_id}": {
+      "get": {
+        "summary": "Get Order Status",
+        "description": "Retrieves order status in SiteFlow-compatible format.\n\nReturns order details with a top-level ``shipments`` array containing carrier and tracking information. Pass ``includes[]=shipments`` to include the shipments array.",
+        "operationId": "getOrderStatus",
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "description": "The internal order ID (returned as ``_id`` in the order creation response).",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "includes[]",
+            "in": "query",
+            "description": "Additional data to include (e.g., ``shipments``).",
+            "required": false,
+            "schema": { "type": "array", "items": { "type": "string" } }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order status retrieved successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderStatusResponse"
+                },
+                "example": {
+                  "order": {
+                    "_id": "6a7b481e9d554ec5d53d63f6",
+                    "orderData": {
+                      "sourceOrderId": "CN-TEST20260811-1_S1055552",
+                      "status": "shipped"
+                    },
+                    "__v": 0
+                  },
+                  "orderId": "6a7b481e9d554ec5d53d63f6",
+                  "shipments": [
+                    {
+                      "carrier": {
+                        "code": "japanpost",
+                        "service": "Small Packet",
+                        "alias": "yupacket",
+                        "serviceId": "61ef873422bdc39cea58122e"
+                      },
+                      "shippedDate": "2026-08-05T10:20:48.080Z",
+                      "trackingNumber": "LP111111111JP",
+                      "trackingUrl": "",
+                      "status": "shipped",
+                      "shipmentIndex": 0
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Order not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCreationErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "ofError": true,
+                    "statusCode": 404,
+                    "code": 211,
+                    "message": "Order not found"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCreationErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "ofError": true,
+                    "statusCode": 500,
+                    "message": "Failed to retrieve order"
                   }
                 }
               }
@@ -1322,6 +1390,74 @@
           "detail": {
             "type": "string",
             "description": "Human-readable error description."
+          }
+        }
+      },
+      "OrderStatusShipment": {
+        "type": "object",
+        "description": "Shipment info for order status response (SiteFlow-compatible).",
+        "properties": {
+          "carrier": {
+            "type": "object",
+            "description": "Carrier information (code, service, alias, serviceId).",
+            "properties": {
+              "code": { "type": "string" },
+              "service": { "type": "string" },
+              "alias": { "type": "string" },
+              "serviceId": { "type": "string" }
+            }
+          },
+          "shippedDate": {
+            "type": "string",
+            "description": "Shipped date (ISO-8601).",
+            "example": "2026-08-05T10:20:48.080Z"
+          },
+          "trackingNumber": {
+            "type": "string",
+            "description": "Carrier tracking number."
+          },
+          "trackingUrl": {
+            "type": "string",
+            "description": "Tracking URL."
+          },
+          "status": {
+            "type": "string",
+            "description": "Shipment status."
+          },
+          "shipmentIndex": {
+            "type": "integer",
+            "description": "Shipment index."
+          }
+        }
+      },
+      "OrderStatusResponse": {
+        "type": "object",
+        "description": "Order status response (SiteFlow-compatible).",
+        "properties": {
+          "order": {
+            "type": "object",
+            "description": "Order details including _id and orderData with status.",
+            "properties": {
+              "_id": { "type": "string" },
+              "orderData": {
+                "type": "object",
+                "properties": {
+                  "status": { "type": "string" }
+                }
+              },
+              "__v": { "type": "integer" }
+            }
+          },
+          "orderId": {
+            "type": "string",
+            "description": "Order ID (same as order._id)."
+          },
+          "shipments": {
+            "type": "array",
+            "description": "Shipment details including carrier and tracking info.",
+            "items": {
+              "$ref": "#/components/schemas/OrderStatusShipment"
+            }
           }
         }
       },

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, status, Depends
 from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from datetime import datetime, timezone
 import json
 import logging
@@ -22,7 +22,8 @@ from app.schemas.order import (
     OrderCreationErrorResponse,
     OrdersListResponse,
     OrderSummary,
-    OrderDetailsResponse,
+    OrderStatusResponse,
+    OrderStatusShipment,
     CancelledOrderResponse,
     FullOrder,
     OrderUpdateRequest,
@@ -38,6 +39,7 @@ from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
 from app.core.auth_jwt import get_current_user
 from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
+from app.models.webhook_log import WebhookLog, WebhookDirection
 from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES
 from app.services.oss import oss_service
 
@@ -90,6 +92,31 @@ def _enrich_order_data_with_status(order_data: Optional[dict], status: OrderStat
     enriched = dict(order_data)
     enriched["status"] = _EXTERNAL_STATUS_MAP.get(status, status.value)
     return enriched
+
+
+# Internal keys stored in the DB ``source`` JSON column that are not part of
+# the SiteFlow ``source`` object and should be stripped from API responses.
+_INTERNAL_SOURCE_KEYS = {"submitted_at"}
+
+
+def _clean_source(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Remove internal-only keys from the ``source`` dict."""
+    if not source or not isinstance(source, dict):
+        return source
+    return {k: v for k, v in source.items() if k not in _INTERNAL_SOURCE_KEYS}
+
+
+def _strip_none(obj: Any) -> Any:
+    """Recursively remove ``None`` values from dicts and lists.
+
+    SiteFlow responses never include null-valued fields, so we prune them
+    before returning order data to keep responses clean.
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_none(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_none(item) for item in obj]
+    return obj
 
 
 def _mask_pii(value: Optional[str], visible_chars: int = 2) -> Optional[str]:
@@ -489,48 +516,214 @@ def get_all_orders(
         )
 
 
-@router.get("/order/{order_id}", response_model=OrderDetailsResponse)
-def get_order_by_id(
+def _extract_tracking_info(session: Session, order: Order) -> List[Dict[str, Any]]:
+    """Extract the latest tracking data for an order from inbound webhook logs.
+
+    Searches ``webhook_logs`` for the most recent inbound QPMN shipment event
+    (``package_shipped`` or ``order_item_*`` with shipments) and returns the
+    tracking fields.
+
+    Returns a list of dicts (one per shipment) with keys:
+    ``trackingNumber``, ``trackingUrl``, ``company``, ``shipDate``.
+    """
+    tracking_list: List[Dict[str, Any]] = []
+    logs = session.exec(
+        select(WebhookLog)
+        .where(
+            (WebhookLog.order_id == order.order_id)
+            & (WebhookLog.direction == WebhookDirection.INBOUND)
+            & (WebhookLog.source == "QPMN")
+        )
+        .order_by(WebhookLog.created_at.desc())
+    ).all()
+
+    for log in logs:
+        payload = log.payload or {}
+        # package_shipped events have tracking fields at the top level
+        shipments = payload.get("shipments") or []
+        if shipments:
+            for s in shipments:
+                tracking_list.append({
+                    "trackingNumber": s.get("trackingNumber"),
+                    "trackingUrl": s.get("trackingUrl"),
+                    "company": s.get("company"),
+                    "shipDate": s.get("shipDate"),
+                })
+            break
+        # order_item_* events with embedded shipments
+        if "trackingNumber" in payload:
+            tracking_list.append({
+                "trackingNumber": payload.get("trackingNumber"),
+                "trackingUrl": payload.get("trackingUrl"),
+                "company": payload.get("company"),
+                "shipDate": payload.get("shipDate"),
+            })
+            break
+
+    return tracking_list
+
+
+def _build_order_status_shipments(
+    order: Order,
+    tracking_list: List[Dict[str, Any]],
+) -> Optional[List[OrderStatusShipment]]:
+    """Build the top-level ``shipments`` array for the order status response.
+
+    Merges carrier info from ``order.order_data["shipments"]`` with tracking
+    data extracted from webhook logs.  When the order has no shipments
+    defined in ``order_data`` but tracking data exists from webhook events,
+    those tracking entries are used directly.
+    """
+    order_data = order.order_data or {}
+    order_shipments = order_data.get("shipments") or []
+
+    if not order_shipments and not tracking_list:
+        return None
+
+    def _parse_shipped_date(raw: Any) -> Optional[str]:
+        """Convert epoch-ms or ISO string to ``YYYY-MM-DDTHH:MM:SS.mmmZ``."""
+        if not raw:
+            return None
+        try:
+            ts = int(raw)
+            return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        except (ValueError, TypeError):
+            # Already an ISO-8601 string — return as-is
+            return str(raw)
+
+    def _carrier_from_tracking(tracking: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Build a minimal carrier dict from webhook ``company`` field."""
+        company = tracking.get("company")
+        if company:
+            return {"code": company}
+        return None
+
+    result: List[OrderStatusShipment] = []
+
+    if order_shipments:
+        for idx, ship in enumerate(order_shipments):
+            carrier = ship.get("carrier") if isinstance(ship, dict) else None
+            tracking = tracking_list[idx] if idx < len(tracking_list) else {}
+
+            # Webhook company overrides order_data carrier when present
+            if not carrier:
+                carrier = _carrier_from_tracking(tracking)
+
+            result.append(OrderStatusShipment(
+                carrier=carrier,
+                shippedDate=_parse_shipped_date(tracking.get("shipDate")),
+                trackingNumber=tracking.get("trackingNumber"),
+                trackingUrl=tracking.get("trackingUrl"),
+                status=order.status.value if idx == 0 else None,
+                shipmentIndex=ship.get("shipmentIndex", idx) if isinstance(ship, dict) else idx,
+            ))
+    else:
+        # No shipments in order_data — use tracking entries directly
+        for idx, tracking in enumerate(tracking_list):
+            result.append(OrderStatusShipment(
+                carrier=_carrier_from_tracking(tracking),
+                shippedDate=_parse_shipped_date(tracking.get("shipDate")),
+                trackingNumber=tracking.get("trackingNumber"),
+                trackingUrl=tracking.get("trackingUrl"),
+                status=order.status.value if idx == 0 else None,
+                shipmentIndex=idx,
+            ))
+
+    return result if result else None
+
+
+@router.get(
+    "/order/details/{order_id}",
+    response_model=OrderStatusResponse,
+    responses={
+        404: {
+            "description": "Order not found.",
+            "content": {"application/json": {"example": {
+                "success": False,
+                "error": {
+                    "ofError": True,
+                    "statusCode": 404,
+                    "code": 211,
+                    "message": "Order not found",
+                },
+            }}},
+        },
+        500: {
+            "description": "Internal server error.",
+            "content": {"application/json": {"example": {
+                "success": False,
+                "error": {
+                    "ofError": True,
+                    "statusCode": 500,
+                    "message": "Failed to retrieve order",
+                },
+            }}},
+        },
+    },
+)
+def get_order_status(
     order_id: str,
+    includes: Optional[List[str]] = Query(None, alias="includes[]", description="Additional data to include (e.g., shipments)"),
     session: Session = Depends(get_session),
     store_id: Optional[str] = Depends(get_client_store_id),
 ):
     """
-    Get an Order - Retrieves detailed information for a specific order by its ID.
+    Get Order Status - Retrieves order status in SiteFlow-compatible format.
 
-    Returns complete order details including all items, components, and status.
-    Only returns orders belonging to the authenticated client's store.
+    Returns order details with top-level ``shipments`` array containing carrier
+    and tracking information.
+
+    **Error responses** follow the SiteFlow format:
+    ``{"success": false, "error": {"ofError": true, "statusCode": 404, "code": 211, "message": "Order not found"}}``
     """
-    _log_request("GET /order/{order_id}", {"order_id": order_id, "store_id": store_id})
+    _log_request("GET /order/details/{order_id}", {"order_id": order_id, "includes": includes})
     try:
         order = order_service.get_order_by_id(session, order_id, store_id=store_id)
 
         if not order:
-            detail = (
-                f"Order with ID '{order_id}' not found"
-                + (" or access denied" if store_id else "")
+            error_resp = OrderCreationErrorResponse(
+                error={
+                    "ofError": True,
+                    "statusCode": 404,
+                    "code": 211,
+                    "message": "Order not found",
+                }
             )
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+            return JSONResponse(status_code=404, content=error_resp.model_dump())
 
+        # Build order object with enriched status
         full_order = FullOrder(
             id=order.order_id,
             destination=order.destination,
-            source=order.source,
+            source=_clean_source(order.source),
             orderData=_enrich_order_data_with_status(order.order_data, order.status),
             version=order.version,
         )
 
-        resp = OrderDetailsResponse(success=True, order=full_order)
-        _log_response("GET /order/{order_id}", resp.model_dump())
+        # Build shipments array when includes[]=shipments is requested
+        shipments: List[OrderStatusShipment] = []
+        if includes and "shipments" in includes:
+            tracking_list = _extract_tracking_info(session, order)
+            shipments = _build_order_status_shipments(order, tracking_list) or []
+
+        resp = OrderStatusResponse(
+            order=_strip_none(full_order.model_dump(by_alias=True)),
+            orderId=order.order_id,
+            shipments=shipments,
+        )
+        _log_response("GET /order/details/{order_id}", resp.model_dump())
         return resp
 
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve order: {str(e)}",
+        logger.error("[Orders] Failed to get order status: %s", e, exc_info=True)
+        error_resp = OrderCreationErrorResponse(
+            error={
+                "ofError": True,
+                "statusCode": 500,
+                "message": f"Failed to retrieve order: {str(e)}",
+            }
         )
+        return JSONResponse(status_code=500, content=error_resp.model_dump())
 
 
 @router.put(
