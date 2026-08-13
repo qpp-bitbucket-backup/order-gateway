@@ -211,8 +211,7 @@ class OrderService:
         """
         if order.status not in UPDATABLE_STATUSES:
             raise ValueError(
-                f"Cannot update order with status '{order.status.value}'. "
-                f"Order must be in one of: {', '.join(s.value for s in UPDATABLE_STATUSES)}."
+                f"Cannot update order with status '{order.status.value}'."
             )
 
         changes: List[str] = []
@@ -411,6 +410,218 @@ class OrderService:
             status_code=qpmn_status_code,
             error=error_detail,
         )
+
+    # ------------------------------------------------------------------
+    # Address sync (OMS fetch → compare → QPMN update)
+    # ------------------------------------------------------------------
+
+    _ADDRESS_COMPARE_FIELDS = (
+        "country", "state", "city", "address1", "address2",
+        "postcode", "first_name", "last_name",
+        "phone", "mobile", "email", "company",
+    )
+
+    @staticmethod
+    def _address_signature(addr: Optional[Address]) -> Optional[tuple]:
+        """Build a hashable signature from an Address for comparison."""
+        if addr is None:
+            return None
+        return tuple(
+            (getattr(addr, f) or "") for f in OrderService._ADDRESS_COMPARE_FIELDS
+        )
+
+    def sync_order_address(self, session: Session, order: Order) -> Dict[str, Any]:
+        """
+        Fetch the latest delivery address from OMS, compare it with the
+        stored address, and—if it changed—call the QPMN update-address API.
+
+        Returns a result dict:
+        ::
+            {
+              "address_changed": bool,
+              "qpmn_updated": Optional[bool],   # None = skipped (no store_order_id)
+              "qpmn_result": Optional[dict],
+            }
+        """
+        from app.services.oms import oms_service
+
+        result: Dict[str, Any] = {
+            "address_changed": False,
+            "qpmn_updated": None,
+            "qpmn_result": None,
+        }
+
+        # 1. Fetch latest addresses from OMS (persists to DB as side-effect)
+        oms_result = oms_service.fetch_order_addresses(order.source_order_id, session)
+        new_delivery = oms_result.get("delivery")
+
+        # 2. Get the previously stored delivery address (before OMS overwrote it)
+        #    oms_service already deleted old rows and inserted new ones,
+        #    so we need to compare what we *just* got with what was there before.
+        #    Re-query the latest delivery address.
+        latest_delivery = session.exec(
+            select(Address).where(
+                (Address.order_id == order.order_id)
+                & (Address.type == AddressType.DELIVERY)
+            ).order_by(Address.id.desc())  # type: ignore[union-attr]
+        ).first()
+
+        # We cannot compare with the "before" state because OMS already
+        # overwrote the DB.  Instead, compare the OMS-returned address with
+        # the order_data shipments address (the original submitted address).
+        # If OMS returned something and it differs from order_data, it changed.
+        old_delivery = self._get_order_data_delivery_address(order)
+
+        if new_delivery and self._address_signature(new_delivery) != self._address_signature(old_delivery):
+            result["address_changed"] = True
+            logger.info("[OrderService] Address changed for order %s", order.order_id)
+
+            # 3. If the order has been pushed to QPMN, update the address there
+            if order.store_order_id:
+                qpmn_result = self.update_qpmn_address(order, latest_delivery or new_delivery)
+                result["qpmn_result"] = qpmn_result
+                result["qpmn_updated"] = qpmn_result.get("success", False)
+
+                if not qpmn_result.get("success"):
+                    # Write detailed failure info to order logs
+                    order.logs = (order.logs or []) + [
+                        {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "action": "qpmn_address_update_failed",
+                            "message": (
+                                f"QPMN address update failed (HTTP {qpmn_result.get('status_code')}): "
+                                f"{qpmn_result.get('error')}."
+                            ),
+                            "status_code": qpmn_result.get("status_code"),
+                            "error": qpmn_result.get("error"),
+                        },
+                    ]
+                    session.add(order)
+                    session.commit()
+                    session.refresh(order)
+            else:
+                logger.info(
+                    "[OrderService] Order %s has no store_order_id, skipping QPMN address update",
+                    order.order_id,
+                )
+        else:
+            # Address unchanged — content may have changed
+            # TODO: compare and update order content in QPMN
+            logger.info("[OrderService] Address unchanged for order %s", order.order_id)
+
+        return result
+
+    @staticmethod
+    def _get_order_data_delivery_address(order: Order) -> Optional[Address]:
+        """Extract the delivery address from the order's stored order_data JSON."""
+        order_data = order.order_data or {}
+        shipments = order_data.get("shipments") or []
+        if not shipments:
+            return None
+        ship_to = shipments[0].get("shipTo")
+        if not ship_to:
+            return None
+        # Map shipTo fields → Address model fields
+        name = ship_to.get("name", "")
+        parts = name.split(" ", 1) if name else ["", ""]
+        return Address(
+            country=ship_to.get("isoCountry"),
+            state=ship_to.get("state"),
+            city=ship_to.get("town"),
+            address1=ship_to.get("address1"),
+            address2=ship_to.get("address2"),
+            postcode=ship_to.get("postcode"),
+            first_name=parts[0] if parts[0] else None,
+            last_name=parts[1] if len(parts) > 1 and parts[1] else None,
+            phone=ship_to.get("phone"),
+            email=ship_to.get("email"),
+            company=ship_to.get("companyName"),
+            order_id=order.order_id,
+            type=AddressType.DELIVERY,
+        )
+
+    def update_qpmn_address(self, order: Order, addr: Address) -> Dict[str, Any]:
+        """
+        Call QPMN Open API to update the delivery address for an order.
+
+        PUT {QPMN_OPEN_API_URL}/open-api/v1/orders/{store_order_id}/deliveryAddress
+        Authorization: Basic {store_key}
+        """
+        if not order.store_order_id:
+            return {"success": False, "error": "No store_order_id"}
+
+        store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
+        if not store_key:
+            logger.warning("[OrderService] No store_key for order %s", order.order_id)
+            return {"success": False, "error": "No store_key configured"}
+
+        api_url = (
+            f"{settings.QPMN_OPEN_API_URL}/orders"
+            f"/{order.store_order_id}/deliveryAddress"
+        )
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "stateCode": addr.state or "",
+            "state": addr.state or "",
+            "city": addr.city or "",
+            "address_1": addr.address1 or "",
+            "address_2": addr.address2 or "",
+            "postCode": addr.postcode or "",
+            "firstName": addr.first_name or "",
+            "lastName": addr.last_name or "",
+            "phone": addr.phone or "",
+            "mobile": addr.mobile or "",
+            "email": addr.email or "",
+        }
+
+        logger.info(
+            "[OrderService] Calling QPMN update-address API for order %s (store_order_id=%s)",
+            order.order_id,
+            order.store_order_id,
+        )
+
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                response = client.put(api_url, headers=headers, json=payload)
+        except httpx.TimeoutException:
+            logger.error("[OrderService] QPMN update-address timeout for order %s", order.order_id)
+            return {"success": False, "error": "QPMN API timeout"}
+        except Exception as exc:
+            logger.error("[OrderService] QPMN update-address failed for order %s: %s", order.order_id, exc)
+            return {"success": False, "error": str(exc)}
+
+        if response.status_code != 200:
+            error_body = None
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            logger.warning(
+                "[OrderService] QPMN update-address returned %s for order %s: %s",
+                response.status_code,
+                order.order_id,
+                error_body,
+            )
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": error_body,
+            }
+
+        body = response.json()
+        if not body.get("success"):
+            logger.warning(
+                "[OrderService] QPMN update-address returned success=false for order %s: %s",
+                order.order_id,
+                body,
+            )
+            return {"success": False, "status_code": 200, "error": body}
+
+        logger.info("[OrderService] QPMN update-address succeeded for order %s", order.order_id)
+        return {"success": True, "status_code": 200, "data": body.get("data")}
 
     # ------------------------------------------------------------------
     # Order push payload builders (legacy & open API)

@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -145,6 +146,40 @@ app.include_router(sync.router)
 app.include_router(sync.jwt_router)
 app.include_router(users.router)
 app.include_router(webhooks.router)
+
+
+# ---------------------------------------------------------------------------
+# Custom exception handler: convert FastAPI 422 validation errors to the
+# SiteFlow-compatible format for POST /api/order only. All other endpoints
+# keep FastAPI's default validation error shape.
+# ---------------------------------------------------------------------------
+@app.exception_handler(RequestValidationError)
+async def order_creation_validation_handler(request: Request, exc: RequestValidationError):
+    if request.url.path == "/api/order" and request.method == "POST":
+        validations = []
+        for err in exc.errors():
+            loc = ".".join(str(part) for part in err.get("loc", []) if part != "body")
+            validations.append({
+                "path": loc or "body",
+                "message": err.get("msg", "Invalid value"),
+            })
+        return JSONResponse(
+            status_code=422,
+            content={
+                "success": False,
+                "error": {
+                    "ofError": True,
+                    "statusCode": 422,
+                    "message": "Validation Failed",
+                    "validations": validations,
+                }
+            },
+        )
+    # Default FastAPI behavior for all other endpoints
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
 
 
 ONEFLOW_SECURITY = [

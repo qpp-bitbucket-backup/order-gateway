@@ -88,7 +88,7 @@
     "/api/order": {
       "post": {
         "summary": "Submit an Order",
-        "description": "Submits a new print order.\n\n**Duplicate detection:** If an order with the same `sourceOrderId` already exists for this store, the API returns HTTP **451** with the existing `order_id` in response details",
+        "description": "Submits a new print order.\n\nThe order payload is uploaded to OSS as a JSON file and a pre-signed download URL is included in the response.\n\n**Duplicate detection:** If an order with the same `sourceOrderId` already exists for this store, the API returns HTTP **400** with a SiteFlow-compatible error response.",
         "operationId": "submitOrder",
         "requestBody": {
           "required": true,
@@ -111,23 +111,70 @@
               }
             }
           },
-          "451": {
-            "description": "Order already exists — duplicate `sourceOrderId` detected for this store. The existing order ID is returned in the `X-Existing-Order-Id` header.",
-            "headers": {
-              "X-Existing-Order-Id": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "The order_id of the already-existing order."
-              }
-            },
+          "400": {
+            "description": "Validation failed — duplicate sourceOrderId detected.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/OrderCreationErrorResponse"
                 },
                 "example": {
-                  "detail": "Order with sourceOrderId 'ORD-001' already exists (order_id=abc-123-def)."
+                  "success": false,
+                  "error": {
+                    "ofError": true,
+                    "statusCode": 400,
+                    "code": 208,
+                    "message": "Validation Failed",
+                    "validations": [
+                      {
+                        "path": "orderData.sourceOrderId",
+                        "message": "Source Order ID already exists"
+                      }
+                    ],
+                    "mongoErr": true
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request body validation failed (missing required fields, wrong types, etc.).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCreationErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "ofError": true,
+                    "statusCode": 422,
+                    "message": "Validation Failed",
+                    "validations": [
+                      {
+                        "path": "orderData.sourceOrderId",
+                        "message": "Field required"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error during order submission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCreationErrorResponse"
+                },
+                "example": {
+                  "success": false,
+                  "error": {
+                    "ofError": true,
+                    "statusCode": 500,
+                    "message": "Order submission failed: internal error"
+                  }
                 }
               }
             }
@@ -602,15 +649,21 @@
         "type": "object",
         "properties": {
           "destination": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              }
-            }
+            "$ref": "#/components/schemas/Destination"
           },
           "orderData": {
             "$ref": "#/components/schemas/OrderData"
+          },
+          "source": {
+            "type": "object",
+            "description": "Source information."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Associated files."
           }
         }
       },
@@ -618,15 +671,21 @@
         "type": "object",
         "properties": {
           "destination": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              }
-            }
+            "$ref": "#/components/schemas/Destination"
           },
           "orderData": {
             "$ref": "#/components/schemas/OrderData"
+          },
+          "source": {
+            "type": "object",
+            "description": "Source information."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Associated files."
           }
         }
       },
@@ -651,11 +710,55 @@
               "$ref": "#/components/schemas/Shipment"
             }
           },
+          "stockItems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StockItem"
+            },
+            "description": "Stock items required for production."
+          },
+          "printType": {
+            "type": "string",
+            "description": "Print type (e.g., 'digital')."
+          },
+          "email": {
+            "type": "string",
+            "description": "Customer email."
+          },
+          "amount": {
+            "type": "number",
+            "description": "Order amount."
+          },
+          "customerName": {
+            "type": "string",
+            "description": "Customer name."
+          },
+          "extraData": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Extra order data."
+          },
           "status": {
             "type": "string",
             "description": "Order status (read-only, returned in responses only). Mapping: received/pending→received, validated/processing→dataready, printready→printready, printed→printed, shipped→shipped, errored/failed→error, cancelled→cancelled.",
             "enum": ["received", "dataready", "printready", "printed", "shipped", "error", "cancelled"],
             "readOnly": true
+          }
+        }
+      },
+      "StockItem": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stock item code."
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Stock quantity."
           }
         }
       },
@@ -666,34 +769,64 @@
             "type": "string"
           },
           "sourceItemId": {
-            "type": "string"
+            "oneOf": [
+              {"type": "string"},
+              {"type": "integer"}
+            ],
+            "description": "External item ID."
           },
           "quantity": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 1
           },
           "printQuantity": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 1
           },
           "unitPrice": {
-            "type": "number"
+            "type": "number",
+            "minimum": 0
           },
           "unitCost": {
-            "type": "number"
+            "type": "number",
+            "minimum": 0
           },
           "unitWeight": {
-            "type": "number"
+            "type": "number",
+            "minimum": 0
+          },
+          "description": {
+            "type": "string",
+            "description": "Item description."
           },
           "productDescription": {
-            "type": "string"
+            "type": "string",
+            "description": "Product description (alias for description)."
+          },
+          "pages": {
+            "type": "integer",
+            "description": "Number of pages."
           },
           "totalPages": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 0
+          },
+          "shipmentIndex": {
+            "type": "integer",
+            "description": "Index linking this item to a shipment."
           },
           "components": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Component"
             }
+          },
+          "extraData": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Extra item data."
           }
         }
       },
@@ -704,10 +837,15 @@
             "type": "string"
           },
           "fetch": {
-            "type": "boolean"
+            "type": "boolean",
+            "default": true
           },
           "path": {
             "type": "string"
+          },
+          "localFile": {
+            "type": "boolean",
+            "description": "Whether the file is local."
           },
           "width": {
             "type": "integer"
@@ -726,26 +864,43 @@
             "additionalProperties": true
           },
           "colour": {
-            "type": "object",
-            "properties": {
-              "side1": {
-                "type": "string"
-              },
-              "side2": {
-                "type": "string"
-              }
-            }
+            "$ref": "#/components/schemas/Color"
           },
           "finish": {
-            "type": "object",
-            "properties": {
-              "side1": {
-                "type": "string"
-              },
-              "side2": {
-                "type": "string"
-              }
-            }
+            "$ref": "#/components/schemas/Finish"
+          },
+          "extraData": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Extra component data."
+          }
+        }
+      },
+      "Color": {
+        "type": "object",
+        "properties": {
+          "side1": {
+            "type": "string",
+            "description": "Front side color."
+          },
+          "side2": {
+            "type": "string",
+            "description": "Back side color."
+          }
+        }
+      },
+      "Finish": {
+        "type": "object",
+        "properties": {
+          "side1": {
+            "type": "string",
+            "description": "Front side finish."
+          },
+          "side2": {
+            "type": "string",
+            "description": "Back side finish."
           }
         }
       },
@@ -756,18 +911,46 @@
             "$ref": "#/components/schemas/Address"
           },
           "carrier": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string"
-              },
-              "service": {
-                "type": "string"
-              },
-              "serviceId": {
-                "type": "string"
-              }
-            }
+            "$ref": "#/components/schemas/Carrier"
+          },
+          "shipmentIndex": {
+            "type": "integer",
+            "description": "Index linking items to this shipment."
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Shipment attachments."
+          },
+          "pspBranding": {
+            "type": "boolean",
+            "description": "PSP branding flag."
+          },
+          "returnAddress": {
+            "$ref": "#/components/schemas/Address"
+          }
+        }
+      },
+      "Carrier": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Carrier code (e.g., fedex)."
+          },
+          "service": {
+            "type": "string",
+            "description": "Service level (e.g., ground)."
+          },
+          "serviceId": {
+            "type": "string",
+            "description": "Service identifier."
+          },
+          "alias": {
+            "type": "string",
+            "description": "Carrier alias (e.g., 'tracked')."
           }
         }
       },
@@ -775,31 +958,52 @@
         "type": "object",
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Recipient name."
           },
           "companyName": {
-            "type": "string"
+            "type": "string",
+            "description": "Company name."
           },
           "address1": {
-            "type": "string"
+            "type": "string",
+            "description": "Street address line 1."
+          },
+          "address2": {
+            "type": "string",
+            "description": "Street address line 2."
+          },
+          "address3": {
+            "type": "string",
+            "description": "Street address line 3."
           },
           "town": {
-            "type": "string"
+            "type": "string",
+            "description": "City/Town."
           },
           "state": {
-            "type": "string"
+            "type": "string",
+            "description": "State/Province."
           },
           "postcode": {
-            "type": "string"
+            "type": "string",
+            "description": "Postal code."
           },
           "isoCountry": {
-            "type": "string"
+            "type": "string",
+            "description": "ISO country code (e.g., US)."
+          },
+          "country": {
+            "type": "string",
+            "description": "Country name (full text, e.g., 'Japan')."
           },
           "email": {
-            "type": "string"
+            "type": "string",
+            "description": "Contact email."
           },
           "phone": {
-            "type": "string"
+            "type": "string",
+            "description": "Contact phone."
           }
         }
       },
@@ -816,12 +1020,24 @@
       },
       "OrderSubmissionResponse": {
         "type": "object",
+        "description": "SiteFlow-compatible order creation response.",
         "properties": {
-          "success": {
-            "type": "boolean"
+          "_id": {
+            "type": "string",
+            "description": "Internal order ID."
           },
-          "order": {
-            "$ref": "#/components/schemas/FullOrder"
+          "url": {
+            "type": "string",
+            "description": "Pre-signed OSS URL to the uploaded order payload JSON."
+          },
+          "timestamp": {
+            "type": "string",
+            "description": "ISO-8601 timestamp of order creation.",
+            "example": "2026-08-11T16:04:46.131Z"
+          },
+          "sourceAccountId": {
+            "type": "string",
+            "description": "Base64-encoded store_id of the client."
           }
         }
       },
@@ -1106,6 +1322,60 @@
           "detail": {
             "type": "string",
             "description": "Human-readable error description."
+          }
+        }
+      },
+      "OrderCreationErrorResponse": {
+        "type": "object",
+        "description": "SiteFlow-compatible error response for order creation failures.",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Always false for errors.",
+            "example": false
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "ofError": {
+                "type": "boolean",
+                "description": "Whether this is an OneFlow error.",
+                "example": true
+              },
+              "statusCode": {
+                "type": "integer",
+                "description": "HTTP status code."
+              },
+              "code": {
+                "type": "integer",
+                "description": "Internal error code."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable error message.",
+                "example": "Validation Failed"
+              },
+              "validations": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "Dotted path to the invalid field."
+                    },
+                    "message": {
+                      "type": "string",
+                      "description": "Validation error message."
+                    }
+                  }
+                }
+              },
+              "mongoErr": {
+                "type": "boolean",
+                "description": "Whether this is a MongoDB error."
+              }
+            }
           }
         }
       },

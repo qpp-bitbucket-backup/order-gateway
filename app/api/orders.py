@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException, Query, status, Depends
+from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
 from typing import Optional, List
 from datetime import datetime, timezone
 import json
 import logging
+import base64
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -17,6 +19,7 @@ from app.schemas.order import (
     OrderValidationResponse,
     OrderSubmissionRequest,
     OrderSubmissionResponse,
+    OrderCreationErrorResponse,
     OrdersListResponse,
     OrderSummary,
     OrderDetailsResponse,
@@ -35,7 +38,8 @@ from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
 from app.core.auth_jwt import get_current_user
 from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
-from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError
+from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES
+from app.services.oss import oss_service
 
 router = APIRouter(
     prefix="/api",
@@ -284,7 +288,71 @@ def validate_order(
     return resp
 
 
-@router.post("/order", response_model=OrderSubmissionResponse)
+@router.post(
+    "/order",
+    response_model=OrderSubmissionResponse,
+    responses={
+        400: {
+            "description": "Validation failed — duplicate sourceOrderId detected.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "error": {
+                            "ofError": True,
+                            "statusCode": 400,
+                            "code": 208,
+                            "message": "Validation Failed",
+                            "validations": [
+                                {
+                                    "path": "orderData.sourceOrderId",
+                                    "message": "Source Order ID already exists",
+                                }
+                            ],
+                            "mongoErr": True,
+                        }
+                    }
+                }
+            },
+        },
+        422: {
+            "description": "Request body validation failed.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "error": {
+                            "ofError": True,
+                            "statusCode": 422,
+                            "message": "Validation Failed",
+                            "validations": [
+                                {
+                                    "path": "orderData.sourceOrderId",
+                                    "message": "Field required",
+                                }
+                            ],
+                        }
+                    }
+                }
+            },
+        },
+        500: {
+            "description": "Internal server error during order submission.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": False,
+                        "error": {
+                            "ofError": True,
+                            "statusCode": 500,
+                            "message": "Order submission failed: internal error",
+                        }
+                    }
+                }
+            },
+        },
+    },
+)
 def submit_order(
     request: OrderSubmissionRequest,
     session: Session = Depends(get_session),
@@ -294,12 +362,13 @@ def submit_order(
     Submit an Order - Submits a new print order.
 
     Creates a new order in the system with the provided data.
-    The order will be processed according to the destination configuration.
+    The order payload is uploaded to OSS as a JSON file and a pre-signed
+    download URL is included in the response.
     The order is associated with the authenticated client's store.
 
     **Duplicate detection:** If an order with the same `source_order_id` already
-    exists for this store, the API returns HTTP **451** with the existing
-    `order_id` in the response details.
+    exists for this store, the API returns HTTP **400** with a SiteFlow-compatible
+    error response.
     """
     _log_request("POST /order", request.model_dump())
     try:
@@ -310,12 +379,25 @@ def submit_order(
             store_id=store_id,
         )
         if existing_order:
-            raise HTTPException(
-                status_code=451,
-                detail=(
-                    f"Order with sourceOrderId '{request.orderData.sourceOrderId}' "
-                    f"already exists (order_id={existing_order.order_id})."
-                ),
+            error_resp = OrderCreationErrorResponse(
+                error={
+                    "ofError": True,
+                    "statusCode": 400,
+                    "code": 208,
+                    "message": "Validation Failed",
+                    "validations": [
+                        {
+                            "path": "orderData.sourceOrderId",
+                            "message": "Source Order ID already exists",
+                        }
+                    ],
+                    "mongoErr": True,
+                }
+            )
+            _log_response("POST /order", error_resp.model_dump())
+            return JSONResponse(
+                status_code=400,
+                content=error_resp.model_dump(),
             )
 
         # Create order via service
@@ -328,16 +410,24 @@ def submit_order(
             store_id=store_id,
         )
 
-        # Build response (exclude logs, files, store_order_id)
-        full_order = FullOrder(
-            id=order.order_id,
-            destination=order.destination,
-            source=order.source,
-            orderData=_enrich_order_data_with_status(order.order_data, order.status),
-            version=order.version,
-        )
+        # Upload order payload to OSS and get pre-signed URL
+        oss_url = None
+        try:
+            oss_object_key = f"orders/{order.order_id}.json"
+            oss_url = oss_service.upload_json_and_get_url(oss_object_key, request.model_dump())
+        except Exception as oss_exc:
+            logger.warning("[Orders] OSS upload failed for order %s: %s", order.order_id, oss_exc)
 
-        resp = OrderSubmissionResponse(success=True, order=full_order)
+        # Build response (SiteFlow-compatible format)
+        source_account_id = base64.b64encode(store_id.encode()).decode() if store_id else None
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        resp = OrderSubmissionResponse(
+            **{"_id": order.order_id},
+            url=oss_url,
+            timestamp=timestamp,
+            sourceAccountId=source_account_id,
+        )
         _log_response("POST /order", resp.model_dump())
         return resp
 
@@ -345,9 +435,17 @@ def submit_order(
         raise
     except Exception as e:
         session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Order submission failed: {str(e)}",
+        logger.error("[Orders] Order submission failed: %s", e, exc_info=True)
+        error_resp = OrderCreationErrorResponse(
+            error={
+                "ofError": True,
+                "statusCode": 500,
+                "message": f"Order submission failed: {str(e)}",
+            }
+        )
+        return JSONResponse(
+            status_code=500,
+            content=error_resp.model_dump(),
         )
 
 
@@ -455,14 +553,18 @@ def update_order(
     store_id: Optional[str] = Depends(get_client_store_id),
 ):
     """
-    Update an Order - Updates the destination and/or order data of an existing order.
+    Update an Order - Updates an existing order's address or content.
 
-    The order can **only** be updated when it is in a cancellable state, i.e. it has
-    not yet reached the print-ready stage. Allowed statuses for update:
-    `received`, `validated`, `failed`, `errored`.
+    **Address update** (when ``orderData.shipments`` has items):
+    Checks that the order status allows updates, then fetches the latest
+    delivery address from OMS and pushes it to QPMN via the update-address
+    API.
 
-    Orders with status `printready`, `printed`, `shipped`, or `cancelled` cannot be
-    modified and will return HTTP **409 Conflict**.
+    **Content update** (when ``orderData.shipments`` is empty or absent):
+    Treats this as a content change. The current order is cancelled first;
+    if the order cannot be cancelled (e.g. ``printready`` / ``printed`` /
+    ``shipped`` / ``cancelled``), the update is rejected with HTTP **409**.
+    Re-creation of the order is not yet implemented (TODO).
     """
     _log_request("PUT /order/{order_id}", {"order_id": order_id, **request.model_dump()})
     try:
@@ -475,39 +577,149 @@ def update_order(
             )
             raise HTTPException(status_code=404, detail=detail)
 
-        try:
-            order, changes = order_service.update_order(
-                session,
-                order,
-                destination=request.destination.model_dump() if request.destination else None,
-                order_data=request.orderData.model_dump() if request.orderData else None,
+        # --- Determine request type ---
+        has_shipments = (
+            request.orderData is not None
+            and request.orderData.shipments
+            and len(request.orderData.shipments) > 0
+        )
+
+        if has_shipments:
+            # === Address update path ===
+            # 1. Check order status is updatable
+            if order.status not in UPDATABLE_STATUSES:
+                order.logs = (order.logs or []) + [{
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "action": "address_update_rejected",
+                    "message": f"Cannot update order with status '{order.status.value}'.",
+                }]
+                session.add(order)
+                session.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot update order with status '{order.status.value}'."
+                    ),
+                )
+
+            # 2. Update order_data in DB (persist new shipments, but don't bump version yet)
+            if request.orderData is not None:
+                order.order_data = request.orderData.model_dump()
+            if request.destination is not None:
+                order.destination = request.destination.model_dump()
+            order.logs = (order.logs or []) + [{
+                "action": "address_update_requested",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }]
+            session.add(order)
+            session.commit()
+            session.refresh(order)
+
+            # 3. Fetch address from OMS and update QPMN
+            try:
+                address_result = order_service.sync_order_address(session, order)
+            except Exception as addr_exc:
+                logger.warning("[Orders] Address sync failed for order %s: %s", order.order_id, addr_exc)
+                address_result = {"address_changed": False, "qpmn_updated": None, "error": str(addr_exc)}
+
+            full_order = FullOrder(
+                id=order.order_id,
+                destination=order.destination,
+                source=order.source,
+                orderData=order.order_data,
+                version=order.version,
             )
-        except ValueError as ve:
-            # Determine 400 vs 409 based on message content
-            if "status" in str(ve).lower():
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(ve))
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
 
-        full_order = FullOrder(
-            id=order.order_id,
-            destination=order.destination,
-            source=order.source,
-            orderData=order.order_data,
-            version=order.version,
-        )
+            # Build response message
+            if address_result.get("address_changed"):
+                qpmn_updated = address_result.get("qpmn_updated")
+                if qpmn_updated:
+                    msg = "Address updated in QPMN successfully."
+                    # Bump version only on success
+                    order.version += 1
+                    session.add(order)
+                    session.commit()
+                    session.refresh(order)
+                    full_order.version = order.version
+                elif qpmn_updated is False:
+                    # Failure log already written by sync_order_address
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="Address changed but QPMN update failed.",
+                    )
+                else:
+                    msg = "Address changed but no store_order_id (skipped QPMN)."
+                    # Bump version (address changed locally even if QPMN was skipped)
+                    order.version += 1
+                    session.add(order)
+                    session.commit()
+                    session.refresh(order)
+                    full_order.version = order.version
+            else:
+                # TODO: address unchanged, content may have changed
+                msg = "Address unchanged."
 
-        resp = OrderUpdateResponse(
-            success=True,
-            message=f"Order updated successfully (fields: {', '.join(changes)}).",
-            order=full_order,
-        )
-        _log_response("PUT /order/{order_id}", resp.model_dump())
-        return resp
+            resp = OrderUpdateResponse(
+                success=True,
+                message=msg,
+                order=full_order,
+            )
+            _log_response("PUT /order/{order_id}", resp.model_dump())
+            return resp
+
+        else:
+            # === Content update path ===
+            # Cancel current order first; if it can't be cancelled, it can't be updated.
+            try:
+                order = order_service.cancel_order(session, order)
+            except OrderNotCancellableError:
+                order.logs = (order.logs or []) + [{
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "action": "content_update_rejected",
+                    "message": (
+                        f"Cannot update order content: order status "
+                        f"'{order.status.value}' does not allow cancellation."
+                    ),
+                }]
+                session.add(order)
+                session.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Cannot update order content: order status "
+                        f"'{order.status.value}' does not allow cancellation, "
+                        f"which is required for content updates."
+                    ),
+                )
+            except QPMNCancelError as qpmn_err:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Cannot cancel order for content update: {str(qpmn_err)}",
+                )
+
+            # TODO: Re-create the order with the new content.
+            # For now, return success indicating the old order was cancelled.
+            full_order = FullOrder(
+                id=order.order_id,
+                destination=order.destination,
+                source=order.source,
+                orderData=order.order_data,
+                version=order.version,
+            )
+
+            resp = OrderUpdateResponse(
+                success=True,
+                message="Order cancelled for content update. Re-creation is not yet implemented (TODO).",
+                order=full_order,
+            )
+            _log_response("PUT /order/{order_id}", resp.model_dump())
+            return resp
 
     except HTTPException:
         raise
     except Exception as e:
         session.rollback()
+        logger.error("[Orders] Order update failed: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Order update failed: {str(e)}",
