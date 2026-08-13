@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 from app.core.database import get_session
 from app.models.client import Client
 from app.models.order import Order, can_transition, is_item_event_superseded, EVENT_STATUS_MAP, OMS_STATUS_MAP
+from app.models.shipment import OrderShipment
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.schemas.webhook import QpmnOrderItemEvent, QpmnPackageShippedEvent, WebhookResponse
 from app.tasks.notifications import notify_oms, notify_vfs
@@ -227,6 +228,25 @@ async def receive_order_status(
     flag_modified(order, "logs")
     session.add(order)
     session.commit()
+
+    # Persist shipment tracking info for package_shipped events — a real,
+    # queryable record instead of leaving it only inside webhook_logs.payload.
+    if is_shipped_event:
+        ship_date_dt = None
+        if event.shipDate is not None:
+            ship_date_dt = datetime.fromtimestamp(event.shipDate / 1000, tz=timezone.utc)
+        shipment_record = OrderShipment(
+            order_id=order.order_id,
+            store_order_id=order.store_order_id,
+            qpmn_shipment_id=str(event.id) if event.id is not None else None,
+            tracking_number=event.trackingNumber,
+            tracking_url=event.trackingUrl,
+            carrier=event.company,
+            ship_date=ship_date_dt,
+            items=[i.model_dump() for i in event.items] if event.items else None,
+        )
+        session.add(shipment_record)
+        session.commit()
 
     # Mark inbound log as processed
     response = WebhookResponse(success=True, message=f"Status updated to '{new_status.value}'")
