@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 
 class Destination(BaseModel):
@@ -57,12 +57,14 @@ class Component(BaseModel):
     attributes: Optional[Dict[str, Any]] = Field(None, description="Custom attributes")
     colour: Optional[Color] = Field(None, description="Color specification")
     finish: Optional[Finish] = Field(None, description="Finish specification")
+    localFile: Optional[bool] = Field(None, description="Whether the file is local (VFS request field)")
+    extraData: Optional[List[Any]] = Field(None, description="VFS-provided extra data, passthrough")
 
 
 class OrderItem(BaseModel):
     """Order item schema."""
     sku: str = Field(..., description="Product SKU")
-    sourceItemId: Optional[str] = Field(None, description="External item ID")
+    sourceItemId: Optional[Union[str, int]] = Field(None, description="External item ID — VFS sends this as an integer")
     quantity: Optional[int] = Field(1, ge=1, description="Order quantity")
     printQuantity: Optional[int] = Field(None, ge=1, description="Print quantity")
     unitPrice: Optional[float] = Field(None, ge=0, description="Unit price")
@@ -71,6 +73,10 @@ class OrderItem(BaseModel):
     productDescription: Optional[str] = Field(None, description="Product description")
     totalPages: Optional[int] = Field(None, ge=0, description="Total pages")
     components: Optional[List[Component]] = Field(None, description="Item components")
+    description: Optional[str] = Field(None, description="Item description (VFS request field)")
+    pages: Optional[int] = Field(None, ge=0, description="Page count (VFS request field)")
+    shipmentIndex: Optional[int] = Field(None, description="Index into orderData.shipments this item ships in")
+    extraData: Optional[List[Any]] = Field(None, description="VFS-provided extra data, passthrough")
 
 
 class OrderData(BaseModel):
@@ -79,12 +85,21 @@ class OrderData(BaseModel):
     postbackAddress: Optional[str] = Field(None, description="Webhook callback URL")
     items: List[OrderItem] = Field(..., min_length=1, description="Order line items")
     shipments: Optional[List[Shipment]] = Field(None, description="Shipping information")
+    stockItems: Optional[List[Any]] = Field(None, description="VFS stock items, passthrough")
+    error: Optional[List[Any]] = Field(None, description="VFS error list, passthrough")
+    extraData: Optional[List[Any]] = Field(None, description="VFS-provided extra data, passthrough")
+    printType: Optional[str] = Field(None, description="Print type (e.g. digital)")
+    email: Optional[str] = Field(None, description="Customer email")
+    amount: Optional[float] = Field(None, description="Order amount")
+    customerName: Optional[str] = Field(None, description="Customer name")
 
 
 class OrderValidationRequest(BaseModel):
     """Schema for order validation request."""
     destination: Destination = Field(..., description="Order destination")
     orderData: OrderData = Field(..., description="Order data to validate")
+    source: Optional[Dict[str, Any]] = Field(None, description="Source system info (VFS top-level field)")
+    files: Optional[List[Any]] = Field(None, description="Top-level files list (VFS top-level field)")
 
 
 class OrderSubmissionRequest(BaseModel):
@@ -106,9 +121,12 @@ class FullOrder(BaseModel):
 
 
 class OrderValidationResponse(BaseModel):
-    """Schema for order validation response."""
-    success: bool = Field(..., description="Validation success status")
-    order: Optional[Dict[str, Any]] = Field(None, description="Validated order data")
+    """Schema for order validation response.
+
+    VFS requires ``orderData`` at the top level (at minimum ``sourceOrderId``
+    nested inside it) — no ``success``/``order`` wrapper.
+    """
+    orderData: Dict[str, Any] = Field(..., description="Validated order data")
 
 
 class OrderSubmissionResponse(BaseModel):
