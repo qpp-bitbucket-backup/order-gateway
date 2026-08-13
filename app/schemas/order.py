@@ -11,11 +11,14 @@ class Address(BaseModel):
     """Shipping address schema."""
     name: Optional[str] = Field(None, description="Recipient name")
     companyName: Optional[str] = Field(None, description="Company name")
-    address1: Optional[str] = Field(None, description="Street address")
+    address1: Optional[str] = Field(None, description="Street address line 1")
+    address2: Optional[str] = Field(None, description="Street address line 2")
+    address3: Optional[str] = Field(None, description="Street address line 3")
     town: Optional[str] = Field(None, description="City/Town")
     state: Optional[str] = Field(None, description="State/Province")
     postcode: Optional[str] = Field(None, description="Postal code")
     isoCountry: Optional[str] = Field(None, description="ISO country code (e.g., US)")
+    country: Optional[str] = Field(None, description="Country name (full text, e.g., 'Japan')")
     email: Optional[str] = Field(None, description="Contact email")
     phone: Optional[str] = Field(None, description="Contact phone")
 
@@ -25,12 +28,17 @@ class Carrier(BaseModel):
     code: Optional[str] = Field(None, description="Carrier code (e.g., fedex)")
     service: Optional[str] = Field(None, description="Service level (e.g., ground)")
     serviceId: Optional[str] = Field(None, description="Service identifier")
+    alias: Optional[str] = Field(None, description="Carrier alias (e.g., 'tracked')")
 
 
 class Shipment(BaseModel):
     """Shipment schema."""
     shipTo: Optional[Address] = Field(None, description="Shipping address")
     carrier: Optional[Carrier] = Field(None, description="Carrier information")
+    shipmentIndex: Optional[int] = Field(None, description="Index linking items to this shipment")
+    attachments: Optional[List[Any]] = Field(None, description="Shipment attachments")
+    pspBranding: Optional[bool] = Field(None, description="PSP branding flag")
+    returnAddress: Optional[Address] = Field(None, description="Return address")
 
 
 class Color(BaseModel):
@@ -50,6 +58,7 @@ class Component(BaseModel):
     code: Optional[str] = Field(None, description="Component code")
     fetch: Optional[bool] = Field(True, description="Whether to fetch from URL")
     path: Optional[str] = Field(None, description="File path or URL")
+    localFile: Optional[bool] = Field(None, description="Whether the file is local")
     width: Optional[int] = Field(None, description="Width in pixels/dots")
     height: Optional[int] = Field(None, description="Height in pixels/dots")
     pages: Optional[int] = Field(None, description="Number of pages")
@@ -57,26 +66,32 @@ class Component(BaseModel):
     attributes: Optional[Dict[str, Any]] = Field(None, description="Custom attributes")
     colour: Optional[Color] = Field(None, description="Color specification")
     finish: Optional[Finish] = Field(None, description="Finish specification")
-    localFile: Optional[bool] = Field(None, description="Whether the file is local (VFS request field)")
-    extraData: Optional[List[Any]] = Field(None, description="VFS-provided extra data, passthrough")
+    localFile: Optional[bool] = Field(None, description="Whether the file is local")
+    extraData: Optional[List[Any]] = Field(None, description="Extra component data")
 
 
 class OrderItem(BaseModel):
     """Order item schema."""
     sku: str = Field(..., description="Product SKU")
-    sourceItemId: Optional[Union[str, int]] = Field(None, description="External item ID — VFS sends this as an integer")
+    sourceItemId: Optional[Union[str, int]] = Field(None, description="External item ID")
     quantity: Optional[int] = Field(1, ge=1, description="Order quantity")
     printQuantity: Optional[int] = Field(None, ge=1, description="Print quantity")
     unitPrice: Optional[float] = Field(None, ge=0, description="Unit price")
     unitCost: Optional[float] = Field(None, ge=0, description="Unit cost")
     unitWeight: Optional[float] = Field(None, ge=0, description="Unit weight")
-    productDescription: Optional[str] = Field(None, description="Product description")
+    description: Optional[str] = Field(None, description="Item description")
+    productDescription: Optional[str] = Field(None, description="Product description (alias for description)")
+    pages: Optional[int] = Field(None, description="Number of pages")
     totalPages: Optional[int] = Field(None, ge=0, description="Total pages")
+    shipmentIndex: Optional[int] = Field(None, description="Index linking this item to a shipment")
     components: Optional[List[Component]] = Field(None, description="Item components")
-    description: Optional[str] = Field(None, description="Item description (VFS request field)")
-    pages: Optional[int] = Field(None, ge=0, description="Page count (VFS request field)")
-    shipmentIndex: Optional[int] = Field(None, description="Index into orderData.shipments this item ships in")
-    extraData: Optional[List[Any]] = Field(None, description="VFS-provided extra data, passthrough")
+    extraData: Optional[List[Any]] = Field(None, description="Extra item data")
+
+
+class StockItem(BaseModel):
+    """Stock item schema for order data."""
+    code: Optional[str] = Field(None, description="Stock item code")
+    quantity: Optional[int] = Field(None, ge=0, description="Stock quantity")
 
 
 class OrderData(BaseModel):
@@ -85,10 +100,10 @@ class OrderData(BaseModel):
     postbackAddress: Optional[str] = Field(None, description="Webhook callback URL")
     items: List[OrderItem] = Field(..., min_length=1, description="Order line items")
     shipments: Optional[List[Shipment]] = Field(None, description="Shipping information")
-    stockItems: Optional[List[Any]] = Field(None, description="VFS stock items, passthrough")
-    error: Optional[List[Any]] = Field(None, description="VFS error list, passthrough")
-    extraData: Optional[List[Any]] = Field(None, description="VFS-provided extra data, passthrough")
-    printType: Optional[str] = Field(None, description="Print type (e.g. digital)")
+    stockItems: Optional[List[StockItem]] = Field(None, description="Stock items required for production")
+    error: Optional[List[Any]] = Field(None, description="Error list, passthrough")
+    extraData: Optional[List[Any]] = Field(None, description="Extra order data")
+    printType: Optional[str] = Field(None, description="Print type (e.g., 'digital')")
     email: Optional[str] = Field(None, description="Customer email")
     amount: Optional[float] = Field(None, description="Order amount")
     customerName: Optional[str] = Field(None, description="Customer name")
@@ -98,14 +113,16 @@ class OrderValidationRequest(BaseModel):
     """Schema for order validation request."""
     destination: Destination = Field(..., description="Order destination")
     orderData: OrderData = Field(..., description="Order data to validate")
-    source: Optional[Dict[str, Any]] = Field(None, description="Source system info (VFS top-level field)")
-    files: Optional[List[Any]] = Field(None, description="Top-level files list (VFS top-level field)")
+    source: Optional[Dict[str, Any]] = Field(None, description="Source information")
+    files: Optional[List[Any]] = Field(None, description="Associated files")
 
 
 class OrderSubmissionRequest(BaseModel):
     """Schema for order submission request."""
     destination: Destination = Field(..., description="Order destination")
     orderData: OrderData = Field(..., description="Order data to submit")
+    source: Optional[Dict[str, Any]] = Field(None, description="Source information")
+    files: Optional[List[Any]] = Field(None, description="Associated files")
 
 
 class FullOrder(BaseModel):
@@ -130,9 +147,14 @@ class OrderValidationResponse(BaseModel):
 
 
 class OrderSubmissionResponse(BaseModel):
-    """Schema for order submission response."""
-    success: bool = Field(..., description="Submission success status")
-    order: Optional[FullOrder] = Field(None, description="Submitted order details")
+    """Schema for order submission response (SiteFlow-compatible)."""
+    id: str = Field(..., alias="_id", description="Internal order ID")
+    url: Optional[str] = Field(None, description="Pre-signed OSS URL to the uploaded order payload JSON")
+    timestamp: str = Field(..., description="ISO-8601 timestamp of order creation")
+    sourceAccountId: Optional[str] = Field(None, description="Base64-encoded store_id of the client")
+
+    class Config:
+        populate_by_name = True
 
 
 class OrderSummary(BaseModel):
@@ -252,6 +274,50 @@ class SiteFlowErrorResponse(BaseModel):
     """SiteFlow-compatible error response wrapper."""
     success: bool = Field(False, description="Always false for errors")
     error: SiteFlowErrorDetail = Field(..., description="Error detail")
+
+
+class OrderCreationValidationItem(BaseModel):
+    """Single validation error item for order creation errors."""
+    path: str = Field(..., description="Dotted path to the invalid field")
+    message: str = Field(..., description="Validation error message")
+
+
+class OrderCreationErrorDetail(BaseModel):
+    """Error detail for order creation failures (SiteFlow-compatible)."""
+    ofError: bool = Field(True, description="Whether this is an OneFlow error")
+    statusCode: int = Field(..., description="HTTP status code")
+    code: Optional[int] = Field(None, description="Internal error code")
+    message: str = Field(..., description="Human-readable error message")
+    validations: Optional[List[OrderCreationValidationItem]] = Field(
+        None, description="List of validation errors"
+    )
+    mongoErr: Optional[bool] = Field(None, description="Whether this is a MongoDB error")
+
+
+class OrderCreationErrorResponse(BaseModel):
+    """Error response for order creation failures (SiteFlow-compatible)."""
+    success: bool = Field(False, description="Always false for errors")
+    error: OrderCreationErrorDetail = Field(..., description="Error detail")
+
+
+class OrderStatusShipment(BaseModel):
+    """Shipment info for order status response (SiteFlow-compatible)."""
+    carrier: Optional[Dict[str, Any]] = Field(None, description="Carrier information (code, service, alias, serviceId)")
+    shippedDate: Optional[str] = Field(None, description="Shipped date (ISO-8601)")
+    trackingNumber: Optional[str] = Field(None, description="Carrier tracking number")
+    trackingUrl: Optional[str] = Field(None, description="Tracking URL")
+    status: Optional[str] = Field(None, description="Shipment status")
+    shipmentIndex: Optional[int] = Field(None, description="Shipment index")
+
+
+class OrderStatusResponse(BaseModel):
+    """Order status response (SiteFlow-compatible).
+
+    Top-level structure with ``order``, ``orderId``, and ``shipments``.
+    """
+    order: Dict[str, Any] = Field(..., description="Order details including _id and orderData with status")
+    orderId: Optional[str] = Field(None, description="Order ID (same as order._id)")
+    shipments: Optional[List[OrderStatusShipment]] = Field(None, description="Shipment details including carrier and tracking info")
 
 
 class OrderUpdateRequest(BaseModel):
