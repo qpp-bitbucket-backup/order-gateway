@@ -432,7 +432,7 @@ def submit_order(
         oss_url = None
         try:
             oss_object_key = f"orders/{order.order_id}.json"
-            oss_url = oss_service.upload_json_and_get_url(oss_object_key, request.model_dump())
+            oss_url = oss_service.upload_json_and_get_url(oss_object_key, request.model_dump(exclude_none=True))
         except Exception as oss_exc:
             logger.warning("[Orders] OSS upload failed for order %s: %s", order.order_id, oss_exc)
 
