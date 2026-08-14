@@ -1,6 +1,6 @@
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class WebhookRegistrationCreateRequest(BaseModel):
@@ -20,12 +20,25 @@ class WebhookRegistrationUpdateRequest(BaseModel):
 
 
 class WebhookRegistration(BaseModel):
-    """A QPMN webhook subscription, as returned by QPMN — not persisted locally."""
+    """A QPMN webhook subscription, as returned by QPMN — not persisted locally.
+
+    Note: QPMN's API uses ``enable`` (no trailing ``d``) in responses, while
+    our create/update requests send ``enabled``. We accept both via
+    ``model_validator`` and always expose ``enabled``.
+    """
     id: int = Field(..., description="QPMN webhook id")
     name: str = Field(..., description="Webhook name")
     url: str = Field(..., description="Callback URL")
     eventTypes: List[str] = Field(..., description="Subscribed event types")
     enabled: bool = Field(..., description="Whether the webhook is enabled")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_enable_alias(cls, data: Any) -> Any:
+        """Map QPMN's ``enable`` field to ``enabled``."""
+        if isinstance(data, dict) and "enable" in data and "enabled" not in data:
+            data["enabled"] = data.pop("enable")
+        return data
 
 
 class WebhookRegistrationResponse(BaseModel):
