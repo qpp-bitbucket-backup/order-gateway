@@ -1121,6 +1121,30 @@ def platform_get_order(
         masked_delivery = _build_masked_address(delivery_address) if delivery_address else None
         masked_billing = _build_masked_address(billing_address) if billing_address else None
 
+        # Fetch webhook logs for this order, sorted by created_at ascending
+        webhook_logs = session.exec(
+            select(WebhookLog)
+            .where(WebhookLog.order_id == order.order_id)
+            .order_by(WebhookLog.created_at.asc())  # type: ignore[union-attr]
+        ).all()
+        webhooks = [
+            {
+                "id": log.id,
+                "direction": log.direction.value,
+                "source": log.source,
+                "eventStatus": log.event_status,
+                "processStatus": log.process_status.value,
+                "eventId": log.event_id,
+                "storeOrderId": log.store_order_id,
+                "storeOrderItemId": log.store_order_item_id,
+                "payload": log.payload,
+                "details": log.details,
+                "retryCount": log.retry_count,
+                "createdAt": log.created_at.isoformat() if log.created_at else None,
+            }
+            for log in webhook_logs
+        ] if webhook_logs else None
+
         full_order = PlatformFullOrder(
             id=order.order_id,
             sourceOrderId=order.source_order_id,
@@ -1137,6 +1161,7 @@ def platform_get_order(
             updatedAt=order.updated_at.isoformat() if order.updated_at else None,
             deliveryAddress=masked_delivery,
             billingAddress=masked_billing,
+            webhooks=webhooks,
         )
 
         return PlatformOrderDetailsResponse(success=True, order=full_order)

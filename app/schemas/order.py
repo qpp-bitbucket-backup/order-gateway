@@ -230,6 +230,7 @@ class PlatformFullOrder(BaseModel):
     updatedAt: Optional[str] = Field(None, description="Updated timestamp")
     deliveryAddress: Optional[MaskedAddress] = Field(None, description="Latest delivery address with PII masked")
     billingAddress: Optional[MaskedAddress] = Field(None, description="Latest billing address with PII masked")
+    webhooks: Optional[List[Dict[str, Any]]] = Field(None, description="Webhook log records for this order, sorted by created_at ascending")
 
     class Config:
         populate_by_name = True
