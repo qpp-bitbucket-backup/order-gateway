@@ -16,7 +16,7 @@ pipeline {
         AWS_REGION     = 'ap-southeast-1'
         AWS_ACCOUNT_ID = '368264529788'
         ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-        ECR_REPO       = 'shopify'
+        ECR_REPO       = 'order-gateway'
 
         ACR_REGISTRY     = 'prod-plugin-acr-registry.cn-guangzhou.cr.aliyuncs.com'
         ACR_VPC_REGISTRY = 'prod-plugin-acr-registry-vpc.cn-guangzhou.cr.aliyuncs.com'
