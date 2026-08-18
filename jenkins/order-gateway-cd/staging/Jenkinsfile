@@ -111,7 +111,7 @@ pipeline {
 
                                 git config credential.helper '!f() { echo "username=\$GIT_USERNAME"; echo "password=\$GIT_PASSWORD"; }; f'
 
-                                git push origin master
+                                git push origin main
 
                                 git config --unset credential.helper
 
