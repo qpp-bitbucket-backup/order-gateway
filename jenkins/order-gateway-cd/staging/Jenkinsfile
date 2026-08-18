@@ -135,13 +135,15 @@ pipeline {
                         sh """
                             git config user.email "jenkins@qpp.com"
                             git config user.name "Jenkins CI"
-
-                            git add ${env.DEPLOYMENT_FILE}
+                            
+                            git add topps/order-gateway/staging/deployment.yml
+                            git add topps/order-gateway-worker/staging/deployment.yml
+                            git add topps/order-gateway-beat/staging/deployment.yml                                
 
                             if git diff --staged --quiet; then
                                 echo "No changes to commit"
                             else
-                                git commit -m "Update topps order gateway deployment image tag to ${env.IMAGE_TAG}"
+                                git commit -m "Update order-gateway deployment image tag to ${IMAGE_TAG}"
 
                                 git config credential.helper '!f() { echo "username=\$GIT_USERNAME"; echo "password=\$GIT_PASSWORD"; }; f'
 
