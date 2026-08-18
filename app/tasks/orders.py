@@ -277,7 +277,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             # Select API URL based on configured API version
             use_open_api = settings.QPMN_ORDER_API_VERSION == "open"
             if use_open_api:
-                api_url = f"{settings.QPMN_OPEN_API_URL}/store/orders"
+                api_url = f"{settings.QPMN_OPEN_API_URL.rstrip('/')}/orders"
             else:
                 api_url = f"{settings.QPMN_API_URL}/store/orders"
             store_key = client_service.get_store_key_by_id(order.store_id)
@@ -286,11 +286,9 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             base_delay = settings.QPMN_PUSH_RETRY_COUNTDOWN
             max_delay = settings.QPMN_PUSH_RETRY_MAX_COUNTDOWN
             retry_count = order_data.get("_qpmn_retry_count", 0)
-
             try:
                 with httpx.Client(timeout=30.0) as client:
                     response = client.post(api_url, json=payload, headers=headers)
-
                 # Handle 503 - retry with delay
                 if response.status_code == 503:
                     if retry_count < max_retries:
