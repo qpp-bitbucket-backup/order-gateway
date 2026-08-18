@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     MODIFY_PDF_RESOLUTION: bool = False
     PDF_TARGET_WIDTH: float = 595.0  # A4 width in points (8.27 inches)
     PDF_TARGET_HEIGHT: float = 842.0  # A4 height in points (11.69 inches)
+    # QPMN rejects design PDFs that are not a PDF/X standard
+    # (PDF/X-1a:2001, PDF/X-1a:2003, PDF/X-3:2002, PDF/X-3:2003, PDF/X-4:2008).
+    # Use PDF/X-4:2008 for RGB image content; X-1a flavors forbid RGB.
+    PDF_CONVERT_TO_PDFX: bool = True
+    PDF_X_STANDARD: str = "PDF/X-4:2008"
 
     # OMS API Configuration
     OMS_API_URL: str = ""

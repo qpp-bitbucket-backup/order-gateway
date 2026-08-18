@@ -65,6 +65,8 @@ class FileService:
         """
         Split a multi-page PDF into single-page PDF files.
         If MODIFY_PDF_RESOLUTION is enabled, resize each page before splitting.
+        If PDF_CONVERT_TO_PDFX is enabled, declare each page as PDF/X
+        (QPMN rejects uploads that are not a PDF/X standard).
 
         Args:
             pdf_path: Path to the source PDF file.
@@ -100,6 +102,17 @@ class FileService:
             for page_idx in range(len(doc)):
                 single_page_doc = fitz.open()  # new empty PDF
                 single_page_doc.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
+
+                if settings.PDF_CONVERT_TO_PDFX:
+                    if pdf_processor.apply_pdfx(single_page_doc, settings.PDF_X_STANDARD):
+                        logger.info(
+                            f"[FileService] Declared page {page_idx + 1} as {settings.PDF_X_STANDARD}"
+                        )
+                    else:
+                        logger.warning(
+                            "[FileService] sRGB ICC profile not found, "
+                            f"page {page_idx + 1} kept without PDF/X declaration"
+                        )
 
                 page_filename = f"{base_name}_page_{page_idx + 1}.pdf"
                 page_path = os.path.join(dest_dir, page_filename)
@@ -138,15 +151,17 @@ class FileService:
                 files = {"file": (filename, fh)}
                 with httpx.Client(timeout=120.0) as client:
                     resp = client.post(api_url, headers=headers, files=files)
+                    print(resp)
                     resp.raise_for_status()
 
             result = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
             data = result.get("data",[])
             if len(data):
                 file_url = data[0].get("url", None)
-
-            logger.info(f"[FileService] Uploaded {filename} successfully. URL: {file_url}")
-
+                logger.info(f"[FileService] Uploaded {filename} successfully. URL: {file_url}")
+            else:
+                logger.error(f"[FileService] Uploaded {filename} failed. URL: {result}")
+                return None
             return {
                 "filename": filename,
                 "url": file_url,

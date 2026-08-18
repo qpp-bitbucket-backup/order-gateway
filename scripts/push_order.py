@@ -2,9 +2,9 @@
 Test script for push_order Celery task.
 
 Usage:
-    python test_push_order.py                          # 用預設 order_id 測試
-    python test_push_order.py --order-id YOUR_ORDER_ID # 指定 order_id
-    python test_push_order.py --direct                 # 直接調用函數（不走 Celery）
+    python scripts/push_order.py                          # 用預設 order_id 測試
+    python scripts/push_order.py --order-id YOUR_ORDER_ID # 指定 order_id
+    python scripts/push_order.py --direct                 # 直接調用函數（不走 Celery）
 """
 import os
 import sys
