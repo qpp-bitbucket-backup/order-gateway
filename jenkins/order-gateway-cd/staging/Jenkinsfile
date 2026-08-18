@@ -54,9 +54,9 @@ pipeline {
             steps {
                 dir('gitops-ack') {
                     checkout scmGit(
-                        branches: [[name: '*/main']],
+                        branches: [[name: '*/master']],
                         extensions: [
-                            localBranch('main')
+                            localBranch('master')
                         ],
                         userRemoteConfigs: [[
                             url: 'https://bitbucket.org/qpp-team/gitops-ack.git',
@@ -111,7 +111,7 @@ pipeline {
 
                                 git config credential.helper '!f() { echo "username=\$GIT_USERNAME"; echo "password=\$GIT_PASSWORD"; }; f'
 
-                                git push origin main
+                                git push origin master
 
                                 git config --unset credential.helper
 
