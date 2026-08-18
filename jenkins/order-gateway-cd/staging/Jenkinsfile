@@ -54,9 +54,9 @@ pipeline {
             steps {
                 dir('gitops-ack') {
                     checkout scmGit(
-                        branches: [[name: '*/master']],
+                        branches: [[name: '*/main']],
                         extensions: [
-                            localBranch('master')
+                            localBranch('main')
                         ],
                         userRemoteConfigs: [[
                             url: 'https://bitbucket.org/qpp-team/gitops-ack.git',
