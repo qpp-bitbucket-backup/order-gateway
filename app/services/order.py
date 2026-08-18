@@ -650,7 +650,9 @@ class OrderService:
         order_id: str,
     ) -> Tuple[Order, List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Shared helper: load order, iterate items, inject design file URLs.
+        Shared helper: load order, iterate items, inject design file URLs
+        into both customize structures (legacy ``designs`` pageContentDesigns
+        images and Open API ``designData`` effectImages imageUrls).
 
         Returns:
             (order, line_item_contexts, addresses) where line_item_contexts
@@ -679,7 +681,7 @@ class OrderService:
             designs = customize_project.get("designs", [])
             files = files_dict.get(f"{sku_id}-{item_index}", [])
 
-            # Inject uploaded file URLs into pageContentDesigns images
+            # Inject uploaded file URLs into pageContentDesigns images (legacy structure)
             for index, design in enumerate(designs):
                 file_obj = files[index] if index < len(files) else None
                 if not file_obj:
@@ -692,6 +694,28 @@ class OrderService:
                     if "image" in pcd:
                         pcd["image"] = file_url
                 design["pageContentDesigns"] = page_content_designs
+
+            # Inject uploaded file URLs into effectImages imageUrls (Open API structure):
+            # designData[].views[].designs[].effectImages[].imageUrl. One file per
+            # view that carries effectImages, in order; views without designs
+            # (template-only materials) consume no file.
+            design_data = customize_project.get("designData", [])
+            open_file_index = 0
+            for material in design_data:
+                for view in material.get("views", []):
+                    view_designs = view.get("designs") or []
+                    if not any(d.get("effectImages") for d in view_designs):
+                        continue
+                    file_obj = files[open_file_index] if open_file_index < len(files) else None
+                    if not file_obj:
+                        raise ValueError(f"SKU: [{sku_id}] design file not found")
+                    file_url = file_obj.get("url", None)
+                    if not file_url:
+                        raise ValueError(f"SKU: [{sku_id}] design file not found")
+                    open_file_index += 1
+                    for d in view_designs:
+                        for effect_image in d.get("effectImages", []):
+                            effect_image["imageUrl"] = file_url
 
             contexts.append({
                 "item": item,
@@ -784,7 +808,7 @@ class OrderService:
         """
         Build payload for the Open API create-order endpoint.
 
-        POST {QPMN_OPEN_API_URL}/store/orders
+        POST {QPMN_OPEN_API_URL}/orders
         Uses: externalId, externalOrderNumber, quantity, productDesignData, etc.
         """
         order, contexts, addresses = self._prepare_order_and_skus(session, order_id)
@@ -832,15 +856,18 @@ class OrderService:
         """
         Convert legacy ``customizeProject`` to Open API ``productDesignData``.
 
-        Legacy ``customizeProject.designs`` → new ``designData``:
-          - ``materialPath`` → ``code`` (Base64-encoded)
-          - ``side`` → ``views[].code``
-          - ``pageContentDesigns[].pageContentIndex`` → ``designs[].index``
-          - ``pageContentDesigns[].effect`` → ``effectImages[].effect``
-          - ``pageContentDesigns[].image`` → ``effectImages[].imageUrl``
+        Behavior depends on ``QPMN_ORDER_API_VERSION``:
 
-        Legacy ``properties`` → new ``designAttributeValues``.
+        - ``open``: ``customizeProject`` already stores the Open API
+          structure — pass through ``customizeProject.designData`` directly.
+        - otherwise: legacy conversion, ``customizeProject.designs`` →
+          ``designData``, ``properties`` → ``designAttributeValues``.
         """
+        if settings.QPMN_ORDER_API_VERSION == "open":
+            # customizeProject already stores the Open API designData list
+            return {"designData": customize_project.get("designData", [])}
+
+        design_attribute_values: List[Dict[str, Any]] = []
         designs = customize_project.get("designs", [])
 
         # Group designs by materialPath — each unique material becomes one
@@ -882,7 +909,6 @@ class OrderService:
             design_data.append({"code": code, "views": views})
 
         # Convert properties dict to designAttributeValues list
-        design_attribute_values: List[Dict[str, Any]] = []
         for key, value in properties.items():
             design_attribute_values.append({"code": key, "value": value})
 

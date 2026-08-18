@@ -1,6 +1,7 @@
 """PDF processing utilities using PyMuPDF (fitz)."""
 import fitz  # PyMuPDF
 import io
+from datetime import datetime, timezone
 from typing import List, Optional, Union
 from pathlib import Path
 
@@ -13,6 +14,18 @@ PAGE_SIZES = {
     "legal": (612.0, 1008.0),
     "tabloid": (792.0, 1224.0),
 }
+
+# PDF/X standards QPMN accepts on design-file upload
+PDFX_STANDARDS = {
+    "PDF/X-1a:2001",
+    "PDF/X-1a:2003",
+    "PDF/X-3:2002",
+    "PDF/X-3:2003",
+    "PDF/X-4:2008",
+}
+
+# Embedded sRGB ICC profile used as the OutputIntent destination profile
+_SRGB_ICC_PATH = Path(__file__).resolve().parent.parent / "assets" / "srgb.icc"
 
 
 def mm_to_points(mm: float) -> float:
@@ -274,6 +287,120 @@ class PDFProcessor:
         dst_doc.close()
         src_doc.close()
         return result_bytes
+
+    @staticmethod
+    def apply_pdfx(doc: "fitz.Document", standard: str = "PDF/X-4:2008") -> bool:
+        """
+        Declare a PDF as compliant with a PDF/X standard (ISO 15930).
+
+        Does three things required by every PDF/X flavor:
+          1. Sets ``Trapped`` to false plus a title in the Info dict
+             (set_metadata also rewrites XMP, so it must come first);
+          2. Writes XMP metadata with ``pdfxid:GTS_PDFXVersion`` + ``dc:title``;
+          3. Adds a catalog ``/OutputIntents`` entry (``/GTS_PDFX``) with an
+             embedded sRGB ICC profile as ``/DestOutputProfile``.
+
+        Suitable for raster-only design PDFs (no text/fonts, DeviceRGB).
+        PDFs with unembedded fonts or PDF/X-1a CMYK requirements need a real
+        converter (Ghostscript / callas) instead.
+
+        Args:
+            doc:      Open PyMuPDF document (modified in place, before save).
+            standard: One of ``PDFX_STANDARDS`` — use PDF/X-4:2008 for RGB
+                      image content; X-1a forbids RGB.
+
+        Returns:
+            True if applied; False when the sRGB ICC asset is missing
+            (caller should keep the original file in that case).
+        """
+        if standard not in PDFX_STANDARDS:
+            raise ValueError(
+                f"Unsupported PDF/X standard: {standard!r}. "
+                f"Allowed: {sorted(PDFX_STANDARDS)}"
+            )
+        if not _SRGB_ICC_PATH.exists():
+            return False
+
+        title = (doc.metadata or {}).get("title") or "Design"
+        now_pdf = datetime.now(timezone.utc).strftime("D:%Y%m%d%H%M%SZ")
+        now_xmp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # 1. Info dict — PDF/X requires a title and Trapped=false.
+        #    Must run BEFORE writing the XMP: set_metadata() rewrites the
+        #    document's XMP metadata stream and would wipe our custom one.
+        meta = dict(doc.metadata or {})
+        meta["title"] = title
+        meta["producer"] = meta.get("producer") or "order-gateway"
+        meta["creationDate"] = now_pdf
+        meta["modDate"] = now_pdf
+        meta["trapped"] = False
+        doc.set_metadata(meta)
+        # Ensure Trapped lands in the catalog Info even when MuPDF
+        # serializes it inline (set_metadata's copy can be dropped on save)
+        doc.xref_set_key(doc.pdf_catalog(), "Info/Trapped", "false")
+
+        # 2. XMP metadata stream declaring the standard
+        xmp = (
+            "<?xpacket begin=\"\ufeff\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"order-gateway\">\n"
+            " <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n"
+            "  <rdf:Description rdf:about=\"\"\n"
+            "    xmlns:dc=\"http://purl.org/dc/elements/1.1/\"\n"
+            "    xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n"
+            "    xmlns:pdfxid=\"http://www.npes.org/pdfx/ns/id/\">\n"
+            "   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">"
+            f"{title}</rdf:li></rdf:Alt></dc:title>\n"
+            "   <xmp:CreatorTool>order-gateway</xmp:CreatorTool>\n"
+            f"   <xmp:CreateDate>{now_xmp}</xmp:CreateDate>\n"
+            f"   <xmp:ModifyDate>{now_xmp}</xmp:ModifyDate>\n"
+            f"   <pdfxid:GTS_PDFXVersion>{standard}</pdfxid:GTS_PDFXVersion>\n"
+            "  </rdf:Description>\n"
+            " </rdf:RDF>\n"
+            "</x:xmpmeta>\n"
+            "<?xpacket end=\"w\"?>"
+        )
+        xmp_xref = doc.get_new_xref()
+        doc.update_object(xmp_xref, "<< /Type /Metadata /Subtype /XML >>")
+        doc.update_stream(xmp_xref, xmp.encode("utf-8"))
+        doc.xref_set_key(doc.pdf_catalog(), "Metadata", f"{xmp_xref} 0 R")
+
+        # 3. OutputIntent with embedded sRGB ICC profile
+        icc_xref = doc.get_new_xref()
+        doc.update_object(icc_xref, "<<>>")
+        doc.update_stream(icc_xref, _SRGB_ICC_PATH.read_bytes())
+        doc.xref_set_key(icc_xref, "N", "3")  # RGB profile has 3 components
+
+        oi_xref = doc.get_new_xref()
+        doc.update_object(oi_xref, "<<>>")
+        doc.xref_set_key(oi_xref, "Type", "/OutputIntent")
+        doc.xref_set_key(oi_xref, "S", "/GTS_PDFX")
+        doc.xref_set_key(oi_xref, "OutputConditionIdentifier", "(sRGB IEC61966-2.1)")
+        doc.xref_set_key(oi_xref, "Info", "(sRGB IEC61966-2.1)")
+        doc.xref_set_key(oi_xref, "RegistryName", "(http://www.color.org)")
+        doc.xref_set_key(oi_xref, "DestOutputProfile", f"{icc_xref} 0 R")
+        doc.xref_set_key(doc.pdf_catalog(), "OutputIntents", f"[{oi_xref} 0 R]")
+        return True
+
+    @staticmethod
+    def convert_to_pdfx(
+        input_pdf: Union[str, bytes, io.BytesIO],
+        standard: str = "PDF/X-4:2008",
+    ) -> bytes:
+        """
+        Return ``input_pdf`` bytes declared compliant with ``standard``.
+
+        See ``apply_pdfx`` for what is written and its limitations.
+        """
+        if isinstance(input_pdf, (bytes, io.BytesIO)):
+            doc = fitz.open(stream=input_pdf, filetype="pdf")
+        else:
+            doc = fitz.open(input_pdf)
+        try:
+            if not pdf_processor.apply_pdfx(doc, standard):
+                raise FileNotFoundError(f"sRGB ICC profile not found: {_SRGB_ICC_PATH}")
+            return doc.tobytes(garbage=3, deflate=True)
+        finally:
+            doc.close()
 
     @staticmethod
     def get_page_size(pdf_path: str, page_number: int = 0) -> dict:
