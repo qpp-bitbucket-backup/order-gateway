@@ -44,9 +44,20 @@ class Settings(BaseSettings):
     # Admin API key for client management endpoints
     ADMIN_API_KEY: str = "admin-api-key-change-in-production"
 
+    # Default Admin User (seeded on first startup)
+    DEFAULT_ADMIN_USERNAME: str = "admin"
+    DEFAULT_ADMIN_EMAIL: str = "admin@order-gateway.com"
+    DEFAULT_ADMIN_PASSWORD: str = "admin123"
+
     # HP PrintOS webhook credentials (for inbound webhooks)
     HP_CLIENT_ID: str = "hp-client-id-here"
     HP_CLIENT_SECRET: str = "hp-client-secret-here"
+
+    # OMS HUB4 transport configuration (Baozun standard)
+    OMS_APP_SECRET: str = ""
+    OMS_SOURCE_APP: str = ""
+    OMS_INTERFACE_TYPE: str = "1"
+    OMS_STATUS_METHOD_NAME: str = "shipment_order_notify"
 
     # CORS
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
@@ -55,17 +66,36 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "amqp://guest:guest@localhost:5672//"
     CELERY_RESULT_BACKEND: str = "rpc://"
 
-    # RabbitMQ Configuration (Order Processing)
-    RABBITMQ_HOST: str = "localhost"
-    RABBITMQ_PORT: int = 5672
-    RABBITMQ_USER: str = "guest"
-    RABBITMQ_PASSWORD: str = "guest"
-    RABBITMQ_VHOST: str = "/"
-    RABBITMQ_ORDER_QUEUE: str = "order_processing"
+    # Celery Beat - Product Sync Schedule Configuration
+    CELERY_BEAT_SYNC_ENABLED: bool = True
+    CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES: int = 5  # Sync products every N minutes
 
     # QPMN API Configuration
-    QPMN_API_URL: str = "https://api.qpmn.com/v1"
+    QPMN_API_URL: str = "https://stage.qpmarketnetwork.com/cgp-rest/api"
     QPMN_API_KEY: str = ""
+    QPMN_OPEN_API_URL: str = "https://test-qpmn.qppdev.com/stage/cgp-rest/open-api/v1/"
+    QPMN_PUSH_RETRY_COUNT: int = 5        # Max retry attempts when QPMN returns 503/timeout
+    QPMN_PUSH_RETRY_COUNTDOWN: int = 900   # Base delay in seconds for exponential backoff
+    QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
+    QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
+    QPMN_ORDER_API_VERSION: str = "legacy"   # Order creation API version: "legacy" or "open"
+
+    # PDF Processing Configuration
+    MODIFY_PDF_RESOLUTION: bool = False
+    PDF_TARGET_WIDTH: float = 595.0  # A4 width in points (8.27 inches)
+    PDF_TARGET_HEIGHT: float = 842.0  # A4 height in points (11.69 inches)
+
+    # OMS API Configuration
+    OMS_API_URL: str = ""
+    OMS_VALIDATE_RETRY_COUNT: int = 5       # Max retry attempts when OMS returns 503/timeout
+    OMS_VALIDATE_RETRY_COUNTDOWN: int = 300  # Base delay in seconds for exponential backoff
+    OMS_VALIDATE_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
+    OMS_NOTIFY_RETRY_COUNT: int = 5         # Max retry attempts when OMS webhook returns 503/timeout
+    OMS_NOTIFY_RETRY_COUNTDOWN: int = 300    # Base delay in seconds for exponential backoff
+    OMS_NOTIFY_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
+    VFS_NOTIFY_RETRY_COUNT: int = 5         # Max retry attempts when VFS postback returns 503/timeout
+    VFS_NOTIFY_RETRY_COUNTDOWN: int = 300    # Base delay in seconds for exponential backoff
+    VFS_NOTIFY_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
 
     # Alibaba Cloud OSS Configuration
     OSS_ACCESS_KEY_ID: str = "your-oss-access-key-id"

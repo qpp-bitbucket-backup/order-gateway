@@ -159,6 +159,9 @@ curl http://localhost:8000/api/product
 curl http://localhost:8000/api/sku
 ```
 
+## Verify Order Worker
+celery -A app.core.celery.celery_app worker --loglevel=info --pool=solo
+
 ## Production Deployment
 
 For production deployment:

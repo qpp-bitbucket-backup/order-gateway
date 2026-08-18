@@ -17,6 +17,10 @@ from app.models.order import Order
 from app.models.product import Product, Sku
 from app.models.file_upload import FileUpload
 from app.models.client import Client
+from app.models.address import Address
+from app.models.webhook_log import WebhookLog
+from app.models.user import User
+from app.models.shipment import OrderShipment
 from app.core.config import settings
 
 # this is the Alembic Config object, which provides

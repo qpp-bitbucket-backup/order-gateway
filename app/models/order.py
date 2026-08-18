@@ -1,5 +1,5 @@
 from sqlmodel import SQLModel, Field, Relationship, Column
-from sqlalchemy import JSON, Text
+from sqlalchemy import JSON, Text, Enum as SAEnum
 from typing import Optional, List, Dict, Any
 from datetime import datetime,timezone
 from enum import Enum
@@ -11,6 +11,7 @@ class OrderStatus(str, Enum):
     RECEIVED = "received"
     PENDING = "pending"
     VALIDATED = "validated"
+    PROCESSING = "processing"
     PRINTREADY = "printready"
     PRINTED = "printed"
     CANCELLED = "cancelled"
@@ -35,12 +36,19 @@ ORDER_STATE_TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
         OrderStatus.FAILED,       # 驗證失敗
         OrderStatus.ERRORED       # 驗證過程異常
     ],
-    # 驗證通過：準備列印
+    # 驗證通過：進入處理階段
     OrderStatus.VALIDATED: [
-        OrderStatus.PRINTREADY,   # 進入列印隊列
+        OrderStatus.PROCESSING,   # 進入處理中
         OrderStatus.CANCELLED,    # 取消訂單
-        OrderStatus.FAILED,       # 準備列印失敗
+        OrderStatus.FAILED,       # 準備處理失敗
         OrderStatus.ERRORED       # 準備過程異常
+    ],
+    # 處理中：正在處理訂單（如檔案準備、排版等）
+    OrderStatus.PROCESSING: [
+        OrderStatus.PRINTREADY,   # 處理完成，進入列印隊列
+        OrderStatus.CANCELLED,    # 取消訂單
+        OrderStatus.FAILED,       # 處理失敗
+        OrderStatus.ERRORED       # 處理過程異常
     ],
     # 列印就緒：開始列印， 已經Push 到QPMN 不能進行取消
     OrderStatus.PRINTREADY: [
@@ -84,6 +92,66 @@ def can_transition(from_status: OrderStatus, to_status: OrderStatus) -> bool:
     """
     allowed = ORDER_STATE_TRANSITIONS.get(from_status, [])
     return to_status in allowed
+
+
+# Internal status -> external event status code (QPMN's real Site Flow status
+# vocabulary, not the earlier placeholder strings). Statuses not listed here
+# (PENDING, VALIDATED, FAILED) are internal only and never notified — QPMN
+# confirmed it does not send a DataReady event.
+# Note: SHIPPED's "package_shipped" is reported by QPMN via a separate
+# shipment feedback event (发货单反馈), not the same order-status feed as the
+# other rows here — confirm how that arrives before wiring it up.
+STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
+    OrderStatus.RECEIVED: "order_item_received",
+    OrderStatus.PRINTREADY: "order_item_audited",
+    OrderStatus.PRINTED: "order_item_produced",
+    OrderStatus.SHIPPED: "package_shipped",
+    OrderStatus.CANCELLED: "order_item_canceled",
+    OrderStatus.ERRORED: "order_item_failed",
+}
+
+# Reverse lookup: external event status code -> internal status
+EVENT_STATUS_MAP: Dict[str, OrderStatus] = {v: k for k, v in STATUS_EVENT_MAP.items()}
+
+# Linear order of the statuses an order_item_* event can drive the order
+# through. QPMN sends one event per item, so a multi-item order can receive
+# events for several items interleaved — only the most-advanced item's
+# status should ever land on the order.
+ITEM_EVENT_STATUS_ORDER: List[OrderStatus] = [
+    OrderStatus.RECEIVED,
+    OrderStatus.PRINTREADY,
+    OrderStatus.PRINTED,
+]
+
+
+def is_item_event_superseded(order_status: OrderStatus, new_status: OrderStatus) -> bool:
+    """True if an order_item_* event's ``new_status`` is at or behind where
+    the order already is — i.e. a different item already pushed the order
+    further, and this event should be acknowledged but not applied.
+
+    Only considers the forward order_item_* path (``ITEM_EVENT_STATUS_ORDER``);
+    ``order_item_canceled``/``order_item_failed`` targets always fall through
+    to the normal invalid-transition handling since those are worth surfacing
+    even if another item has moved ahead.
+    """
+    if order_status in (OrderStatus.CANCELLED, OrderStatus.SHIPPED, OrderStatus.ERRORED):
+        return new_status in ITEM_EVENT_STATUS_ORDER
+    if order_status in ITEM_EVENT_STATUS_ORDER and new_status in ITEM_EVENT_STATUS_ORDER:
+        return ITEM_EVENT_STATUS_ORDER.index(new_status) <= ITEM_EVENT_STATUS_ORDER.index(order_status)
+    return False
+
+# Internal status -> OMS API-002 status code. Distinct from STATUS_EVENT_MAP
+# (QPMN's own vocabulary) -- QPMN and OMS use different wire vocabularies
+# even though "dataready" happens to overlap.
+OMS_STATUS_MAP: Dict[OrderStatus, str] = {
+    OrderStatus.RECEIVED: "received",
+    OrderStatus.VALIDATED: "dataready",
+    OrderStatus.PRINTREADY: "printready",
+    OrderStatus.PRINTED: "printed",
+    OrderStatus.SHIPPED: "shipped",
+    OrderStatus.CANCELLED: "cancelled",
+    OrderStatus.ERRORED: "error",
+}
 
 
 class Destination(SQLModel):
@@ -176,8 +244,16 @@ class Order(BaseModel, table=True):
     destination: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Destination information")
     source: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Source information")
     order_data: Optional[Dict[str, Any]] = Field(None, sa_column=Column(JSON), description="Complete order data")
-    status: OrderStatus = Field(default=OrderStatus.PENDING, nullable=False, description="Current order status")
+    status: OrderStatus = Field(
+        default=OrderStatus.PENDING,
+        description="Current order status",
+        sa_column=Column(
+            SAEnum(OrderStatus, values_callable=lambda x: [e.value for e in x], name="orderstatus"),
+            nullable=False,
+        ),
+    )
     logs: Optional[List[Dict[str, Any]]] = Field(None, sa_column=Column(JSON), description="Order processing logs")
     files: Optional[List[Dict[str, Any]]] = Field(None, sa_column=Column(JSON), description="Associated files")
-    version: int = Field(default=0, description="Document version (__v)")
+    version: int = Field(default=1, description="Document version (__v)")
     store_id: Optional[str] = Field(None, index=True, description="Store identifier")
+    store_order_id: Optional[str] = Field(None, max_length=255, index=True, description="Store order ID for external reference")

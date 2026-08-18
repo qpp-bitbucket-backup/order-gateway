@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from contextlib import asynccontextmanager
 import copy
 import logging
@@ -15,13 +16,13 @@ from app.core.auth_oneflow import (
     oneflow_authorization_header,
     oneflow_date_header,
 )
-from app.api import orders, products, files, clients, sync
+from app.api import orders, products, files, clients, sync, users, webhooks
 
 # Global logging configuration
 # Configure root logger so all modules (including app.api.orders) inherit uvicorn-style console output
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 # Suppress SQLAlchemy engine and pool logs
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
@@ -113,11 +114,26 @@ For API support, contact: itdev2@qpp.com
             "description": "Product synchronization from QPMN API (requires x-admin-key)",
         },
         {
+            "name": "Products Admin",
+            "description": "Product/SKU management operations (requires x-admin-key)",
+        },
+        {
             "name": "Health",
             "description": "Health check and status endpoints (no authentication required)",
         },
     ],
 )
+
+@app.exception_handler(HTTPException)
+async def siteflow_shaped_exception_handler(request: Request, exc: HTTPException):
+    """FastAPI wraps ``HTTPException.detail`` under a ``"detail"`` key by
+    default. When ``detail`` is already a SiteFlow-shaped error dict (see
+    ``_siteflow_error()`` in app/api/orders.py — ``{"success": ..., "error": {...}}``),
+    return it as-is instead of double-wrapping it."""
+    if isinstance(exc.detail, dict) and "success" in exc.detail:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
 
 # Configure CORS
 app.add_middleware(
@@ -130,10 +146,51 @@ app.add_middleware(
 
 # Include routers
 app.include_router(orders.router)
+app.include_router(orders.jwt_router)
 app.include_router(products.router)
+app.include_router(products.jwt_router)
+app.include_router(products.admin_router)
 app.include_router(files.router)
 app.include_router(clients.router)
+app.include_router(clients.jwt_router)
 app.include_router(sync.router)
+app.include_router(sync.jwt_router)
+app.include_router(users.router)
+app.include_router(webhooks.router)
+
+
+# ---------------------------------------------------------------------------
+# Custom exception handler: convert FastAPI 422 validation errors to the
+# SiteFlow-compatible format for POST /api/order only. All other endpoints
+# keep FastAPI's default validation error shape.
+# ---------------------------------------------------------------------------
+@app.exception_handler(RequestValidationError)
+async def order_creation_validation_handler(request: Request, exc: RequestValidationError):
+    if request.url.path == "/api/order" and request.method == "POST":
+        validations = []
+        for err in exc.errors():
+            loc = ".".join(str(part) for part in err.get("loc", []) if part != "body")
+            validations.append({
+                "path": loc or "body",
+                "message": err.get("msg", "Invalid value"),
+            })
+        return JSONResponse(
+            status_code=422,
+            content={
+                "success": False,
+                "error": {
+                    "ofError": True,
+                    "statusCode": 422,
+                    "message": "Validation Failed",
+                    "validations": validations,
+                }
+            },
+        )
+    # Default FastAPI behavior for all other endpoints
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
 
 
 ONEFLOW_SECURITY = [
@@ -244,11 +301,16 @@ def health_check():
     """Health check endpoint - Monitors database and RabbitMQ connectivity."""
     health_status = get_full_health_status()
     
-    return {
-        "status": health_status["status"],
-        "timestamp": health_status["timestamp"],
-        "components": health_status["components"],
-    }
+    status_code = 200 if health_status["status"] == "healthy" else 503
+    
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": health_status["status"],
+            "timestamp": health_status["timestamp"],
+            "components": health_status["components"],
+        },
+    )
 
 
 if __name__ == "__main__":

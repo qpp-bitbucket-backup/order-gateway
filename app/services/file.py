@@ -5,6 +5,7 @@ import fitz  # PyMuPDF
 import httpx
 import logging
 from app.services.oss import oss_service
+from app.services.pdf_utils import pdf_processor
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 from app.core.config import settings
@@ -63,6 +64,7 @@ class FileService:
     def split_pdf(self, pdf_path: str, dest_dir: str) -> List[str]:
         """
         Split a multi-page PDF into single-page PDF files.
+        If MODIFY_PDF_RESOLUTION is enabled, resize each page before splitting.
 
         Args:
             pdf_path: Path to the source PDF file.
@@ -73,6 +75,23 @@ class FileService:
         """
         page_files: List[str] = []
         try:
+            # Resize PDF if MODIFY_PDF_RESOLUTION is enabled
+            if settings.MODIFY_PDF_RESOLUTION:
+                logger.info(f"[FileService] Resizing PDF {pdf_path} to {settings.PDF_TARGET_WIDTH}x{settings.PDF_TARGET_HEIGHT} points")
+                resized_bytes = pdf_processor.resize_pdf(
+                    pdf_path,
+                    width=settings.PDF_TARGET_WIDTH,
+                    height=settings.PDF_TARGET_HEIGHT,
+                    fit=True
+                )
+                # Save resized PDF to a temp file and use it for splitting
+                base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+                resized_path = os.path.join(dest_dir, f"{base_name}_resized.pdf")
+                with open(resized_path, "wb") as f:
+                    f.write(resized_bytes)
+                pdf_path = resized_path
+                logger.info(f"[FileService] Saved resized PDF: {resized_path}")
+
             doc = fitz.open(pdf_path)
             base_name = os.path.splitext(os.path.basename(pdf_path))[0]
 
@@ -95,7 +114,7 @@ class FileService:
         except Exception as exc:
             logger.error(f"[FileService] Failed to split PDF {pdf_path}: {exc}", exc_info=True)
             # Fall back to returning the original file if splitting fails
-            return [pdf_path]
+            return []
 
         return page_files
 
