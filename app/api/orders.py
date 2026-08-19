@@ -25,6 +25,7 @@ from app.schemas.order import (
     OrderStatusResponse,
     OrderStatusShipment,
     CancelledOrderResponse,
+    ArtworkUpdateResponse,
     FullOrder,
     OrderUpdateRequest,
     OrderUpdateResponse,
@@ -994,6 +995,123 @@ def cancel_order(
         session.rollback()
         raise _siteflow_error(
             f"Order cancellation failed: {str(e)}",
+            "InternalServerError",
+            500,
+        )
+
+
+@router.post("/order/{source_account}/{source_order_id}/artwork-update", response_model=ArtworkUpdateResponse)
+def artwork_update_order(
+    source_account: str,
+    source_order_id: str,
+    request: OrderSubmissionRequest,
+    session: Session = Depends(get_session),
+    store_id: Optional[str] = Depends(get_client_store_id),
+):
+    """
+    Artwork Update - Cancels an existing order and re-submits it as a new order.
+
+    Used when a customer needs to change artwork/order data after submission
+    but before production has started. Only orders in an updatable status
+    (see ``UPDATABLE_STATUSES``) are eligible. On success, the original order
+    is cancelled via QPMN and a new order is created with the same
+    ``sourceOrderId`` but a different platform order id (``_id``).
+
+    If the QPMN cancel call fails, the whole flow aborts and no new order is
+    created — the original order is left untouched.
+
+    Error responses follow the HP SiteFlow API format:
+    ``{"success": false, "error": {"message": "...", "name": "...", "code": 404}}``
+
+    | HTTP Code | Error Name        | Scenario                                      |
+    |-----------|-------------------|-----------------------------------------------|
+    | 404       | NotFound          | Order not found or access denied              |
+    | 409       | Conflict          | Order status does not allow artwork update    |
+    | 502       | BadGateway        | QPMN cancel API call failed                   |
+    | 500       | InternalServerError| Unexpected internal error                    |
+    """
+    _log_request(
+        "POST /order/artwork-update",
+        {"source_account": source_account, "source_order_id": source_order_id, **request.model_dump()},
+    )
+    try:
+        query = select(Order).where(
+            (Order.source_account == source_account)
+            & (Order.source_order_id == source_order_id)
+        )
+        if store_id:
+            query = query.where(Order.store_id == store_id)
+        order = session.exec(query).first()
+
+        if not order:
+            detail = (
+                f"Order with sourceOrderId '{source_order_id}' not found"
+                + (" or access denied" if store_id else "")
+            )
+            raise _siteflow_error(detail, "NotFound", 404)
+
+        if order.status not in UPDATABLE_STATUSES:
+            raise _siteflow_error(
+                f"Cannot perform artwork update on order with status '{order.status.value}'.",
+                "Conflict",
+                409,
+            )
+
+        try:
+            order_service.cancel_order(session, order)
+        except OrderNotCancellableError:
+            raise _siteflow_error(
+                f"Cannot cancel order with status '{order.status.value}'.",
+                "Conflict",
+                409,
+            )
+        except QPMNCancelError as qpmn_err:
+            raise _siteflow_error(
+                str(qpmn_err),
+                "BadGateway",
+                502,
+            )
+
+        # Force the same sourceOrderId regardless of what the request body sent,
+        # since "same source_order_id, different platform order id" is the contract.
+        order_data = request.orderData.model_dump()
+        order_data["sourceOrderId"] = source_order_id
+
+        new_order = order_service.create_order(
+            session,
+            source_account=request.destination.name,
+            source_order_id=source_order_id,
+            destination=request.destination.model_dump(),
+            order_data=order_data,
+            store_id=store_id,
+        )
+
+        oss_url = None
+        try:
+            oss_object_key = f"orders/{new_order.order_id}.json"
+            oss_url = oss_service.upload_json_and_get_url(oss_object_key, request.model_dump(exclude_none=True))
+        except Exception as oss_exc:
+            logger.warning("[Orders] OSS upload failed for order %s: %s", new_order.order_id, oss_exc)
+
+        source_account_id = base64.b64encode(store_id.encode()).decode() if store_id else None
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        resp = ArtworkUpdateResponse(
+            cancelledOrderId=order.order_id,
+            **{"_id": new_order.order_id},
+            url=oss_url,
+            timestamp=timestamp,
+            sourceAccountId=source_account_id,
+        )
+        _log_response("POST /order/artwork-update", resp.model_dump())
+        return resp
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise _siteflow_error(
+            f"Artwork update failed: {str(e)}",
             "InternalServerError",
             500,
         )
