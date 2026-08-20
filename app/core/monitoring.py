@@ -21,12 +21,18 @@ def init_sentry() -> bool:
         import sentry_sdk
         from sentry_sdk.integrations.fastapi import FastApiIntegration
         from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+        from sentry_sdk.integrations.celery import CeleryIntegration
 
         sentry_sdk.init(
             dsn=settings.SENTRY_DSN,
             integrations=[
                 FastApiIntegration(),
                 SqlalchemyIntegration(),
+                # Without this, unhandled exceptions inside Celery tasks
+                # (publish_order/validate_order/push_order/notify_oms/
+                # notify_vfs/product+SKU sync) are invisible to Sentry unless
+                # the task code explicitly calls capture_exception/_message.
+                CeleryIntegration(),
             ],
             traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
             environment=settings.SENTRY_ENVIRONMENT,
