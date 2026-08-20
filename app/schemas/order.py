@@ -264,6 +264,19 @@ class CancelledOrderResponse(BaseModel):
     order_id: Optional[str] = Field(None, description="Cancelled order ID")
 
 
+class ArtworkUpdateResponse(BaseModel):
+    """Schema for artwork update response — cancels the old order and creates a replacement."""
+    success: bool = Field(True, description="Request success status")
+    cancelledOrderId: str = Field(..., description="Order ID of the cancelled order")
+    id: str = Field(..., alias="_id", description="Order ID of the newly created replacement order")
+    url: Optional[str] = Field(None, description="Pre-signed OSS URL to the uploaded order payload JSON")
+    timestamp: str = Field(..., description="ISO-8601 timestamp of the new order's creation")
+    sourceAccountId: Optional[str] = Field(None, description="Base64-encoded store_id of the client")
+
+    class Config:
+        populate_by_name = True
+
+
 class SiteFlowErrorDetail(BaseModel):
     """SiteFlow-compatible error detail object."""
     message: str = Field(..., description="Human-readable error message")
