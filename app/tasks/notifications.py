@@ -247,6 +247,13 @@ def notify_vfs(
                 log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
+                _capture_notify_alert(
+                    "warning",
+                    f"notify_vfs: order {order_id} not found for webhook_log {webhook_log_id}",
+                    order_id,
+                    "vfs",
+                    "vfs_order_not_found",
+                )
                 return False
 
             result = vfs_service.send_status_postback(
@@ -277,6 +284,13 @@ def notify_vfs(
             session.add(log)
             session.commit()
             logger.warning("[Celery] VFS postback error for order %s: %s", order_id, result)
+            _capture_notify_alert(
+                "error",
+                f"notify_vfs: VFS rejected postback for order {order_id}: {result.get('message', 'VFS postback failed')}",
+                order_id,
+                "vfs",
+                "vfs_rejected",
+            )
             return False
 
     except Exception as e:
@@ -310,6 +324,14 @@ def notify_vfs(
                         "[Celery] notify_vfs failed for order %s (attempt %s/%s), retrying in %ss",
                         order_id, retry_count + 1, max_retries, countdown,
                     )
+                    if retry_count == 0:
+                        _capture_notify_alert(
+                            "warning",
+                            f"notify_vfs: failed for order {order_id}, first retry scheduled: {e}",
+                            order_id,
+                            "vfs",
+                            "vfs_retry",
+                        )
                     notify_vfs.apply_async(
                         args=[webhook_log_id, order_id, event_status, shipments],
                         countdown=countdown,
@@ -323,6 +345,13 @@ def notify_vfs(
                 session.commit()
                 logger.error(
                     "[Celery] notify_vfs exhausted %s retries for order %s", max_retries, order_id,
+                )
+                _capture_notify_alert(
+                    "error",
+                    f"notify_vfs: exhausted {max_retries} retries for order {order_id}: {e}",
+                    order_id,
+                    "vfs",
+                    "vfs_retry_exhausted",
                 )
                 return False
         except Exception as log_err:
