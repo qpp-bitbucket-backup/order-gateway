@@ -9,14 +9,16 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app.core.config import settings
-from app.core.sentry_alerts import capture_integration_alert
+from app.core.sentry_alerts import ALERTS, capture_integration_alert
 
 logger = logging.getLogger(__name__)
 
+_WEBHOOK_MGMT_ALERTS = ALERTS["webhook_mgmt"]
 
-def _capture_qpmn_alert(level: str, message: str, failure_type: str) -> None:
+
+def _capture_qpmn_alert(alert_key: str, **format_args) -> None:
     """Capture a QPMN webhook-management API failure to Sentry."""
-    capture_integration_alert(level, message, failure_type, component="qpmn_api")
+    capture_integration_alert(_WEBHOOK_MGMT_ALERTS[alert_key], format_args=format_args, component="qpmn_api")
 
 
 class QpmnApiError(Exception):
@@ -38,19 +40,11 @@ def _request(method: str, path: str, store_key: str, **kwargs) -> Dict[str, Any]
             response = client.request(method, url, headers=headers, **kwargs)
     except httpx.TimeoutException as exc:
         logger.error("[qpmn_webhook] %s %s timed out: %s", method, path, exc)
-        _capture_qpmn_alert(
-            "error",
-            f"qpmn_webhook: {method} {path} timed out: {exc}",
-            "qpmn_webhook_timeout",
-        )
+        _capture_qpmn_alert("TIMEOUT", method=method, path=path, exc=exc)
         raise QpmnApiError(status_code=504, message=f"QPMN webhook API timeout: {exc}")
     except Exception as exc:
         logger.error("[qpmn_webhook] %s %s request failed: %s", method, path, exc)
-        _capture_qpmn_alert(
-            "error",
-            f"qpmn_webhook: {method} {path} request failed: {exc}",
-            "qpmn_webhook_request_failed",
-        )
+        _capture_qpmn_alert("REQUEST_FAILED", method=method, path=path, exc=exc)
         raise QpmnApiError(status_code=502, message=f"QPMN webhook API request failed: {exc}")
 
     # Non-JSON bodies (e.g. an HTML/plain-text error page from an upstream
@@ -63,9 +57,8 @@ def _request(method: str, path: str, store_key: str, **kwargs) -> Dict[str, Any]
             method, path, response.status_code, response.text[:500],
         )
         _capture_qpmn_alert(
-            "error",
-            f"qpmn_webhook: {method} {path} returned non-JSON body (HTTP {response.status_code}): {response.text[:200]}",
-            "qpmn_webhook_non_json_response",
+            "NON_JSON_RESPONSE",
+            method=method, path=path, status_code=response.status_code, text=response.text[:200],
         )
         body = {}
 
@@ -73,9 +66,8 @@ def _request(method: str, path: str, store_key: str, **kwargs) -> Dict[str, Any]
         error = body.get("data") if isinstance(body.get("data"), dict) else {}
         message = error.get("message", f"QPMN webhook API returned HTTP {response.status_code}")
         _capture_qpmn_alert(
-            "error",
-            f"qpmn_webhook: {method} {path} failed (HTTP {response.status_code}): {message}",
-            "qpmn_webhook_rejected",
+            "REJECTED",
+            method=method, path=path, status_code=response.status_code, error_message=message,
         )
         raise QpmnApiError(
             status_code=response.status_code,

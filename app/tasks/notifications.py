@@ -10,7 +10,7 @@ from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import engine
 from app.core.rabbitmq import QUEUE_ORDER_NOTIFYING
-from app.core.sentry_alerts import capture_integration_alert
+from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from app.models.order import Order
 from app.models.webhook_log import WebhookLog, WebhookProcessStatus
 from app.services.oms import oms_service
@@ -20,15 +20,16 @@ from app.tasks.orders import _exponential_backoff
 logger = logging.getLogger(__name__)
 
 
-def _capture_notify_alert(level: str, message: str, order_id: Optional[str], channel: str, failure_type: str) -> None:
+def _capture_notify_alert(channel: str, alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
     """Capture a notify_oms/notify_vfs failure to Sentry.
 
-    ``channel`` ("oms"/"vfs") plus ``failure_type`` lets alert rules target
-    either postback channel independently.
+    ``channel`` ("oms"/"vfs") plus ``failure_type`` (embedded in the alert
+    definition) lets alert rules target either postback channel independently.
     """
     capture_integration_alert(
-        level, message, failure_type,
-        order_id=order_id, order_queue=QUEUE_ORDER_NOTIFYING, channel=channel,
+        ALERTS[channel][alert_key], order_id=order_id,
+        format_args={"order_id": order_id, **format_args},
+        order_queue=QUEUE_ORDER_NOTIFYING, channel=channel,
     )
 
 
@@ -79,13 +80,7 @@ def notify_oms(
                 log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
-                _capture_notify_alert(
-                    "warning",
-                    f"notify_oms: order {order_id} not found for webhook_log {webhook_log_id}",
-                    order_id,
-                    "oms",
-                    "oms_order_not_found",
-                )
+                _capture_notify_alert("oms", "ORDER_NOT_FOUND", order_id, webhook_log_id=webhook_log_id)
                 return False
 
             result = oms_service.update_order_status(
@@ -117,13 +112,7 @@ def notify_oms(
             session.add(log)
             session.commit()
             logger.warning("[Celery] OMS business error for order %s: %s", order_id, result)
-            _capture_notify_alert(
-                "error",
-                f"notify_oms: OMS rejected order {order_id}: {result.get('message', 'OMS returned failure')}",
-                order_id,
-                "oms",
-                "oms_rejected",
-            )
+            _capture_notify_alert("oms", "REJECTED", order_id, error_message=result.get('message', 'OMS returned failure'))
             return False
 
     except Exception as e:
@@ -158,13 +147,7 @@ def notify_oms(
                         order_id, retry_count + 1, max_retries, countdown,
                     )
                     if retry_count == 0:
-                        _capture_notify_alert(
-                            "warning",
-                            f"notify_oms: failed for order {order_id}, first retry scheduled: {e}",
-                            order_id,
-                            "oms",
-                            "oms_retry",
-                        )
+                        _capture_notify_alert("oms", "RETRY", order_id, exc=e)
                     notify_oms.apply_async(
                         args=[webhook_log_id, order_id, event_status, shipments],
                         countdown=countdown,
@@ -179,13 +162,7 @@ def notify_oms(
                 logger.error(
                     "[Celery] notify_oms exhausted %s retries for order %s", max_retries, order_id,
                 )
-                _capture_notify_alert(
-                    "error",
-                    f"notify_oms: exhausted {max_retries} retries for order {order_id}: {e}",
-                    order_id,
-                    "oms",
-                    "oms_retry_exhausted",
-                )
+                _capture_notify_alert("oms", "RETRY_EXHAUSTED", order_id, max_retries=max_retries, exc=e)
                 return False
         except Exception as log_err:
             logger.error("[Celery] Failed to update webhook log: %s", log_err)
@@ -239,13 +216,7 @@ def notify_vfs(
                 log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
-                _capture_notify_alert(
-                    "warning",
-                    f"notify_vfs: order {order_id} not found for webhook_log {webhook_log_id}",
-                    order_id,
-                    "vfs",
-                    "vfs_order_not_found",
-                )
+                _capture_notify_alert("vfs", "ORDER_NOT_FOUND", order_id, webhook_log_id=webhook_log_id)
                 return False
 
             result = vfs_service.send_status_postback(
@@ -276,13 +247,7 @@ def notify_vfs(
             session.add(log)
             session.commit()
             logger.warning("[Celery] VFS postback error for order %s: %s", order_id, result)
-            _capture_notify_alert(
-                "error",
-                f"notify_vfs: VFS rejected postback for order {order_id}: {result.get('message', 'VFS postback failed')}",
-                order_id,
-                "vfs",
-                "vfs_rejected",
-            )
+            _capture_notify_alert("vfs", "REJECTED", order_id, error_message=result.get('message', 'VFS postback failed'))
             return False
 
     except Exception as e:
@@ -317,13 +282,7 @@ def notify_vfs(
                         order_id, retry_count + 1, max_retries, countdown,
                     )
                     if retry_count == 0:
-                        _capture_notify_alert(
-                            "warning",
-                            f"notify_vfs: failed for order {order_id}, first retry scheduled: {e}",
-                            order_id,
-                            "vfs",
-                            "vfs_retry",
-                        )
+                        _capture_notify_alert("vfs", "RETRY", order_id, exc=e)
                     notify_vfs.apply_async(
                         args=[webhook_log_id, order_id, event_status, shipments],
                         countdown=countdown,
@@ -338,13 +297,7 @@ def notify_vfs(
                 logger.error(
                     "[Celery] notify_vfs exhausted %s retries for order %s", max_retries, order_id,
                 )
-                _capture_notify_alert(
-                    "error",
-                    f"notify_vfs: exhausted {max_retries} retries for order {order_id}: {e}",
-                    order_id,
-                    "vfs",
-                    "vfs_retry_exhausted",
-                )
+                _capture_notify_alert("vfs", "RETRY_EXHAUSTED", order_id, max_retries=max_retries, exc=e)
                 return False
         except Exception as log_err:
             logger.error("[Celery] Failed to update webhook log: %s", log_err)

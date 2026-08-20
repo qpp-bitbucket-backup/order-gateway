@@ -18,18 +18,35 @@ from app.tasks.orders import publish_order
 from app.services.file import file_service
 from app.services.client import client_service
 from app.core.config import settings
-from app.core.sentry_alerts import capture_integration_alert
+from app.core.sentry_alerts import ALERTS, capture_integration_alert
 
 logger = logging.getLogger(__name__)
 
+_CANCEL_ALERTS = ALERTS["cancel"]
+_SHIPPING_ALERTS = ALERTS["shipping"]
+_CURRENCY_ALERTS = ALERTS["currency"]
 
-def _capture_qpmn_alert(level: str, message: str, order_id: Optional[str], failure_type: str) -> None:
-    """Capture a synchronous (non-Celery) QPMN API failure to Sentry.
 
-    Used for calls made directly from request-handling code (e.g.
-    cancel_order) rather than from a Celery task/queue.
-    """
-    capture_integration_alert(level, message, failure_type, order_id=order_id, component="qpmn_api")
+def _capture_cancel_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
+    """Capture a cancel_qpmn_order failure to Sentry (synchronous, non-Celery)."""
+    capture_integration_alert(
+        _CANCEL_ALERTS[alert_key], order_id=order_id,
+        format_args={"order_id": order_id, **format_args}, component="qpmn_api",
+    )
+
+
+def _capture_shipping_alert(alert_key: str, **format_args) -> None:
+    """Capture a fetch_shipping_method_from_qpmn failure to Sentry."""
+    capture_integration_alert(
+        _SHIPPING_ALERTS[alert_key], format_args=format_args, component="qpmn_api",
+    )
+
+
+def _capture_currency_alert(alert_key: str, **format_args) -> None:
+    """Capture a fetch_currency_from_qpmn failure to Sentry."""
+    capture_integration_alert(
+        _CURRENCY_ALERTS[alert_key], format_args=format_args, component="qpmn_api",
+    )
 
 
 # Statuses that allow updates (order has not reached print-ready stage)
@@ -284,12 +301,7 @@ class OrderService:
         store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
         if not store_key:
             logger.warning("[OrderService] No store_key for order %s, cannot call QPMN cancel API", order.order_id)
-            _capture_qpmn_alert(
-                "warning",
-                f"cancel_qpmn_order: no store_key configured for store_id={order.store_id} (order {order.order_id})",
-                order.order_id,
-                "qpmn_cancel_no_store_key",
-            )
+            _capture_cancel_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
 
         api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/cancel"
@@ -309,21 +321,11 @@ class OrderService:
                 response = client.put(api_url, headers=headers)
         except httpx.TimeoutException:
             logger.error("[OrderService] QPMN cancel API timeout for order %s", order.order_id)
-            _capture_qpmn_alert(
-                "error",
-                f"cancel_qpmn_order: QPMN API timeout for order {order.order_id}",
-                order.order_id,
-                "qpmn_cancel_timeout",
-            )
+            _capture_cancel_alert("TIMEOUT", order.order_id)
             return {"success": False, "status_code": None, "error": "QPMN API timeout"}
         except Exception as exc:
             logger.error("[OrderService] QPMN cancel API request failed for order %s: %s", order.order_id, exc)
-            _capture_qpmn_alert(
-                "error",
-                f"cancel_qpmn_order: request failed for order {order.order_id}: {exc}",
-                order.order_id,
-                "qpmn_cancel_request_failed",
-            )
+            _capture_cancel_alert("REQUEST_FAILED", order.order_id, exc=exc)
             return {"success": False, "status_code": None, "error": str(exc)}
 
         # Non-200 responses are failures
@@ -339,12 +341,7 @@ class OrderService:
                 order.order_id,
                 error_body,
             )
-            _capture_qpmn_alert(
-                "error",
-                f"cancel_qpmn_order: QPMN returned HTTP {response.status_code} for order {order.order_id}: {error_body}",
-                order.order_id,
-                "qpmn_cancel_rejected",
-            )
+            _capture_cancel_alert("REJECTED_HTTP", order.order_id, status_code=response.status_code, error_body=error_body)
             return {
                 "success": False,
                 "status_code": response.status_code,
@@ -358,12 +355,7 @@ class OrderService:
                 order.order_id,
                 body,
             )
-            _capture_qpmn_alert(
-                "error",
-                f"cancel_qpmn_order: QPMN returned success=false for order {order.order_id}: {body}",
-                order.order_id,
-                "qpmn_cancel_rejected",
-            )
+            _capture_cancel_alert("REJECTED_SUCCESS_FALSE", order.order_id, body=body)
             return {
                 "success": False,
                 "status_code": 200,
@@ -1027,12 +1019,7 @@ class OrderService:
             store_key = client_service.get_store_key_by_id(store_id)
             if not store_key:
                 logger.warning("[OrderService] No store_key found for store_id=%s, falling back to 'Standard'", store_id)
-                _capture_qpmn_alert(
-                    "warning",
-                    f"fetch_shipping_method_from_qpmn: no store_key for store_id={store_id}, falling back to 'Standard'",
-                    None,
-                    "qpmn_shipping_no_store_key",
-                )
+                _capture_shipping_alert("NO_STORE_KEY", store_id=store_id)
                 return "Standard"
 
             api_url = f"{settings.QPMN_API_URL}/store/{store_id}/default/shippingMethod"
@@ -1056,22 +1043,12 @@ class OrderService:
                 return code
 
             logger.warning("[OrderService] No storeDefaultShippings in response for store_id=%s, falling back to 'Standard'", store_id)
-            _capture_qpmn_alert(
-                "warning",
-                f"fetch_shipping_method_from_qpmn: no storeDefaultShippings for store_id={store_id}, falling back to 'Standard'",
-                None,
-                "qpmn_shipping_empty_response",
-            )
+            _capture_shipping_alert("EMPTY_RESPONSE", store_id=store_id)
             return "Standard"
 
         except Exception as e:
             logger.warning("[OrderService] Failed to fetch shipping method for store_id=%s: %s, falling back to 'Standard'", store_id, e)
-            _capture_qpmn_alert(
-                "error",
-                f"fetch_shipping_method_from_qpmn: failed for store_id={store_id}: {e}, falling back to 'Standard'",
-                None,
-                "qpmn_shipping_fetch_failed",
-            )
+            _capture_shipping_alert("FETCH_FAILED", store_id=store_id, exc=e)
             return "Standard"
 
     def fetch_currency_from_qpmn(self, store_id: str) -> str:
@@ -1091,12 +1068,7 @@ class OrderService:
             store_key = client_service.get_store_key_by_id(store_id)
             if not store_key:
                 logger.warning("[OrderService] No store_key found for store_id=%s, falling back to 'CNY'", store_id)
-                _capture_qpmn_alert(
-                    "warning",
-                    f"fetch_currency_from_qpmn: no store_key for store_id={store_id}, falling back to 'CNY'",
-                    None,
-                    "qpmn_currency_no_store_key",
-                )
+                _capture_currency_alert("NO_STORE_KEY", store_id=store_id)
                 return "CNY"
 
             api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
@@ -1116,22 +1088,12 @@ class OrderService:
                 return currency_code
 
             logger.warning("[OrderService] No currencyCode in response for store_id=%s, falling back to 'CNY'", store_id)
-            _capture_qpmn_alert(
-                "warning",
-                f"fetch_currency_from_qpmn: no currencyCode for store_id={store_id}, falling back to 'CNY'",
-                None,
-                "qpmn_currency_empty_response",
-            )
+            _capture_currency_alert("EMPTY_RESPONSE", store_id=store_id)
             return "CNY"
 
         except Exception as e:
             logger.warning("[OrderService] Failed to fetch currency for store_id=%s: %s, falling back to 'CNY'", store_id, e)
-            _capture_qpmn_alert(
-                "error",
-                f"fetch_currency_from_qpmn: failed for store_id={store_id}: {e}, falling back to 'CNY'",
-                None,
-                "qpmn_currency_fetch_failed",
-            )
+            _capture_currency_alert("FETCH_FAILED", store_id=store_id, exc=e)
             return "CNY"
         
 # Singleton instance
