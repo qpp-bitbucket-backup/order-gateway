@@ -6,6 +6,7 @@ import uuid
 import fitz  # PyMuPDF
 import base64
 import httpx
+import sentry_sdk
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -20,6 +21,25 @@ from app.services.client import client_service
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _capture_qpmn_alert(level: str, message: str, order_id: Optional[str], failure_type: str) -> None:
+    """Capture a synchronous (non-Celery) QPMN API failure to Sentry.
+
+    Mirrors app.tasks.orders._capture_push_alert's tagging/fingerprint
+    approach, but for calls made directly from request-handling code (e.g.
+    cancel_order) rather than from a Celery task/queue.
+
+    fingerprint is pinned to (qpmn_api, failure_type) so failures aggregate
+    into one issue per failure type instead of one per order_id.
+    """
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("component", "qpmn_api")
+        scope.set_tag("failure_type", failure_type)
+        if order_id:
+            scope.set_tag("order_id", order_id)
+        scope.fingerprint = ["qpmn_api", failure_type]
+        sentry_sdk.capture_message(message, level=level)
 
 
 # Statuses that allow updates (order has not reached print-ready stage)
@@ -274,6 +294,12 @@ class OrderService:
         store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
         if not store_key:
             logger.warning("[OrderService] No store_key for order %s, cannot call QPMN cancel API", order.order_id)
+            _capture_qpmn_alert(
+                "warning",
+                f"cancel_qpmn_order: no store_key configured for store_id={order.store_id} (order {order.order_id})",
+                order.order_id,
+                "qpmn_cancel_no_store_key",
+            )
             return {"success": False, "status_code": None, "error": "No store_key configured"}
 
         api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/cancel"
@@ -293,9 +319,21 @@ class OrderService:
                 response = client.put(api_url, headers=headers)
         except httpx.TimeoutException:
             logger.error("[OrderService] QPMN cancel API timeout for order %s", order.order_id)
+            _capture_qpmn_alert(
+                "error",
+                f"cancel_qpmn_order: QPMN API timeout for order {order.order_id}",
+                order.order_id,
+                "qpmn_cancel_timeout",
+            )
             return {"success": False, "status_code": None, "error": "QPMN API timeout"}
         except Exception as exc:
             logger.error("[OrderService] QPMN cancel API request failed for order %s: %s", order.order_id, exc)
+            _capture_qpmn_alert(
+                "error",
+                f"cancel_qpmn_order: request failed for order {order.order_id}: {exc}",
+                order.order_id,
+                "qpmn_cancel_request_failed",
+            )
             return {"success": False, "status_code": None, "error": str(exc)}
 
         # Non-200 responses are failures
@@ -311,6 +349,12 @@ class OrderService:
                 order.order_id,
                 error_body,
             )
+            _capture_qpmn_alert(
+                "error",
+                f"cancel_qpmn_order: QPMN returned HTTP {response.status_code} for order {order.order_id}: {error_body}",
+                order.order_id,
+                "qpmn_cancel_rejected",
+            )
             return {
                 "success": False,
                 "status_code": response.status_code,
@@ -323,6 +367,12 @@ class OrderService:
                 "[OrderService] QPMN cancel API returned success=false for order %s: %s",
                 order.order_id,
                 body,
+            )
+            _capture_qpmn_alert(
+                "error",
+                f"cancel_qpmn_order: QPMN returned success=false for order {order.order_id}: {body}",
+                order.order_id,
+                "qpmn_cancel_rejected",
             )
             return {
                 "success": False,
