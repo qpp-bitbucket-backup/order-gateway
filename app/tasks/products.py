@@ -12,8 +12,29 @@ from lxml import html
 import re
 from app.services.client import client_service
 import httpx
+import sentry_sdk
 
 logger = logging.getLogger(__name__)
+
+
+def _capture_qpmn_alert(level: str, message: str, failure_type: str) -> None:
+    """Capture a QPMN product/SKU sync failure to Sentry.
+
+    Same tagging/fingerprint approach as order.py/file.py's
+    _capture_qpmn_alert. Needed specifically for sync_all_stores_products,
+    which deliberately catches per-store exceptions to keep syncing the
+    remaining stores — CeleryIntegration's automatic capture only sees
+    exceptions that actually escape the task, and this one never lets any
+    escape (it always returns success=True at the top level).
+
+    fingerprint is pinned to (qpmn_api, failure_type) so failures aggregate
+    into one issue per failure type instead of one per store.
+    """
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("component", "qpmn_api")
+        scope.set_tag("failure_type", failure_type)
+        scope.fingerprint = ["qpmn_api", failure_type]
+        sentry_sdk.capture_message(message, level=level)
 
 
 def sync_products_from_qpmn(store_id: str = None) -> Dict[str, Any]:
@@ -491,6 +512,11 @@ def sync_all_stores_products(self) -> Dict[str, Any]:
                 logger.info(f"[Celery Beat] Store {store_id}: {result.get('products_synced', 0)} products, {result.get('skus_synced', 0)} SKUs synced")
             except Exception as e:
                 logger.error(f"[Celery Beat] Failed to sync products for store {store_id}: {e}", exc_info=True)
+                _capture_qpmn_alert(
+                    "error",
+                    f"sync_all_stores_products: product sync failed for store {store_id}: {e}",
+                    "qpmn_product_sync_failed",
+                )
                 results.append({
                     "store_id": store_id,
                     "success": False,
