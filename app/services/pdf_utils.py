@@ -24,8 +24,28 @@ PDFX_STANDARDS = {
     "PDF/X-4:2008",
 }
 
-# Embedded sRGB ICC profile used as the OutputIntent destination profile
+# sRGB ICC profile used as the OutputIntent destination profile:
+# repo asset file first, in-code base64 copy as deploy fallback.
 _SRGB_ICC_PATH = Path(__file__).resolve().parent.parent / "assets" / "srgb.icc"
+_srgb_icc_cache: Optional[bytes] = None
+
+
+def _load_srgb_icc() -> Optional[bytes]:
+    """
+    Return the sRGB ICC profile bytes.
+
+    Loads ``app/assets/srgb.icc`` when present; otherwise falls back to the
+    base64 copy embedded in ``app/services/_srgb_icc_b64.py`` so partial
+    deploys that miss the binary asset still produce PDF/X files.
+    """
+    global _srgb_icc_cache
+    if _srgb_icc_cache is None:
+        if _SRGB_ICC_PATH.exists():
+            _srgb_icc_cache = _SRGB_ICC_PATH.read_bytes()
+        else:
+            from app.services._srgb_icc_b64 import SRGB_ICC_BYTES
+            _srgb_icc_cache = SRGB_ICC_BYTES
+    return _srgb_icc_cache
 
 
 def mm_to_points(mm: float) -> float:
@@ -318,7 +338,8 @@ class PDFProcessor:
                 f"Unsupported PDF/X standard: {standard!r}. "
                 f"Allowed: {sorted(PDFX_STANDARDS)}"
             )
-        if not _SRGB_ICC_PATH.exists():
+        icc_bytes = _load_srgb_icc()
+        if not icc_bytes:
             return False
 
         title = (doc.metadata or {}).get("title") or "Design"
@@ -367,7 +388,7 @@ class PDFProcessor:
         # 3. OutputIntent with embedded sRGB ICC profile
         icc_xref = doc.get_new_xref()
         doc.update_object(icc_xref, "<<>>")
-        doc.update_stream(icc_xref, _SRGB_ICC_PATH.read_bytes())
+        doc.update_stream(icc_xref, icc_bytes)
         doc.xref_set_key(icc_xref, "N", "3")  # RGB profile has 3 components
 
         oi_xref = doc.get_new_xref()
@@ -397,7 +418,9 @@ class PDFProcessor:
             doc = fitz.open(input_pdf)
         try:
             if not pdf_processor.apply_pdfx(doc, standard):
-                raise FileNotFoundError(f"sRGB ICC profile not found: {_SRGB_ICC_PATH}")
+                raise FileNotFoundError(
+                    "sRGB ICC profile not found (asset file and embedded copy both missing)"
+                )
             return doc.tobytes(garbage=3, deflate=True)
         finally:
             doc.close()
