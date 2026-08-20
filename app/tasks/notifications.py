@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
+import sentry_sdk
 from sqlmodel import Session, select
 
 from app.core.celery import celery_app
@@ -17,6 +18,26 @@ from app.services.vfs import vfs_service
 from app.tasks.orders import _exponential_backoff
 
 logger = logging.getLogger(__name__)
+
+
+def _capture_notify_alert(level: str, message: str, order_id: Optional[str], channel: str, failure_type: str) -> None:
+    """Capture a notify_oms/notify_vfs failure to Sentry.
+
+    Same tagging/fingerprint approach as _capture_push_alert in
+    app.tasks.orders — ``channel`` ("oms"/"vfs") plus ``failure_type`` lets
+    alert rules target either postback channel independently.
+
+    fingerprint is pinned to (channel, failure_type) so failures aggregate
+    into one issue per channel/failure_type instead of one per order_id.
+    """
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("order_queue", QUEUE_ORDER_NOTIFYING)
+        scope.set_tag("channel", channel)
+        scope.set_tag("failure_type", failure_type)
+        if order_id:
+            scope.set_tag("order_id", order_id)
+        scope.fingerprint = [channel, failure_type]
+        sentry_sdk.capture_message(message, level=level)
 
 
 @celery_app.task(
@@ -66,6 +87,13 @@ def notify_oms(
                 log.updated_at = datetime.now(timezone.utc)
                 session.add(log)
                 session.commit()
+                _capture_notify_alert(
+                    "warning",
+                    f"notify_oms: order {order_id} not found for webhook_log {webhook_log_id}",
+                    order_id,
+                    "oms",
+                    "oms_order_not_found",
+                )
                 return False
 
             result = oms_service.update_order_status(
@@ -97,6 +125,13 @@ def notify_oms(
             session.add(log)
             session.commit()
             logger.warning("[Celery] OMS business error for order %s: %s", order_id, result)
+            _capture_notify_alert(
+                "error",
+                f"notify_oms: OMS rejected order {order_id}: {result.get('message', 'OMS returned failure')}",
+                order_id,
+                "oms",
+                "oms_rejected",
+            )
             return False
 
     except Exception as e:
@@ -130,6 +165,14 @@ def notify_oms(
                         "[Celery] notify_oms failed for order %s (attempt %s/%s), retrying in %ss",
                         order_id, retry_count + 1, max_retries, countdown,
                     )
+                    if retry_count == 0:
+                        _capture_notify_alert(
+                            "warning",
+                            f"notify_oms: failed for order {order_id}, first retry scheduled: {e}",
+                            order_id,
+                            "oms",
+                            "oms_retry",
+                        )
                     notify_oms.apply_async(
                         args=[webhook_log_id, order_id, event_status, shipments],
                         countdown=countdown,
@@ -143,6 +186,13 @@ def notify_oms(
                 session.commit()
                 logger.error(
                     "[Celery] notify_oms exhausted %s retries for order %s", max_retries, order_id,
+                )
+                _capture_notify_alert(
+                    "error",
+                    f"notify_oms: exhausted {max_retries} retries for order {order_id}: {e}",
+                    order_id,
+                    "oms",
+                    "oms_retry_exhausted",
                 )
                 return False
         except Exception as log_err:
