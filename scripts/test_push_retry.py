@@ -1,13 +1,14 @@
 """
-Local test for push_order's retry/alert logic (_handle_push_retry), using a
-faked httpx response sequence instead of hitting the real QPMN API.
+Local test for push_order's retry/alert logic (exponential backoff via
+_exponential_backoff + _capture_push_alert), using a faked httpx response
+sequence instead of hitting the real QPMN API.
 
 Verifies:
   Scenario A (503 -> 503 -> success): exactly one Sentry "warning" on the
   first retry, no "error" alert, order ends PROCESSING.
-  Scenario B (503 x MAX_PUSH_RETRIES): exactly one Sentry "warning" on the
-  first retry, exactly one Sentry "error" alert once the cap is hit, order
-  ends FAILED, no further retry scheduled.
+  Scenario B (503 x QPMN_PUSH_RETRY_COUNT): exactly one Sentry "warning" on
+  the first retry, exactly one Sentry "error" alert once the cap is hit,
+  order ends FAILED, no further retry scheduled.
 
 Does not touch RabbitMQ/Celery broker or the real QPMN API. Creates two
 disposable Order rows in the local DB and deletes them when done.
@@ -27,10 +28,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger(__name__)
 
 from sqlmodel import Session, select
+from app.core.config import settings
 from app.core.database import engine
 from app.models.order import Order, OrderStatus
 import app.tasks.orders as orders_module
-from app.tasks.orders import push_order, MAX_PUSH_RETRIES
+from app.tasks.orders import push_order
+
+MAX_PUSH_RETRIES = settings.QPMN_PUSH_RETRY_COUNT
 
 
 def make_order(order_id: str) -> Order:
