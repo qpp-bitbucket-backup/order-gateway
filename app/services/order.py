@@ -1037,6 +1037,12 @@ class OrderService:
             store_key = client_service.get_store_key_by_id(store_id)
             if not store_key:
                 logger.warning("[OrderService] No store_key found for store_id=%s, falling back to 'Standard'", store_id)
+                _capture_qpmn_alert(
+                    "warning",
+                    f"fetch_shipping_method_from_qpmn: no store_key for store_id={store_id}, falling back to 'Standard'",
+                    None,
+                    "qpmn_shipping_no_store_key",
+                )
                 return "Standard"
 
             api_url = f"{settings.QPMN_API_URL}/store/{store_id}/default/shippingMethod"
@@ -1060,10 +1066,22 @@ class OrderService:
                 return code
 
             logger.warning("[OrderService] No storeDefaultShippings in response for store_id=%s, falling back to 'Standard'", store_id)
+            _capture_qpmn_alert(
+                "warning",
+                f"fetch_shipping_method_from_qpmn: no storeDefaultShippings for store_id={store_id}, falling back to 'Standard'",
+                None,
+                "qpmn_shipping_empty_response",
+            )
             return "Standard"
 
         except Exception as e:
             logger.warning("[OrderService] Failed to fetch shipping method for store_id=%s: %s, falling back to 'Standard'", store_id, e)
+            _capture_qpmn_alert(
+                "error",
+                f"fetch_shipping_method_from_qpmn: failed for store_id={store_id}: {e}, falling back to 'Standard'",
+                None,
+                "qpmn_shipping_fetch_failed",
+            )
             return "Standard"
 
     def fetch_currency_from_qpmn(self, store_id: str) -> str:
@@ -1083,6 +1101,12 @@ class OrderService:
             store_key = client_service.get_store_key_by_id(store_id)
             if not store_key:
                 logger.warning("[OrderService] No store_key found for store_id=%s, falling back to 'CNY'", store_id)
+                _capture_qpmn_alert(
+                    "warning",
+                    f"fetch_currency_from_qpmn: no store_key for store_id={store_id}, falling back to 'CNY'",
+                    None,
+                    "qpmn_currency_no_store_key",
+                )
                 return "CNY"
 
             api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
@@ -1102,10 +1126,22 @@ class OrderService:
                 return currency_code
 
             logger.warning("[OrderService] No currencyCode in response for store_id=%s, falling back to 'CNY'", store_id)
+            _capture_qpmn_alert(
+                "warning",
+                f"fetch_currency_from_qpmn: no currencyCode for store_id={store_id}, falling back to 'CNY'",
+                None,
+                "qpmn_currency_empty_response",
+            )
             return "CNY"
 
         except Exception as e:
             logger.warning("[OrderService] Failed to fetch currency for store_id=%s: %s, falling back to 'CNY'", store_id, e)
+            _capture_qpmn_alert(
+                "error",
+                f"fetch_currency_from_qpmn: failed for store_id={store_id}: {e}, falling back to 'CNY'",
+                None,
+                "qpmn_currency_fetch_failed",
+            )
             return "CNY"
         
 # Singleton instance
