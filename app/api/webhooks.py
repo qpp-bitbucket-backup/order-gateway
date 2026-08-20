@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+import sentry_sdk
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
@@ -24,6 +25,24 @@ router = APIRouter(
     prefix="/api/webhook/qpmn",
     tags=["Webhooks"],
 )
+
+
+def _capture_qpmn_alert(level: str, message: str, order_id: Optional[str], failure_type: str) -> None:
+    """Capture an inbound QPMN webhook processing failure to Sentry.
+
+    These are "soft" failures — the endpoint still returns HTTP 200 with
+    ``success: false`` (per QPMN's expected ack shape), so nothing here ever
+    raises and Sentry's FastAPI integration would never see them on its own.
+    Same tagging/fingerprint approach as order.py/file.py's
+    _capture_qpmn_alert.
+    """
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("component", "qpmn_webhook_inbound")
+        scope.set_tag("failure_type", failure_type)
+        if order_id:
+            scope.set_tag("order_id", order_id)
+        scope.fingerprint = ["qpmn_webhook_inbound", failure_type]
+        sentry_sdk.capture_message(message, level=level)
 
 
 def _verify_qpmn_signature(session: Session, raw_body: bytes, signature: Optional[str]) -> Optional[Client]:
@@ -155,6 +174,12 @@ async def receive_order_status(
         inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
+        _capture_qpmn_alert(
+            "warning",
+            f"receive_order_status: unmapped event type '{effective_status}'",
+            None,
+            "qpmn_webhook_unmapped_event_type",
+        )
         return response
 
     if is_shipped_event:
@@ -170,6 +195,12 @@ async def receive_order_status(
         inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
+        _capture_qpmn_alert(
+            "error",
+            f"receive_order_status: missing orderId on '{effective_status}' event body (item_id={item_id_value})",
+            None,
+            "qpmn_webhook_missing_order_id",
+        )
         return WebhookResponse(success=False, message="Missing orderId on event body")
 
     order = session.exec(
@@ -182,6 +213,12 @@ async def receive_order_status(
         inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
+        _capture_qpmn_alert(
+            "warning",
+            f"receive_order_status: no local order for QPMN orderId={order_id_value} (event='{effective_status}')",
+            None,
+            "qpmn_webhook_order_not_found",
+        )
         return WebhookResponse(
             success=False,
             message="Order not found",
@@ -212,6 +249,12 @@ async def receive_order_status(
         inbound_log.updated_at = datetime.now(timezone.utc)
         session.add(inbound_log)
         session.commit()
+        _capture_qpmn_alert(
+            "warning",
+            f"receive_order_status: invalid transition for order {order.order_id}: {order.status.value} -> {new_status.value}",
+            order.order_id,
+            "qpmn_webhook_invalid_transition",
+        )
         return response
 
     # Update order status + append log
