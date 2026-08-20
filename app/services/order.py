@@ -255,7 +255,7 @@ class OrderService:
         """
         Call QPMN cancel API to cancel the order on the QPMN side.
 
-        PUT {QPMN_OPEN_API_URL}/store/orders/{store_order_id}/cancel
+        PUT {QPMN_OPEN_API_URL}/orders/{store_order_id}/cancel
         Authorization: Basic {store_token}
 
         Returns:
@@ -276,7 +276,7 @@ class OrderService:
             logger.warning("[OrderService] No store_key for order %s, cannot call QPMN cancel API", order.order_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
 
-        api_url = f"{settings.QPMN_OPEN_API_URL}/store/orders/{order.store_order_id}/cancel"
+        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/cancel"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": "application/json",
@@ -552,7 +552,7 @@ class OrderService:
         """
         Call QPMN Open API to update the delivery address for an order.
 
-        PUT {QPMN_OPEN_API_URL}/open-api/v1/orders/{store_order_id}/deliveryAddress
+        PUT {QPMN_OPEN_API_URL}/orders/{store_order_id}/deliveryAddress
         Authorization: Basic {store_key}
         """
         if not order.store_order_id:
