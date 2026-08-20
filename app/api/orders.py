@@ -811,10 +811,6 @@ def update_order(
                 order.order_data = request.orderData.model_dump()
             if request.destination is not None:
                 order.destination = request.destination.model_dump()
-            order.logs = (order.logs or []) + [{
-                "action": "address_update_requested",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }]
             session.add(order)
             session.commit()
             session.refresh(order)
@@ -834,17 +830,14 @@ def update_order(
                 version=order.version,
             )
 
-            # Build response message
+            # Build response message and record the outcome in order logs
             if address_result.get("address_changed"):
                 qpmn_updated = address_result.get("qpmn_updated")
                 if qpmn_updated:
                     msg = "Address updated in QPMN successfully."
+                    action = "address_update_succeeded"
                     # Bump version only on success
                     order.version += 1
-                    session.add(order)
-                    session.commit()
-                    session.refresh(order)
-                    full_order.version = order.version
                 elif qpmn_updated is False:
                     # Failure log already written by sync_order_address
                     raise HTTPException(
@@ -853,15 +846,26 @@ def update_order(
                     )
                 else:
                     msg = "Address changed but no store_order_id (skipped QPMN)."
+                    action = "address_update_skipped"
                     # Bump version (address changed locally even if QPMN was skipped)
                     order.version += 1
-                    session.add(order)
-                    session.commit()
-                    session.refresh(order)
-                    full_order.version = order.version
+            elif address_result.get("error"):
+                msg = f"Address sync failed: {address_result['error']}"
+                action = "address_update_failed"
             else:
                 # TODO: address unchanged, content may have changed
                 msg = "Address unchanged."
+                action = "address_update_unchanged"
+
+            order.logs = (order.logs or []) + [{
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "action": action,
+                "message": msg,
+            }]
+            session.add(order)
+            session.commit()
+            session.refresh(order)
+            full_order.version = order.version
 
             resp = OrderUpdateResponse(
                 success=True,
