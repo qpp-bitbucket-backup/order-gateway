@@ -217,6 +217,23 @@ def validate_order(
     # Perform validation logic
     validation_errors: list = []
 
+    # Check for duplicate source_order_id (CANCELLED/ERRORED orders are
+    # excluded — see order_service.check_duplicate).
+    existing_order = order_service.check_duplicate(
+        session,
+        source_order_id=request.orderData.sourceOrderId,
+        store_id=store_id,
+    )
+    if existing_order:
+        validation_errors.append(
+            _error(
+                ["orderData", "sourceOrderId"],
+                "Source Order ID already exists",
+                "value_error",
+                request.orderData.sourceOrderId,
+            )
+        )
+
     # Validate items
     for idx, item in enumerate(request.orderData.items):
         item_loc = ["orderData", "items", idx]

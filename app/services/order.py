@@ -135,9 +135,17 @@ class OrderService:
         Check whether an order with the given *source_order_id* already exists
         (optionally scoped to *store_id*).
 
+        Orders in ``CANCELLED`` or ``ERRORED`` status are excluded — those
+        statuses free up the ``source_order_id`` for reuse (e.g. the
+        artwork-update flow cancels an order and immediately re-creates one
+        with the same ``source_order_id``).
+
         Returns the existing Order if found, otherwise ``None``.
         """
-        query = select(Order).where(Order.source_order_id == source_order_id)
+        query = select(Order).where(
+            Order.source_order_id == source_order_id,
+            Order.status.not_in([OrderStatus.CANCELLED, OrderStatus.ERRORED]),
+        )
         if store_id:
             query = query.where(Order.store_id == store_id)
         return session.exec(query).first()
