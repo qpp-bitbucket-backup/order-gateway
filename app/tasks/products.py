@@ -11,8 +11,8 @@ from app.core.config import settings
 from lxml import html
 import re
 from app.services.client import client_service
+from app.core.sentry_alerts import capture_integration_alert
 import httpx
-import sentry_sdk
 
 logger = logging.getLogger(__name__)
 
@@ -20,21 +20,13 @@ logger = logging.getLogger(__name__)
 def _capture_qpmn_alert(level: str, message: str, failure_type: str) -> None:
     """Capture a QPMN product/SKU sync failure to Sentry.
 
-    Same tagging/fingerprint approach as order.py/file.py's
-    _capture_qpmn_alert. Needed specifically for sync_all_stores_products,
-    which deliberately catches per-store exceptions to keep syncing the
-    remaining stores — CeleryIntegration's automatic capture only sees
-    exceptions that actually escape the task, and this one never lets any
-    escape (it always returns success=True at the top level).
-
-    fingerprint is pinned to (qpmn_api, failure_type) so failures aggregate
-    into one issue per failure type instead of one per store.
+    Needed specifically for sync_all_stores_products, which deliberately
+    catches per-store exceptions to keep syncing the remaining stores —
+    CeleryIntegration's automatic capture only sees exceptions that actually
+    escape the task, and this one never lets any escape (it always returns
+    success=True at the top level).
     """
-    with sentry_sdk.new_scope() as scope:
-        scope.set_tag("component", "qpmn_api")
-        scope.set_tag("failure_type", failure_type)
-        scope.fingerprint = ["qpmn_api", failure_type]
-        sentry_sdk.capture_message(message, level=level)
+    capture_integration_alert(level, message, failure_type, component="qpmn_api")
 
 
 def sync_products_from_qpmn(store_id: str = None) -> Dict[str, Any]:

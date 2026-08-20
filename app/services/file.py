@@ -4,12 +4,12 @@ import uuid
 import fitz  # PyMuPDF
 import httpx
 import logging
-import sentry_sdk
 from app.services.oss import oss_service
 from app.services.pdf_utils import pdf_processor
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 from app.core.config import settings
+from app.core.sentry_alerts import capture_integration_alert
 from urllib.parse import urlparse, unquote
 
 
@@ -17,20 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def _capture_qpmn_alert(level: str, message: str, failure_type: str) -> None:
-    """Capture a QPMN/design-file failure to Sentry.
-
-    Same tagging/fingerprint approach as order.py's _capture_qpmn_alert —
-    duplicated locally rather than imported to avoid a file.py <-> order.py
-    circular import (order.py already imports file_service).
-
-    fingerprint is pinned to (qpmn_api, failure_type) so failures aggregate
-    into one issue per failure type instead of one per file/order.
-    """
-    with sentry_sdk.new_scope() as scope:
-        scope.set_tag("component", "qpmn_api")
-        scope.set_tag("failure_type", failure_type)
-        scope.fingerprint = ["qpmn_api", failure_type]
-        sentry_sdk.capture_message(message, level=level)
+    """Capture a QPMN/design-file failure to Sentry."""
+    capture_integration_alert(level, message, failure_type, component="qpmn_api")
 
 
 class FileService:

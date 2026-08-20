@@ -11,6 +11,7 @@ from app.core.celery import celery_app
 from app.core.database import engine
 from app.core.config import settings
 from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING
+from app.core.sentry_alerts import capture_integration_alert
 from app.models.order import Order, OrderStatus, can_transition
 from app.services.file import file_service
 from app.services.client import client_service
@@ -28,18 +29,8 @@ def _capture_push_alert(level: str, message: str, order_id: str, failure_type: s
       failure_type — one of "qpmn_retry", "qpmn_retry_exhausted",
         "qpmn_rejected", "unexpected_exception".
       order_id — for search/correlation, not for alert conditions.
-
-    ``fingerprint`` is pinned to (queue, failure_type) rather than the default
-    message-text grouping — otherwise every order_id embedded in the message
-    would open its own Sentry issue instead of aggregating into one issue per
-    failure type.
     """
-    with sentry_sdk.new_scope() as scope:
-        scope.set_tag("order_queue", QUEUE_ORDER_PUSHING)
-        scope.set_tag("failure_type", failure_type)
-        scope.set_tag("order_id", order_id)
-        scope.fingerprint = [QUEUE_ORDER_PUSHING, failure_type]
-        sentry_sdk.capture_message(message, level=level)
+    capture_integration_alert(level, message, failure_type, order_id=order_id, order_queue=QUEUE_ORDER_PUSHING)
 
 
 def _exponential_backoff(base: int, retry_count: int, cap: int) -> int:

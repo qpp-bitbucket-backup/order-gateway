@@ -6,12 +6,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-import sentry_sdk
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
 
 from app.core.database import get_session
+from app.core.sentry_alerts import capture_integration_alert
 from app.models.client import Client
 from app.models.order import Order, can_transition, is_item_event_superseded, EVENT_STATUS_MAP, OMS_STATUS_MAP
 from app.models.shipment import OrderShipment
@@ -33,16 +33,8 @@ def _capture_qpmn_alert(level: str, message: str, order_id: Optional[str], failu
     These are "soft" failures — the endpoint still returns HTTP 200 with
     ``success: false`` (per QPMN's expected ack shape), so nothing here ever
     raises and Sentry's FastAPI integration would never see them on its own.
-    Same tagging/fingerprint approach as order.py/file.py's
-    _capture_qpmn_alert.
     """
-    with sentry_sdk.new_scope() as scope:
-        scope.set_tag("component", "qpmn_webhook_inbound")
-        scope.set_tag("failure_type", failure_type)
-        if order_id:
-            scope.set_tag("order_id", order_id)
-        scope.fingerprint = ["qpmn_webhook_inbound", failure_type]
-        sentry_sdk.capture_message(message, level=level)
+    capture_integration_alert(level, message, failure_type, order_id=order_id, component="qpmn_webhook_inbound")
 
 
 def _verify_qpmn_signature(session: Session, raw_body: bytes, signature: Optional[str]) -> Optional[Client]:

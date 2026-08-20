@@ -4,13 +4,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
-import sentry_sdk
 from sqlmodel import Session, select
 
 from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import engine
 from app.core.rabbitmq import QUEUE_ORDER_NOTIFYING
+from app.core.sentry_alerts import capture_integration_alert
 from app.models.order import Order
 from app.models.webhook_log import WebhookLog, WebhookProcessStatus
 from app.services.oms import oms_service
@@ -23,21 +23,13 @@ logger = logging.getLogger(__name__)
 def _capture_notify_alert(level: str, message: str, order_id: Optional[str], channel: str, failure_type: str) -> None:
     """Capture a notify_oms/notify_vfs failure to Sentry.
 
-    Same tagging/fingerprint approach as _capture_push_alert in
-    app.tasks.orders — ``channel`` ("oms"/"vfs") plus ``failure_type`` lets
-    alert rules target either postback channel independently.
-
-    fingerprint is pinned to (channel, failure_type) so failures aggregate
-    into one issue per channel/failure_type instead of one per order_id.
+    ``channel`` ("oms"/"vfs") plus ``failure_type`` lets alert rules target
+    either postback channel independently.
     """
-    with sentry_sdk.new_scope() as scope:
-        scope.set_tag("order_queue", QUEUE_ORDER_NOTIFYING)
-        scope.set_tag("channel", channel)
-        scope.set_tag("failure_type", failure_type)
-        if order_id:
-            scope.set_tag("order_id", order_id)
-        scope.fingerprint = [channel, failure_type]
-        sentry_sdk.capture_message(message, level=level)
+    capture_integration_alert(
+        level, message, failure_type,
+        order_id=order_id, order_queue=QUEUE_ORDER_NOTIFYING, channel=channel,
+    )
 
 
 @celery_app.task(

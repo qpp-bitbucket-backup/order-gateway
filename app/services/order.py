@@ -6,7 +6,6 @@ import uuid
 import fitz  # PyMuPDF
 import base64
 import httpx
-import sentry_sdk
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -19,6 +18,7 @@ from app.tasks.orders import publish_order
 from app.services.file import file_service
 from app.services.client import client_service
 from app.core.config import settings
+from app.core.sentry_alerts import capture_integration_alert
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +26,10 @@ logger = logging.getLogger(__name__)
 def _capture_qpmn_alert(level: str, message: str, order_id: Optional[str], failure_type: str) -> None:
     """Capture a synchronous (non-Celery) QPMN API failure to Sentry.
 
-    Mirrors app.tasks.orders._capture_push_alert's tagging/fingerprint
-    approach, but for calls made directly from request-handling code (e.g.
+    Used for calls made directly from request-handling code (e.g.
     cancel_order) rather than from a Celery task/queue.
-
-    fingerprint is pinned to (qpmn_api, failure_type) so failures aggregate
-    into one issue per failure type instead of one per order_id.
     """
-    with sentry_sdk.new_scope() as scope:
-        scope.set_tag("component", "qpmn_api")
-        scope.set_tag("failure_type", failure_type)
-        if order_id:
-            scope.set_tag("order_id", order_id)
-        scope.fingerprint = ["qpmn_api", failure_type]
-        sentry_sdk.capture_message(message, level=level)
+    capture_integration_alert(level, message, failure_type, order_id=order_id, component="qpmn_api")
 
 
 # Statuses that allow updates (order has not reached print-ready stage)
