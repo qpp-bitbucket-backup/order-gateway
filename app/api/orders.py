@@ -25,7 +25,6 @@ from app.schemas.order import (
     OrderStatusResponse,
     OrderStatusShipment,
     CancelledOrderResponse,
-    ArtworkUpdateResponse,
     FullOrder,
     OrderUpdateRequest,
     OrderUpdateResponse,
@@ -763,10 +762,13 @@ def update_order(
     API.
 
     **Content update** (when ``orderData.shipments`` is empty or absent):
-    Treats this as a content change. The current order is cancelled first;
-    if the order cannot be cancelled (e.g. ``printready`` / ``printed`` /
-    ``shipped`` / ``cancelled``), the update is rejected with HTTP **409**.
-    Re-creation of the order is not yet implemented (TODO).
+    Treats this as a content/artwork change. The current order is cancelled
+    first via QPMN; if the order cannot be cancelled (e.g. ``printready`` /
+    ``printed`` / ``shipped`` / ``cancelled``), the update is rejected with
+    HTTP **409**. On success, a new order is created with the same
+    ``sourceOrderId`` but a different platform order id — the response's
+    ``order`` is the new order, and ``cancelledOrderId`` is the old one's id.
+    Requires both ``destination`` and ``orderData`` in the request body.
     """
     _log_request("PUT /order/{order_id}", {"order_id": order_id, **request.model_dump()})
     try:
@@ -809,10 +811,6 @@ def update_order(
                 order.order_data = request.orderData.model_dump()
             if request.destination is not None:
                 order.destination = request.destination.model_dump()
-            order.logs = (order.logs or []) + [{
-                "action": "address_update_requested",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }]
             session.add(order)
             session.commit()
             session.refresh(order)
@@ -832,17 +830,14 @@ def update_order(
                 version=order.version,
             )
 
-            # Build response message
+            # Build response message and record the outcome in order logs
             if address_result.get("address_changed"):
                 qpmn_updated = address_result.get("qpmn_updated")
                 if qpmn_updated:
                     msg = "Address updated in QPMN successfully."
+                    action = "address_update_succeeded"
                     # Bump version only on success
                     order.version += 1
-                    session.add(order)
-                    session.commit()
-                    session.refresh(order)
-                    full_order.version = order.version
                 elif qpmn_updated is False:
                     # Failure log already written by sync_order_address
                     raise HTTPException(
@@ -851,15 +846,26 @@ def update_order(
                     )
                 else:
                     msg = "Address changed but no store_order_id (skipped QPMN)."
+                    action = "address_update_skipped"
                     # Bump version (address changed locally even if QPMN was skipped)
                     order.version += 1
-                    session.add(order)
-                    session.commit()
-                    session.refresh(order)
-                    full_order.version = order.version
+            elif address_result.get("error"):
+                msg = f"Address sync failed: {address_result['error']}"
+                action = "address_update_failed"
             else:
                 # TODO: address unchanged, content may have changed
                 msg = "Address unchanged."
+                action = "address_update_unchanged"
+
+            order.logs = (order.logs or []) + [{
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "action": action,
+                "message": msg,
+            }]
+            session.add(order)
+            session.commit()
+            session.refresh(order)
+            full_order.version = order.version
 
             resp = OrderUpdateResponse(
                 success=True,
@@ -871,6 +877,17 @@ def update_order(
 
         else:
             # === Content update path ===
+            # Recreating the order requires full destination/orderData — can't
+            # cancel the original on a partial payload we then can't rebuild from.
+            if request.destination is None or request.orderData is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Content update requires both 'destination' and 'orderData' to recreate the order.",
+                )
+
+            old_order_id = order.order_id
+            old_source_order_id = order.source_order_id
+
             # Cancel current order first; if it can't be cancelled, it can't be updated.
             try:
                 order = order_service.cancel_order(session, order)
@@ -899,20 +916,34 @@ def update_order(
                     detail=f"Cannot cancel order for content update: {str(qpmn_err)}",
                 )
 
-            # TODO: Re-create the order with the new content.
-            # For now, return success indicating the old order was cancelled.
+            # Re-create the order with the new content, same source_order_id,
+            # different platform order id — mirrors the previous standalone
+            # artwork-update endpoint's contract.
+            order_data = request.orderData.model_dump()
+            order_data["sourceOrderId"] = old_source_order_id
+
+            new_order = order_service.create_order(
+                session,
+                source_account=request.destination.name,
+                source_order_id=old_source_order_id,
+                destination=request.destination.model_dump(),
+                order_data=order_data,
+                store_id=store_id,
+            )
+
             full_order = FullOrder(
-                id=order.order_id,
-                destination=order.destination,
-                source=order.source,
-                orderData=order.order_data,
-                version=order.version,
+                id=new_order.order_id,
+                destination=new_order.destination,
+                source=new_order.source,
+                orderData=new_order.order_data,
+                version=new_order.version,
             )
 
             resp = OrderUpdateResponse(
                 success=True,
-                message="Order cancelled for content update. Re-creation is not yet implemented (TODO).",
+                message="Order content updated: original order cancelled and a new order created.",
                 order=full_order,
+                cancelledOrderId=old_order_id,
             )
             _log_response("PUT /order/{order_id}", resp.model_dump())
             return resp
@@ -1012,123 +1043,6 @@ def cancel_order(
         session.rollback()
         raise _siteflow_error(
             f"Order cancellation failed: {str(e)}",
-            "InternalServerError",
-            500,
-        )
-
-
-@router.post("/order/{source_account}/{source_order_id}/artwork-update", response_model=ArtworkUpdateResponse)
-def artwork_update_order(
-    source_account: str,
-    source_order_id: str,
-    request: OrderSubmissionRequest,
-    session: Session = Depends(get_session),
-    store_id: Optional[str] = Depends(get_client_store_id),
-):
-    """
-    Artwork Update - Cancels an existing order and re-submits it as a new order.
-
-    Used when a customer needs to change artwork/order data after submission
-    but before production has started. Only orders in an updatable status
-    (see ``UPDATABLE_STATUSES``) are eligible. On success, the original order
-    is cancelled via QPMN and a new order is created with the same
-    ``sourceOrderId`` but a different platform order id (``_id``).
-
-    If the QPMN cancel call fails, the whole flow aborts and no new order is
-    created — the original order is left untouched.
-
-    Error responses follow the HP SiteFlow API format:
-    ``{"success": false, "error": {"message": "...", "name": "...", "code": 404}}``
-
-    | HTTP Code | Error Name        | Scenario                                      |
-    |-----------|-------------------|-----------------------------------------------|
-    | 404       | NotFound          | Order not found or access denied              |
-    | 409       | Conflict          | Order status does not allow artwork update    |
-    | 502       | BadGateway        | QPMN cancel API call failed                   |
-    | 500       | InternalServerError| Unexpected internal error                    |
-    """
-    _log_request(
-        "POST /order/artwork-update",
-        {"source_account": source_account, "source_order_id": source_order_id, **request.model_dump()},
-    )
-    try:
-        query = select(Order).where(
-            (Order.source_account == source_account)
-            & (Order.source_order_id == source_order_id)
-        )
-        if store_id:
-            query = query.where(Order.store_id == store_id)
-        order = session.exec(query).first()
-
-        if not order:
-            detail = (
-                f"Order with sourceOrderId '{source_order_id}' not found"
-                + (" or access denied" if store_id else "")
-            )
-            raise _siteflow_error(detail, "NotFound", 404)
-
-        if order.status not in UPDATABLE_STATUSES:
-            raise _siteflow_error(
-                f"Cannot perform artwork update on order with status '{order.status.value}'.",
-                "Conflict",
-                409,
-            )
-
-        try:
-            order_service.cancel_order(session, order)
-        except OrderNotCancellableError:
-            raise _siteflow_error(
-                f"Cannot cancel order with status '{order.status.value}'.",
-                "Conflict",
-                409,
-            )
-        except QPMNCancelError as qpmn_err:
-            raise _siteflow_error(
-                str(qpmn_err),
-                "BadGateway",
-                502,
-            )
-
-        # Force the same sourceOrderId regardless of what the request body sent,
-        # since "same source_order_id, different platform order id" is the contract.
-        order_data = request.orderData.model_dump()
-        order_data["sourceOrderId"] = source_order_id
-
-        new_order = order_service.create_order(
-            session,
-            source_account=request.destination.name,
-            source_order_id=source_order_id,
-            destination=request.destination.model_dump(),
-            order_data=order_data,
-            store_id=store_id,
-        )
-
-        oss_url = None
-        try:
-            oss_object_key = f"orders/{new_order.order_id}.json"
-            oss_url = oss_service.upload_json_and_get_url(oss_object_key, request.model_dump(exclude_none=True))
-        except Exception as oss_exc:
-            logger.warning("[Orders] OSS upload failed for order %s: %s", new_order.order_id, oss_exc)
-
-        source_account_id = base64.b64encode(store_id.encode()).decode() if store_id else None
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-        resp = ArtworkUpdateResponse(
-            cancelledOrderId=order.order_id,
-            **{"_id": new_order.order_id},
-            url=oss_url,
-            timestamp=timestamp,
-            sourceAccountId=source_account_id,
-        )
-        _log_response("POST /order/artwork-update", resp.model_dump())
-        return resp
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        session.rollback()
-        raise _siteflow_error(
-            f"Artwork update failed: {str(e)}",
             "InternalServerError",
             500,
         )
