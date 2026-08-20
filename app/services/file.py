@@ -4,15 +4,33 @@ import uuid
 import fitz  # PyMuPDF
 import httpx
 import logging
+import sentry_sdk
 from app.services.oss import oss_service
 from app.services.pdf_utils import pdf_processor
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 from app.core.config import settings
 from urllib.parse import urlparse, unquote
 
 
 logger = logging.getLogger(__name__)
+
+
+def _capture_qpmn_alert(level: str, message: str, failure_type: str) -> None:
+    """Capture a QPMN/design-file failure to Sentry.
+
+    Same tagging/fingerprint approach as order.py's _capture_qpmn_alert —
+    duplicated locally rather than imported to avoid a file.py <-> order.py
+    circular import (order.py already imports file_service).
+
+    fingerprint is pinned to (qpmn_api, failure_type) so failures aggregate
+    into one issue per failure type instead of one per file/order.
+    """
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("component", "qpmn_api")
+        scope.set_tag("failure_type", failure_type)
+        scope.fingerprint = ["qpmn_api", failure_type]
+        sentry_sdk.capture_message(message, level=level)
 
 
 class FileService:
@@ -59,6 +77,11 @@ class FileService:
         except Exception as exc:
             error_msg = f"Unexpected error: {str(exc)}"
             logger.error(f"[FileService] Failed to download {url}: {error_msg}", exc_info=True)
+            _capture_qpmn_alert(
+                "error",
+                f"download_file: failed to download design file {url}: {error_msg}",
+                "qpmn_file_download_failed",
+            )
             return False, error_msg
 
     def split_pdf(self, pdf_path: str, dest_dir: str) -> List[str]:
@@ -161,6 +184,11 @@ class FileService:
                 logger.info(f"[FileService] Uploaded {filename} successfully. URL: {file_url}")
             else:
                 logger.error(f"[FileService] Uploaded {filename} failed. URL: {result}")
+                _capture_qpmn_alert(
+                    "error",
+                    f"upload_to_qpmn: QPMN returned no data for {filename} (HTTP {resp.status_code}): {result}",
+                    "qpmn_file_upload_empty_response",
+                )
                 return None
             return {
                 "filename": filename,
@@ -172,6 +200,11 @@ class FileService:
 
         except Exception as exc:
             logger.error(f"[FileService] Failed to upload {file_path} to QPMN: {exc}", exc_info=True)
+            _capture_qpmn_alert(
+                "error",
+                f"upload_to_qpmn: failed to upload {file_path}: {exc}",
+                "qpmn_file_upload_failed",
+            )
             return None
 
 # Create singleton instance
