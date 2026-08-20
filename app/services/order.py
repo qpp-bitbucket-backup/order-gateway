@@ -507,6 +507,22 @@ class OrderService:
                     session.add(order)
                     session.commit()
                     session.refresh(order)
+                else:
+                    # Write success info to order logs
+                    order.logs = (order.logs or []) + [
+                        {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "action": "qpmn_address_update_succeeded",
+                            "message": (
+                                f"QPMN address update succeeded (HTTP {qpmn_result.get('status_code', 200)}): "
+                                f"store_order_id={order.store_order_id}."
+                            ),
+                            "status_code": qpmn_result.get("status_code", 200),
+                        },
+                    ]
+                    session.add(order)
+                    session.commit()
+                    session.refresh(order)
             else:
                 logger.info(
                     "[OrderService] Order %s has no store_order_id, skipping QPMN address update",
