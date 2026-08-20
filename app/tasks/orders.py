@@ -18,6 +18,7 @@ from app.services.oms import oms_service, OMSRetryableError
 
 logger = logging.getLogger(__name__)
 
+
 def _capture_push_alert(level: str, message: str, order_id: str, failure_type: str) -> None:
     """Capture a push_order failure to Sentry, tagged for alert-rule filtering.
 
@@ -27,11 +28,17 @@ def _capture_push_alert(level: str, message: str, order_id: str, failure_type: s
       failure_type — one of "qpmn_retry", "qpmn_retry_exhausted",
         "qpmn_rejected", "unexpected_exception".
       order_id — for search/correlation, not for alert conditions.
+
+    ``fingerprint`` is pinned to (queue, failure_type) rather than the default
+    message-text grouping — otherwise every order_id embedded in the message
+    would open its own Sentry issue instead of aggregating into one issue per
+    failure type.
     """
     with sentry_sdk.new_scope() as scope:
         scope.set_tag("order_queue", QUEUE_ORDER_PUSHING)
         scope.set_tag("failure_type", failure_type)
         scope.set_tag("order_id", order_id)
+        scope.fingerprint = [QUEUE_ORDER_PUSHING, failure_type]
         sentry_sdk.capture_message(message, level=level)
 
 
