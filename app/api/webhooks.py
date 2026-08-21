@@ -265,6 +265,7 @@ async def receive_order_status(
         source_order_id=order.source_order_id,
         store_order_id=order.store_order_id,
         store_order_item_id=str(item_id_value) if item_id_value is not None else None,
+        event_id=x_qpmn_event_id,
         event_status=effective_status,
         payload={
             "orderNo": order.order_id,
@@ -292,6 +293,7 @@ async def receive_order_status(
         source_order_id=order.source_order_id,
         store_order_id=order.store_order_id,
         store_order_item_id=str(item_id_value) if item_id_value is not None else None,
+        event_id=x_qpmn_event_id,
         event_status=effective_status,
         payload={
             "sourceOrderId": order.source_order_id,

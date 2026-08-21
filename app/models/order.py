@@ -136,6 +136,13 @@ def is_item_event_superseded(order_status: OrderStatus, new_status: OrderStatus)
     """
     if order_status in (OrderStatus.CANCELLED, OrderStatus.SHIPPED, OrderStatus.ERRORED):
         return new_status in ITEM_EVENT_STATUS_ORDER
+    if order_status == OrderStatus.PROCESSING and new_status == OrderStatus.RECEIVED:
+        # QPMN's order_item_received webhook always arrives after push_order()
+        # has already moved the order past RECEIVED (PENDING/VALIDATED/
+        # PROCESSING all happen synchronously, before QPMN even echoes the
+        # receipt back) — treat it as a stale, safe-to-ignore confirmation
+        # rather than an invalid transition.
+        return True
     if order_status in ITEM_EVENT_STATUS_ORDER and new_status in ITEM_EVENT_STATUS_ORDER:
         return ITEM_EVENT_STATUS_ORDER.index(new_status) <= ITEM_EVENT_STATUS_ORDER.index(order_status)
     return False
