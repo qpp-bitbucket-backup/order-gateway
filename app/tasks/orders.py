@@ -10,7 +10,8 @@ from app.core.celery import celery_app
 from app.core.database import engine
 from app.core.config import settings
 from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING
-from app.models.order import Order, OrderStatus, can_transition
+from app.models.order import Order, OrderStatus, can_transition, OMS_STATUS_MAP
+from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.services.file import file_service
 from app.services.client import client_service
 from app.services.oms import oms_service, OMSRetryableError
@@ -219,6 +220,63 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
             order.status = OrderStatus.VALIDATED
             session.add(order)
             session.commit()
+
+            # Notify OMS/VFS of the dataready status ourselves — QPMN never
+            # sends an order_item_* event for VALIDATED (confirmed with QPMN),
+            # so receive_order_status() never gets a chance to raise this one.
+            from app.tasks.notifications import notify_oms, notify_vfs  # lazy import, avoids circular dependency
+
+            dataready_status = OMS_STATUS_MAP[OrderStatus.VALIDATED]
+
+            oms_outbound_log = WebhookLog(
+                direction=WebhookDirection.OUTBOUND,
+                source="OMS",
+                order_id=order.order_id,
+                source_order_id=order.source_order_id,
+                store_order_id=order.store_order_id,
+                event_status=OrderStatus.VALIDATED.value,
+                payload={
+                    "orderNo": order.order_id,
+                    "status": dataready_status,
+                    "shipments": [],
+                },
+                process_status=WebhookProcessStatus.RECEIVED,
+            )
+            session.add(oms_outbound_log)
+            session.commit()
+            session.refresh(oms_outbound_log)
+
+            notify_oms.delay(
+                webhook_log_id=oms_outbound_log.id,
+                order_id=order.order_id,
+                event_status=dataready_status,
+                shipments=None,
+            )
+
+            vfs_outbound_log = WebhookLog(
+                direction=WebhookDirection.OUTBOUND,
+                source="VFS",
+                order_id=order.order_id,
+                source_order_id=order.source_order_id,
+                store_order_id=order.store_order_id,
+                event_status=OrderStatus.VALIDATED.value,
+                payload={
+                    "sourceOrderId": order.source_order_id,
+                    "status": dataready_status,
+                    "shipments": [],
+                },
+                process_status=WebhookProcessStatus.RECEIVED,
+            )
+            session.add(vfs_outbound_log)
+            session.commit()
+            session.refresh(vfs_outbound_log)
+
+            notify_vfs.delay(
+                webhook_log_id=vfs_outbound_log.id,
+                order_id=order.order_id,
+                event_status=dataready_status,
+                shipments=None,
+            )
 
             # Chain to push_order
             task_payload = {
