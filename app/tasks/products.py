@@ -11,9 +11,24 @@ from app.core.config import settings
 from lxml import html
 import re
 from app.services.client import client_service
+from app.core.sentry_alerts import ALERTS, capture_integration_alert
 import httpx
 
 logger = logging.getLogger(__name__)
+
+_PRODUCT_SYNC_ALERTS = ALERTS["product_sync"]
+
+
+def _capture_qpmn_alert(alert_key: str, **format_args) -> None:
+    """Capture a QPMN product/SKU sync failure to Sentry.
+
+    Needed specifically for sync_all_stores_products, which deliberately
+    catches per-store exceptions to keep syncing the remaining stores —
+    CeleryIntegration's automatic capture only sees exceptions that actually
+    escape the task, and this one never lets any escape (it always returns
+    success=True at the top level).
+    """
+    capture_integration_alert(_PRODUCT_SYNC_ALERTS[alert_key], format_args=format_args, component="qpmn_api")
 
 
 def sync_products_from_qpmn(store_id: str = None) -> Dict[str, Any]:
@@ -291,6 +306,70 @@ def sync_products_to_db(
     }
 
 
+def fetch_product_design_data_from_sample(product_id: str, store_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch the productDesignData from the QPMN order sample data API.
+
+    POST {QPMN_API_URL}/v2/store/products/{product_id}/order/sampleData
+
+    Args:
+        product_id: QPMN product ID
+        store_key: Store key for API authentication (from clients table)
+
+    Returns:
+        The productDesignData dict from the first sample item carrying one,
+        or None on any failure (errors are logged, never raised, so the
+        product sync is not affected).
+    """
+    api_url = (
+        f"{settings.QPMN_API_URL.rstrip('/')}/v2/store/products/{product_id}/order/sampleData"
+    )
+    try:
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(api_url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        items = (data.get("data") or {}).get("items") or []
+        for item in items:
+            product_design_data = item.get("productDesignData")
+            if product_design_data:
+                return product_design_data
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching order sample data for product {product_id}: {str(e)}")
+        return None
+
+
+def _apply_product_design_data_from_sample(
+    sku: Sku,
+    product_id: str,
+    store_id: Optional[str],
+) -> None:
+    """
+    Best-effort: fetch the QPMN order sample data for the product and store
+    its productDesignData on the SKU. Failures only log an error and never
+    block the product sync.
+    """
+    if not store_id:
+        return
+    try:
+        store_key = client_service.get_store_key_by_id(store_id)
+        if not store_key:
+            return
+        product_design_data = fetch_product_design_data_from_sample(product_id, store_key)
+        if product_design_data:
+            sku.product_design_data = product_design_data
+            logger.debug(f"Stored productDesignData for SKU: {sku.code}")
+    except Exception as sample_err:
+        logger.error(
+            f"Error fetching order sample data for product {product_id}: {sample_err}"
+        )
+
+
 def sync_sku_to_db(
     session: Session,
     qpmn_sku: Dict[str, Any],
@@ -345,6 +424,10 @@ def sync_sku_to_db(
                         existing_sku.updated_at = qpmn_modified_dt
             if store_id:
                 existing_sku.store_id = store_id
+            # Backfill productDesignData for existing SKUs that don't have
+            # one yet (e.g. synced before this field existed)
+            if existing_sku.product_design_data is None:
+                _apply_product_design_data_from_sample(existing_sku, product_id, store_id)
             logger.debug(f"Updated SKU: {sku_code}")
         else:
             # Create new SKU
@@ -358,6 +441,10 @@ def sync_sku_to_db(
                 unit_cost=qpmn_sku.get("unitCost") or qpmn_sku.get("cost"),
                 store_id=store_id,
             )
+            # For new SKUs, fetch the QPMN order sample data and persist its
+            # productDesignData (best-effort: failures only log an error and
+            # never block the product sync)
+            _apply_product_design_data_from_sample(new_sku, product_id, store_id)
             session.add(new_sku)
             logger.debug(f"Created new SKU: {sku_code}")
         
@@ -491,6 +578,7 @@ def sync_all_stores_products(self) -> Dict[str, Any]:
                 logger.info(f"[Celery Beat] Store {store_id}: {result.get('products_synced', 0)} products, {result.get('skus_synced', 0)} SKUs synced")
             except Exception as e:
                 logger.error(f"[Celery Beat] Failed to sync products for store {store_id}: {e}", exc_info=True)
+                _capture_qpmn_alert("FAILED", store_id=store_id, exc=e)
                 results.append({
                     "store_id": store_id,
                     "success": False,
