@@ -11,9 +11,24 @@ from app.core.config import settings
 from lxml import html
 import re
 from app.services.client import client_service
+from app.core.sentry_alerts import ALERTS, capture_integration_alert
 import httpx
 
 logger = logging.getLogger(__name__)
+
+_PRODUCT_SYNC_ALERTS = ALERTS["product_sync"]
+
+
+def _capture_qpmn_alert(alert_key: str, **format_args) -> None:
+    """Capture a QPMN product/SKU sync failure to Sentry.
+
+    Needed specifically for sync_all_stores_products, which deliberately
+    catches per-store exceptions to keep syncing the remaining stores —
+    CeleryIntegration's automatic capture only sees exceptions that actually
+    escape the task, and this one never lets any escape (it always returns
+    success=True at the top level).
+    """
+    capture_integration_alert(_PRODUCT_SYNC_ALERTS[alert_key], format_args=format_args, component="qpmn_api")
 
 
 def sync_products_from_qpmn(store_id: str = None) -> Dict[str, Any]:
@@ -563,6 +578,7 @@ def sync_all_stores_products(self) -> Dict[str, Any]:
                 logger.info(f"[Celery Beat] Store {store_id}: {result.get('products_synced', 0)} products, {result.get('skus_synced', 0)} SKUs synced")
             except Exception as e:
                 logger.error(f"[Celery Beat] Failed to sync products for store {store_id}: {e}", exc_info=True)
+                _capture_qpmn_alert("FAILED", store_id=store_id, exc=e)
                 results.append({
                     "store_id": store_id,
                     "success": False,

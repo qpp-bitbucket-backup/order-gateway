@@ -2,6 +2,7 @@
 import logging
 import tempfile
 import httpx
+import sentry_sdk
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 from sqlmodel import Session, select
@@ -14,11 +15,28 @@ from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QU
 from app.models.order import Order, OrderStatus, can_transition, OMS_STATUS_MAP
 from app.models.product import Sku
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
+from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from app.services.file import file_service
 from app.services.client import client_service
 from app.services.oms import oms_service, OMSRetryableError
 
 logger = logging.getLogger(__name__)
+
+_PUSH_ALERTS = ALERTS["push"]
+
+
+def _capture_push_alert(alert_key: str, order_id: str, **format_args) -> None:
+    """Capture a push_order failure to Sentry, tagged for alert-rule filtering.
+
+    ``order_queue=order_pushing`` matches QUEUE_ORDER_PUSHING, letting Sentry
+    alert rules target this queue specifically.
+    """
+    capture_integration_alert(
+        _PUSH_ALERTS[alert_key],
+        order_id=order_id,
+        format_args={"order_id": order_id, **format_args},
+        order_queue=QUEUE_ORDER_PUSHING,
+    )
 
 
 def _exponential_backoff(base: int, retry_count: int, cap: int) -> int:
@@ -367,6 +385,8 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                             f"[Celery] QPMN returned 503 for order {order_id} "
                             f"(attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s"
                         )
+                        if retry_count == 0:
+                            _capture_push_alert("RETRY_503", order_id)
                         _append_order_log(
                             order, "order_push_retry",
                             f"QPMN returned 503 (attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s",
@@ -380,6 +400,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                             f"[Celery] QPMN returned 503 for order {order_id} "
                             f"after {max_retries} attempts, marking as FAILED"
                         )
+                        _capture_push_alert("RETRY_EXHAUSTED_503", order_id, max_retries=max_retries)
                         _mark_order_failed(order_id, f"QPMN returned 503 after {max_retries} retries")
                         return False
 
@@ -400,7 +421,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     session.commit()
                     logger.info(f"[Celery] Order {order_id} pushed to QPMN successfully, status -> PROCESSING")
                 else:
-                    # Order push failed - mark as FAILED and log message
+                    # Order push failed - mark as FAILED and log message (no retry, so this is final)
                     error_message = result.get("data", {}).get("message", "Unknown error")
                     if not error_message and isinstance(result.get("data"), dict):
                         error_message = result["data"].get("error", "Unknown error")
@@ -408,6 +429,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     _append_order_log(order, "order_push_failed", f"QPMN returned success=false: {error_message}")
                     session.add(order)
                     session.commit()
+                    _capture_push_alert("REJECTED", order_id, error_message=error_message)
                     logger.error(f"[Celery] Order {order_id} push failed: {result}")
                     logger.info(f"[Celery] Order {order_id} payload: {payload}")
 
@@ -419,6 +441,8 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                         f"[Celery] QPMN timeout for order {order_id} "
                         f"(attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s"
                     )
+                    if retry_count == 0:
+                        _capture_push_alert("RETRY_TIMEOUT", order_id)
                     _append_order_log(
                         order, "order_push_timeout",
                         f"QPMN request timeout (attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s",
@@ -432,6 +456,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                         f"[Celery] QPMN timeout for order {order_id} "
                         f"after {max_retries} attempts, marking as FAILED"
                     )
+                    _capture_push_alert("RETRY_EXHAUSTED_TIMEOUT", order_id, max_retries=max_retries)
                     _mark_order_failed(order_id, f"QPMN timeout after {max_retries} retries")
                     return False
 
@@ -439,6 +464,11 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
 
     except Exception as e:
         logger.error(f"[Celery] Failed to publish order {order_id}: {e}", exc_info=True)
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("order_queue", QUEUE_ORDER_PUSHING)
+            scope.set_tag("failure_type", "unexpected_exception")
+            scope.set_tag("order_id", order_id)
+            sentry_sdk.capture_exception(e)
         _mark_order_failed(order_id, str(e))
         return False
 
