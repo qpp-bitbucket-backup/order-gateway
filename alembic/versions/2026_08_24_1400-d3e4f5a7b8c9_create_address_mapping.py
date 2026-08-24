@@ -7,6 +7,7 @@ Create Date: 2026-08-24 14:00:00.000000
 Seed data source: docs/PS.CN运费.xlsx (StateCode/StateDesc columns),
 with common English province names added for lookups.
 """
+from datetime import datetime
 from typing import Sequence, Union
 
 from alembic import op
@@ -85,7 +86,11 @@ def upgrade() -> None:
         sa.column('state_desc', sa.String),
         sa.column('state_name_en', sa.String),
     )
-    now = sa.text('NOW()')
+    # NOTE: sa.text('NOW()') cannot be used as a bulk_insert value — the
+    # multi-row path binds parameters via executemany, which serializes the
+    # TextClause to the literal string 'NOW()' and fails on MySQL with
+    # "Incorrect datetime value". Use a Python-side datetime instead.
+    now = datetime.now()
     op.bulk_insert(address_mapping, [
         {
             'state_code': code,
