@@ -5,12 +5,14 @@ import httpx
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 from sqlmodel import Session, select
+from sqlalchemy import or_
 from sqlalchemy.orm import attributes
 from app.core.celery import celery_app
 from app.core.database import engine
 from app.core.config import settings
 from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING
 from app.models.order import Order, OrderStatus, can_transition, OMS_STATUS_MAP
+from app.models.product import Sku
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.services.file import file_service
 from app.services.client import client_service
@@ -74,6 +76,15 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                 for product in products:
                     components = product.get("components", [])
                     sku = product.get("sku", None)
+                    # Resolve items[].sku (source_sku or internal id) to the
+                    # internal sku_id so order.files keys always use the
+                    # original QPMN id
+                    if sku:
+                        sku_row = session.exec(
+                            select(Sku).where(or_(Sku.sku_id == sku, Sku.source_sku == sku))
+                        ).first()
+                        if sku_row:
+                            sku = sku_row.sku_id
                     for component in components:
                         file_url = component.get("path", None)
                         if not file_url:
