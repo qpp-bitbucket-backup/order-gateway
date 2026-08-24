@@ -243,9 +243,10 @@ def validate_order(
                 _error(item_loc + ["sku"], "SKU is required for all items", "missing")
             )
         else:
-            # Look up the SKU by its business code, scoped to the client's store if set
+            # Look up the SKU by its third-party platform code (source_sku),
+            # scoped to the client's store if set
             sku_query = select(Sku).where(
-                (Sku.sku_id == item.sku) & Sku.active.is_(True)
+                (Sku.source_sku == item.sku) & Sku.active.is_(True)
             )
             if store_id:
                 sku_query = sku_query.where(Sku.store_id == store_id)

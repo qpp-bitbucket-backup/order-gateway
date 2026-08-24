@@ -143,11 +143,13 @@ def get_skus(
             SkuSchema(
                 id=sku.sku_id,
                 code=sku.code,
+                sourceSku=sku.source_sku,
                 description=sku.description,
                 productId=sku.product_id,
                 active=sku.active,
                 unitPrice=sku.unit_price,
-                unitCost=sku.unit_cost
+                unitCost=sku.unit_cost,
+                maxPackageQuantity=sku.max_package_quantity,
             )
             for sku in skus
         ]
@@ -283,11 +285,13 @@ def jwt_get_skus(
             SkuSchema(
                 id=sku.sku_id,
                 code=sku.code,
+                sourceSku=sku.source_sku,
                 description=sku.description,
                 productId=sku.product_id,
                 active=sku.active,
                 unitPrice=sku.unit_price,
                 unitCost=sku.unit_cost,
+                maxPackageQuantity=sku.max_package_quantity,
                 createdAt=sku.created_at,
                 updatedAt=sku.updated_at,
             )
@@ -332,13 +336,16 @@ def jwt_get_sku_by_id(
         sku_schema = SkuSchema(
             id=sku.sku_id,
             code=sku.code,
+            sourceSku=sku.source_sku,
             description=sku.description,
             productId=sku.product_id,
             active=sku.active,
             unitPrice=sku.unit_price,
             unitCost=sku.unit_cost,
+            maxPackageQuantity=sku.max_package_quantity,
             properties=sku.properties,
             customizeProject=sku.customize_project,
+            productDesignData=sku.product_design_data,
             createdAt=sku.created_at,
             updatedAt=sku.updated_at,
         )
@@ -384,6 +391,9 @@ def jwt_update_sku(
         if request.code is not None:
             sku.code = request.code
             changes.append("code")
+        if request.sourceSku is not None:
+            sku.source_sku = request.sourceSku
+            changes.append("sourceSku")
         if request.description is not None:
             sku.description = request.description
             changes.append("description")
@@ -399,12 +409,18 @@ def jwt_update_sku(
         if request.unitCost is not None:
             sku.unit_cost = request.unitCost
             changes.append("unitCost")
+        if request.maxPackageQuantity is not None:
+            sku.max_package_quantity = request.maxPackageQuantity
+            changes.append("maxPackageQuantity")
         if request.properties is not None:
             sku.properties = request.properties
             changes.append("properties")
         if request.customizeProject is not None:
             sku.customize_project = request.customizeProject
             changes.append("customizeProject")
+        if request.productDesignData is not None:
+            sku.product_design_data = request.productDesignData
+            changes.append("productDesignData")
 
         if not changes:
             raise HTTPException(
@@ -419,13 +435,16 @@ def jwt_update_sku(
         updated_sku = SkuSchema(
             id=sku.sku_id,
             code=sku.code,
+            sourceSku=sku.source_sku,
             description=sku.description,
             productId=sku.product_id,
             active=sku.active,
             unitPrice=sku.unit_price,
             unitCost=sku.unit_cost,
+            maxPackageQuantity=sku.max_package_quantity,
             properties=sku.properties,
             customizeProject=sku.customize_project,
+            productDesignData=sku.product_design_data,
             createdAt=sku.created_at,
             updatedAt=sku.updated_at,
         )
@@ -486,6 +505,10 @@ def update_sku(
             sku.code = request.code
             changes.append("code")
 
+        if request.sourceSku is not None:
+            sku.source_sku = request.sourceSku
+            changes.append("sourceSku")
+
         if request.description is not None:
             sku.description = request.description
             changes.append("description")
@@ -506,6 +529,10 @@ def update_sku(
             sku.unit_cost = request.unitCost
             changes.append("unitCost")
 
+        if request.maxPackageQuantity is not None:
+            sku.max_package_quantity = request.maxPackageQuantity
+            changes.append("maxPackageQuantity")
+
         if request.properties is not None:
             sku.properties = request.properties
             changes.append("properties")
@@ -513,6 +540,10 @@ def update_sku(
         if request.customizeProject is not None:
             sku.customize_project = request.customizeProject
             changes.append("customizeProject")
+
+        if request.productDesignData is not None:
+            sku.product_design_data = request.productDesignData
+            changes.append("productDesignData")
 
         if not changes:
             raise HTTPException(
@@ -527,13 +558,16 @@ def update_sku(
         updated_sku = SkuSchema(
             id=sku.sku_id,
             code=sku.code,
+            sourceSku=sku.source_sku,
             description=sku.description,
             productId=sku.product_id,
             active=sku.active,
             unitPrice=sku.unit_price,
             unitCost=sku.unit_cost,
+            maxPackageQuantity=sku.max_package_quantity,
             properties=sku.properties,
             customizeProject=sku.customize_project,
+            productDesignData=sku.product_design_data,
             createdAt=sku.created_at,
             updatedAt=sku.updated_at,
         )

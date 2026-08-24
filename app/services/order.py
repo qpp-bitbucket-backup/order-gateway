@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
 from sqlmodel import Session, select
+from sqlalchemy import or_
 from app.models.product import Sku
 
 from app.models.order import Order, OrderStatus
@@ -17,6 +18,7 @@ from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
 from app.services.file import file_service
 from app.services.client import client_service
+from app.services.address_mapping import get_state_code, to_iso_country_code
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -486,7 +488,7 @@ class OrderService:
 
             # 3. If the order has been pushed to QPMN, update the address there
             if order.store_order_id:
-                qpmn_result = self.update_qpmn_address(order, latest_delivery or new_delivery)
+                qpmn_result = self.update_qpmn_address(session, order, latest_delivery or new_delivery)
                 result["qpmn_result"] = qpmn_result
                 result["qpmn_updated"] = qpmn_result.get("success", False)
 
@@ -564,7 +566,7 @@ class OrderService:
             type=AddressType.DELIVERY,
         )
 
-    def update_qpmn_address(self, order: Order, addr: Address) -> Dict[str, Any]:
+    def update_qpmn_address(self, session: Session, order: Order, addr: Address) -> Dict[str, Any]:
         """
         Call QPMN Open API to update the delivery address for an order.
 
@@ -587,8 +589,8 @@ class OrderService:
             "Authorization": f"Basic {store_key}",
             "Content-Type": "application/json",
         }
+        # Country is not allowed to update in QPMN platform
         payload = {
-            "stateCode": addr.state or "",
             "state": addr.state or "",
             "city": addr.city or "",
             "address_1": addr.address1 or "",
@@ -600,6 +602,10 @@ class OrderService:
             "mobile": addr.mobile or "",
             "email": addr.email or "",
         }
+        # stateCode uses the same address_mapping lookup as order creation
+        state_code = get_state_code(session, addr.state)
+        if state_code:
+            payload["stateCode"] = state_code
 
         logger.info(
             "[OrderService] Calling QPMN update-address API for order %s (store_order_id=%s)",
@@ -692,17 +698,35 @@ class OrderService:
         contexts: List[Dict[str, Any]] = []
 
         for item_index, item in enumerate(order_data.get("items", [])):
-            sku_id = item.get("sku")
-            if not sku_id:
+            sku_ref = item.get("sku")
+            if not sku_ref:
                 continue
 
-            sku = session.exec(select(Sku).where(Sku.sku_id == sku_id)).first()
+            # New orders carry the third-party platform SKU (source_sku) in
+            # items[].sku; legacy orders carry the internal sku_id. Resolve
+            # either way — QPMN payloads always use the resolved sku.sku_id.
+            sku = session.exec(
+                select(Sku).where(or_(Sku.sku_id == sku_ref, Sku.source_sku == sku_ref))
+            ).first()
             if not sku:
-                raise ValueError(f"SKU: [{sku_id}] not found")
+                raise ValueError(f"SKU: [{sku_ref}] not found")
+            sku_id = sku.sku_id
 
             properties = sku.properties or {}
-            customize_project = sku.customize_project or {}
-            designs = customize_project.get("designs", [])
+            # QPMN_ORDER_API_VERSION=open: the dedicated product_design_data
+            # field replaces customize_project as the Open API design source
+            # (falls back to customize_project for SKUs configured before the
+            # field existed)
+            if settings.QPMN_ORDER_API_VERSION == "open" and sku.product_design_data is not None:
+                customize_project = sku.product_design_data
+                designs = customize_project.get("designData", [])
+            else:
+                customize_project = sku.customize_project or {}
+                designs = customize_project.get("designs", [])
+            
+            # order.files keys always use the resolved internal sku_id (the
+            # publish task resolves source_sku before writing) so they match
+            # the QPMN payload ids
             files = files_dict.get(f"{sku_id}-{item_index}", [])
 
             # Inject uploaded file URLs into pageContentDesigns images (legacy structure)
@@ -864,11 +888,13 @@ class OrderService:
             "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
             "paymentMethod": settings.QPMN_PAYMENT_METHOD,
             "currency": self.fetch_currency_from_qpmn(order.store_id),
-            "deliveryAddress": self._address_to_open_api_payload(delivery_address),
-            "billingAddress": self._address_to_open_api_payload(billing_address),
+            "deliveryAddress": self._address_to_open_api_payload(session, delivery_address),
+            "billingAddress": self._address_to_open_api_payload(session, billing_address),
             "items": line_items,
         }
-
+        print("----------------------------------------------")
+        print(payload)
+        print("=============================================")
         logger.info("[OrderService] Built Open API payload for order %s", order_id)
         return payload
 
@@ -958,10 +984,12 @@ class OrderService:
             "company": address.company,
         }
 
-    def _address_to_open_api_payload(self, address: Address) -> Dict[str, Any]:
+    def _address_to_open_api_payload(self, session: Session, address: Address) -> Dict[str, Any]:
         """Convert Address model to Open API payload format."""
-        return {
-            "countryCode": address.country,
+        state_code = get_state_code(session, address.state)
+        payload: Dict[str, Any] = {
+            "countryCode": to_iso_country_code(address.country),
+            "country": address.country,
             "state": address.state,
             "city": address.city,
             "address_1": address.address1,
@@ -974,6 +1002,9 @@ class OrderService:
             "email": address.email,
             "company": address.company,
         }
+        if state_code:
+            payload["stateCode"] = state_code
+        return payload
 
     def _get_order_thumbnail(self, file_url: str) -> Optional[str]:
         """
