@@ -6,13 +6,21 @@ import httpx
 import logging
 from app.services.oss import oss_service
 from app.services.pdf_utils import pdf_processor
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 from app.core.config import settings
+from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from urllib.parse import urlparse, unquote
 
 
 logger = logging.getLogger(__name__)
+
+_FILE_ALERTS = ALERTS["file"]
+
+
+def _capture_file_alert(alert_key: str, **format_args) -> None:
+    """Capture a design-file download/upload failure to Sentry."""
+    capture_integration_alert(_FILE_ALERTS[alert_key], format_args=format_args, component="qpmn_api")
 
 
 class FileService:
@@ -59,6 +67,7 @@ class FileService:
         except Exception as exc:
             error_msg = f"Unexpected error: {str(exc)}"
             logger.error(f"[FileService] Failed to download {url}: {error_msg}", exc_info=True)
+            _capture_file_alert("DOWNLOAD_FAILED", url=url, error_msg=error_msg)
             return False, error_msg
 
     def split_pdf(self, pdf_path: str, dest_dir: str) -> List[str]:
@@ -161,6 +170,7 @@ class FileService:
                 logger.info(f"[FileService] Uploaded {filename} successfully. URL: {file_url}")
             else:
                 logger.error(f"[FileService] Uploaded {filename} failed. URL: {result}")
+                _capture_file_alert("UPLOAD_EMPTY_RESPONSE", filename=filename, status_code=resp.status_code, result=result)
                 return None
             return {
                 "filename": filename,
@@ -172,6 +182,7 @@ class FileService:
 
         except Exception as exc:
             logger.error(f"[FileService] Failed to upload {file_path} to QPMN: {exc}", exc_info=True)
+            _capture_file_alert("UPLOAD_FAILED", file_path=file_path, exc=exc)
             return None
 
 # Create singleton instance
