@@ -1,5 +1,7 @@
 """Order processing Celery tasks."""
+import json
 import logging
+import random
 import tempfile
 import httpx
 import sentry_sdk
@@ -12,15 +14,22 @@ from app.core.celery import celery_app
 from app.core.database import engine
 from app.core.config import settings
 from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING
-from app.models.order import Order, OrderStatus, can_transition, OMS_STATUS_MAP
+from app.models.order import Order, OrderStatus, OrderType, can_transition, OMS_STATUS_MAP
+from app.models.address import Address, AddressType
 from app.models.product import Sku
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from app.services.file import file_service
+from app.services.watermark import watermark_to_png, WATERMARK_TEXT
 from app.services.client import client_service
 from app.services.oms import oms_service, OMSRetryableError
 
 logger = logging.getLogger(__name__)
+
+# When DEBUG is enabled, emit this module's debug logs (e.g. QPMN push
+# payload/response dumps) even under the worker's default INFO level.
+if settings.DEBUG:
+    logger.setLevel(logging.DEBUG)
 
 _PUSH_ALERTS = ALERTS["push"]
 
@@ -42,6 +51,96 @@ def _capture_push_alert(alert_key: str, order_id: str, **format_args) -> None:
 def _exponential_backoff(base: int, retry_count: int, cap: int) -> int:
     """Calculate exponential backoff delay: min(base * 2^retry_count, cap)."""
     return min(base * (2 ** retry_count), cap)
+
+
+def _generate_barcode(session: Session) -> str:
+    """Generate a unique 10-digit numeric barcode (uniqueness checked
+    against existing orders.barcode values)."""
+    while True:
+        candidate = str(random.randint(1_000_000_000, 9_999_999_999))
+        if not session.exec(
+            select(Order.id).where(Order.barcode == candidate)
+        ).first():
+            return candidate
+
+
+_ADDRESS_FIELDS = (
+    "country", "state", "city", "address1", "address2", "postcode",
+    "first_name", "last_name", "phone", "mobile", "email", "company",
+)
+
+
+def _attach_addresses_to_order(
+    session: Session, order: Order, fetched: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Copy freshly fetched/base addresses onto *order*, keyed by its internal
+    order_id — the push payload lookup (``Address.order_id == order.order_id``)
+    only finds rows keyed that way, while OMS rows are keyed by the orderNo
+    used for the fetch. Replaces any rows previously attached to this order.
+    """
+    for existing in session.exec(
+        select(Address).where(Address.order_id == order.order_id)
+    ).all():
+        session.delete(existing)
+
+    attached: Dict[str, Any] = {}
+    for key in ("delivery", "billing"):
+        src = fetched.get(key)
+        if src is None:
+            continue
+        attached[key] = Address(
+            **{field: getattr(src, field) for field in _ADDRESS_FIELDS},
+            order_id=order.order_id,
+            type=src.type,
+        )
+        session.add(attached[key])
+    session.commit()
+    return attached
+
+
+def _resolve_parallel_card_addresses(session: Session, order: Order) -> Dict[str, Any]:
+    """
+    Resolve addresses for a parallel-card order.
+
+    Parallel cards ship to the base card's address:
+    1. reuse the base order's stored addresses when present (copied onto
+       this order);
+    2. otherwise fetch from OMS with the base prefix — OMS only knows the
+       base orderNo, never the parallel card's full source order id.
+    """
+    from app.services.order import order_service, parse_parallel_card_id
+
+    parent = order_service.find_parallel_card_parent(
+        session, order.source_order_id, store_id=order.store_id
+    )
+    if parent:
+        # Base-card rows are keyed by the parent's source_order_id (the
+        # current fetch key); older rows may still be keyed by the parent UUID.
+        rows = session.exec(
+            select(Address).where(
+                Address.order_id.in_([parent.order_id, parent.source_order_id])
+            )
+        ).all()
+        fetched = {
+            "delivery": next((a for a in rows if a.type == AddressType.DELIVERY), None),
+            "billing": next((a for a in rows if a.type == AddressType.BILLING), None),
+        }
+        if fetched["delivery"]:
+            logger.info(
+                f"[Celery] Reusing base-card {parent.source_order_id} addresses "
+                f"for parallel card {order.order_id}"
+            )
+            return _attach_addresses_to_order(session, order, fetched)
+
+    parsed = parse_parallel_card_id(order.source_order_id)
+    prefix = parsed[0] if parsed else order.source_order_id
+    logger.info(
+        f"[Celery] No base-card addresses for parallel card {order.order_id}, "
+        f"fetching from OMS with prefix {prefix}"
+    )
+    fetched = oms_service.fetch_order_addresses(prefix, session)
+    return _attach_addresses_to_order(session, order, fetched)
 
 
 @celery_app.task(bind=True, name="tasks.orders.publish_order", queue=QUEUE_ORDER_PUBLISHING)
@@ -88,6 +187,10 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
             products = order.order_data.get("items", [])
             store_id = order.store_id
             store_key = client_service.get_store_key_by_id(store_id)
+            # Parallel-card orders: every design file must reach QPMN as a
+            # PNG stamped with the "Topps Now 客供產品" watermark (PDFs are
+            # split, then stamped and rasterized; images are stamped directly).
+            is_parallel_card = order.type == OrderType.PARALLEL_CARD
             file_quantity = 0
             file_index = 0
             with tempfile.TemporaryDirectory(prefix=f"order_{order_id}_") as tmp_dir:
@@ -132,6 +235,13 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                                 return True
 
                             for page_file in page_files:
+                                if is_parallel_card:
+                                    try:
+                                        page_file = watermark_to_png(page_file, tmp_dir)
+                                    except Exception as wm_err:
+                                        _mark_order_failed(order_id, f"Cannot watermark design files: {wm_err}")
+                                        logger.error(f"File: [{page_file}] watermark failed: {wm_err}", exc_info=True)
+                                        return True
                                 upload_result = file_service.upload_to_qpmn(page_file, store_key)
                                 if not upload_result:
                                     _mark_order_failed(order_id,"Cannot upload design files")
@@ -150,6 +260,12 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                     file_quantity += len(item_files)
                 if uploaded_files:
                     order.files = uploaded_files
+                    if is_parallel_card:
+                        _append_order_log(
+                            order,
+                            "parallel_card_watermarked",
+                            f"Applied '{WATERMARK_TEXT}' watermark to {file_quantity} file(s) before QPMN upload",
+                        )
                     session.add(order)
                     session.commit()
                     logger.info(
@@ -208,9 +324,19 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
             session.commit()
             logger.info(f"[Celery] Order {order_id} validating started")
 
-            # Fetch addresses from OMS (with retry on 503/timeout)
+            # Fetch addresses from OMS (with retry on 503/timeout).
+            # OMS identifies orders by orderNo = the platform source order id;
+            # our internal order_id (UUID) is unknown to OMS.
+            # Parallel-card orders ship to the base card's address: reuse the
+            # base order's stored addresses when present, otherwise ask OMS
+            # with the base prefix. Either way the rows are re-keyed onto this
+            # order so the push payload lookup finds them.
             try:
-                addresses = oms_service.fetch_order_addresses(order_id, session)
+                if order.type == OrderType.PARALLEL_CARD:
+                    addresses = _resolve_parallel_card_addresses(session, order)
+                else:
+                    fetched = oms_service.fetch_order_addresses(order.source_order_id, session)
+                    addresses = _attach_addresses_to_order(session, order, fetched)
             except OMSRetryableError as oms_exc:
                 retry_count = order_data.get("_oms_retry_count", 0)
                 max_retries = settings.OMS_VALIDATE_RETRY_COUNT
@@ -357,6 +483,17 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
 
             logger.info(f"[Celery] Order {order_id} pushing to QPMN (current status: {order.status.value})")
 
+            # Parallel-card orders: generate the 10-digit barcode once and
+            # persist it before building the payload — retries (503 backoff)
+            # reuse the same value, and the payload builders echo it into each
+            # item's supplierStockNo with the item's 1-based position as a
+            # two-digit suffix (01, 02, ...).
+            if order.type == OrderType.PARALLEL_CARD and not order.barcode:
+                order.barcode = _generate_barcode(session)
+                _append_order_log(order, "barcode_generated", f"Generated barcode {order.barcode}")
+                session.add(order)
+                session.commit()
+
             # Build payload via order_service (lazy import to avoid circular dependency)
             from app.services.order import order_service
             payload = order_service.build_push_payload(session, order_id)
@@ -407,15 +544,25 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                 result = response.json()
                 success = result.get("success", False)
 
+                # Debug: dump the full request payload and response to the log
+                # (visible when DEBUG=true — the module logger is raised to
+                # DEBUG in that case, overriding the worker's INFO default)
+                logger.debug(
+                    f"[Celery] Order {order_id} QPMN push debug\n"
+                    f"URL: {api_url}\n"
+                    f"payload: {json.dumps(payload, ensure_ascii=False, default=str)}\n"
+                    f"response: {json.dumps(result, ensure_ascii=False, default=str)}"
+                )
+
                 if success:
                     # Order pushed successfully - mark as processing
                     order.status = OrderStatus.PROCESSING
                     # Legacy API returns orderId in data; Open API returns id in data
                     data = result.get("data", {})
-                    store_order_id = data.get("orderId") or data.get("id")
+                    store_order_id = data.get("id") or data.get("externalId") or data.get("orderId")
                     if not store_order_id and not isinstance(data, dict):
                         store_order_id = result.get("orderId")
-                    order.store_order_id = str(store_order_id) if store_order_id else None
+                    order.store_order_id = store_order_id if store_order_id else None
                     _append_order_log(order, "order_push_success", "Order pushed to QPMN successfully")
                     session.add(order)
                     session.commit()
