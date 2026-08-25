@@ -23,6 +23,23 @@ def _capture_file_alert(alert_key: str, **format_args) -> None:
     capture_integration_alert(_FILE_ALERTS[alert_key], format_args=format_args, component="qpmn_api")
 
 
+# QPMN sometimes returns stage-host URLs for uploaded files; rewrite those
+# prefixes so the persisted URLs point at the serving host.
+_QPMN_URL_REWRITES = [
+    ("https://uat.popprint.cn/stage/file/file/", "https://uat.popprint.cn/file/file/"),
+]
+
+
+def _rewrite_qpmn_file_url(url: str) -> str:
+    """Rewrite known QPMN stage URL prefixes to their serving equivalents."""
+    for stage_prefix, serving_prefix in _QPMN_URL_REWRITES:
+        if url.startswith(stage_prefix):
+            rewritten = serving_prefix + url[len(stage_prefix):]
+            logger.info(f"[FileService] Rewrote QPMN file URL {url} -> {rewritten}")
+            return rewritten
+    return url
+
+
 class FileService:
     """Service for handling file operations including downloading, PDF splitting, and uploading."""
 
@@ -167,6 +184,8 @@ class FileService:
             data = result.get("data",[])
             if len(data):
                 file_url = data[0].get("url", None)
+                if file_url:
+                    file_url = _rewrite_qpmn_file_url(file_url)
                 logger.info(f"[FileService] Uploaded {filename} successfully. URL: {file_url}")
             else:
                 logger.error(f"[FileService] Uploaded {filename} failed. URL: {result}")

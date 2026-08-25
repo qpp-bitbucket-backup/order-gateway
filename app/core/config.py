@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
     QPMN_ORDER_API_VERSION: str = "legacy"   # Order creation API version: "legacy" or "open"
+    # Fallback packaging limit when a SKU has no max_package_quantity set.
+    # In practice skus.max_package_quantity is NOT NULL with a DB default of
+    # 50, so this only matters as a defensive fallback.
+    PACKAGE_MAX_QUANTITY_DEFAULT: int = 50
 
     # PDF Processing Configuration
     MODIFY_PDF_RESOLUTION: bool = False
@@ -125,7 +129,7 @@ class Settings(BaseSettings):
     @property
     def DATABASE_URL(self) -> str:
         """Construct database URL from individual components."""
-        return f"mysql+pymysql://{self.DB_USERNAME}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        return f"mysql+pymysql://{self.DB_USERNAME}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}?charset=utf8mb4"
 
     class Config:
         env_file = ".env"

@@ -181,6 +181,7 @@ class PlatformOrderSummary(BaseModel):
     version: int = Field(0, description="Document version")
     storeId: Optional[str] = Field(None, description="Store identifier")
     storeOrderId: Optional[str] = Field(None, description="Store order ID")
+    type: str = Field("base_card", description="Order type (base_card or parallel_card)")
     createdAt: Optional[str] = Field(None, description="Created timestamp")
     updatedAt: Optional[str] = Field(None, description="Updated timestamp")
 
@@ -226,6 +227,7 @@ class PlatformFullOrder(BaseModel):
     version: int = Field(0, description="Document version")
     storeId: Optional[str] = Field(None, description="Store identifier")
     storeOrderId: Optional[str] = Field(None, description="Store order ID")
+    type: str = Field("base_card", description="Order type (base_card or parallel_card)")
     createdAt: Optional[str] = Field(None, description="Created timestamp")
     updatedAt: Optional[str] = Field(None, description="Updated timestamp")
     deliveryAddress: Optional[MaskedAddress] = Field(None, description="Latest delivery address with PII masked")

@@ -1,6 +1,7 @@
 """Order service for managing order-related operations."""
 import logging
 import os
+import re
 import tempfile
 import uuid
 import fitz  # PyMuPDF
@@ -13,7 +14,7 @@ from sqlmodel import Session, select
 from sqlalchemy import or_
 from app.models.product import Sku
 
-from app.models.order import Order, OrderStatus
+from app.models.order import Order, OrderStatus, OrderType
 from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
 from app.services.file import file_service
@@ -81,6 +82,29 @@ class QPMNCancelError(ValueError):
         super().__init__(message)
         self.qpmn_status_code = status_code
         self.qpmn_error = error
+
+
+# Parallel-card sourceOrderId format: "aaaaaaa[-_]b_Sccccc" where "aaaaaaa" is
+# the associated base card order's sourceOrderId, "b" the version number and
+# "ccccc" the shipping number. The version separator is a hyphen or an
+# underscore (both occur in practice):
+#   "CN-TEST20260811-1_S1055552"  -> base "CN-TEST20260811"
+#   "IVAN-TEST-0004_1_S10098923"  -> base "IVAN-TEST-0004"
+_PARALLEL_CARD_RE = re.compile(r"^(.+)[-_](\d+)_S(.+)$")
+
+
+def parse_parallel_card_id(source_order_id: str) -> Optional[Tuple[str, str, str]]:
+    """
+    Parse a parallel-card ``source_order_id`` (``aaaaaaa[-_]b_Sccccc``).
+
+    Returns ``(base_source_order_id, version, shipping_number)``, or ``None``
+    when the id does not follow the format — ``_S`` must sit between a
+    ``-``/``_`` + version digits suffix and a non-empty shipping number.
+    """
+    match = _PARALLEL_CARD_RE.match(source_order_id)
+    if not match:
+        return None
+    return match.group(1), match.group(2), match.group(3)
 
 
 class OrderService:
@@ -179,6 +203,33 @@ class OrderService:
             query = query.where(Order.store_id == store_id)
         return session.exec(query).first()
 
+    def find_parallel_card_parent(
+        self,
+        session: Session,
+        source_order_id: str,
+        store_id: Optional[str] = None,
+    ) -> Optional[Order]:
+        """
+        Detect a parallel-card order.
+
+        A parallel-card ``source_order_id`` follows the format
+        ``aaaaaaa[-_]b_Sccccc`` (e.g. ``CN-TEST20260811-1_S1055552`` or
+        ``IVAN-TEST-0004_1_S10098923``): only the ``aaaaaaa`` part (without
+        the version suffix) is the associated base card order's
+        ``source_order_id``. When that base card order exists (optionally
+        scoped to *store_id*), the incoming order is a parallel card of it.
+
+        Returns the matched base card Order, otherwise ``None``.
+        """
+        parsed = parse_parallel_card_id(source_order_id)
+        if not parsed:
+            return None
+        base_id = parsed[0]
+        query = select(Order).where(Order.source_order_id == base_id)
+        if store_id:
+            query = query.where(Order.store_id == store_id)
+        return session.exec(query).first()
+
     def create_order(
         self,
         session: Session,
@@ -188,6 +239,7 @@ class OrderService:
         destination: Dict[str, Any],
         order_data: Dict[str, Any],
         store_id: Optional[str] = None,
+        order_type: OrderType = OrderType.BASE_CARD,
     ) -> Order:
         """
         Create a new order, persist it, and enqueue the Celery publish task.
@@ -209,6 +261,7 @@ class OrderService:
             status=OrderStatus.RECEIVED,
             version=1,
             store_id=store_id,
+            type=order_type,
         )
 
         session.add(order)
@@ -706,6 +759,22 @@ class OrderService:
         logger.info("[OrderService] Building legacy API payload for order %s", order_id)
         return self._build_legacy_payload(session, order_id)
 
+    @staticmethod
+    def _split_package_quantities(total_quantity: int, max_package_quantity: int) -> List[int]:
+        """
+        Split a line item's quantity into packaging-sized chunks.
+
+        Example: total_quantity=111, max_package_quantity=50 -> [50, 50, 11].
+        Returns ``[total_quantity]`` unchanged when it's already within limit.
+        """
+        if total_quantity <= max_package_quantity:
+            return [total_quantity]
+        full_packages, remainder = divmod(total_quantity, max_package_quantity)
+        package_quantities = [max_package_quantity] * full_packages
+        if remainder:
+            package_quantities.append(remainder)
+        return package_quantities
+
     def _prepare_order_and_skus(
         self,
         session: Session,
@@ -715,6 +784,11 @@ class OrderService:
         Shared helper: load order, iterate items, inject design file URLs
         into both customize structures (legacy ``designs`` pageContentDesigns
         images and Open API ``designData`` effectImages imageUrls).
+
+        Each item is also split into one or more packaging-sized line item
+        contexts when its quantity exceeds ``sku.max_package_quantity`` (see
+        ``_split_package_quantities``) — the split only affects the payload
+        built for QPMN, not the order's persisted ``order_data``.
 
         Returns:
             (order, line_item_contexts, addresses) where line_item_contexts
@@ -797,13 +871,24 @@ class OrderService:
                         for effect_image in d.get("effectImages", []):
                             effect_image["imageUrl"] = file_url
 
-            contexts.append({
-                "item": item,
-                "sku": sku,
-                "files": files,
-                "properties": properties,
-                "customize_project": customize_project,
-            })
+            # Packaging split: QPMN line items cap out at sku.max_package_quantity
+            # per package, so a single VFS line item whose quantity exceeds that
+            # limit becomes multiple QPMN line items — same design/SKU, just a
+            # smaller quantity each (e.g. 111 @ max 50 -> 50 + 50 + 11). This is
+            # push-payload-only: order.order_data keeps the original, unsplit
+            # item as submitted by VFS.
+            max_package_quantity = sku.max_package_quantity or settings.PACKAGE_MAX_QUANTITY_DEFAULT
+            quantity = item.get("quantity", 1)
+            package_quantities = self._split_package_quantities(quantity, max_package_quantity)
+
+            for package_quantity in package_quantities:
+                contexts.append({
+                    "item": {**item, "quantity": package_quantity},
+                    "sku": sku,
+                    "files": files,
+                    "properties": properties,
+                    "customize_project": customize_project,
+                })
 
         # Query addresses for this order
         delivery_address = session.exec(
@@ -841,7 +926,7 @@ class OrderService:
         delivery_address, billing_address = addresses
 
         line_items: List[Dict[str, Any]] = []
-        for ctx in contexts:
+        for idx, ctx in enumerate(contexts, start=1):
             item = ctx["item"]
             sku = ctx["sku"]
             files = ctx["files"]
@@ -864,6 +949,10 @@ class OrderService:
                 "properties": properties,
                 "customizeProject": customize_project,
             }
+            # Parallel-card orders carry the generated barcode as the stock
+            # number, suffixed with the item's 1-based position (01, 02, ...)
+            if order.type == OrderType.PARALLEL_CARD and order.barcode:
+                line_item["supplierStockNo"] = f"{order.barcode}{idx:02d}"
             line_items.append(line_item)
 
         payload = {
@@ -895,7 +984,7 @@ class OrderService:
         delivery_address, billing_address = addresses
 
         line_items: List[Dict[str, Any]] = []
-        for ctx in contexts:
+        for idx, ctx in enumerate(contexts, start=1):
             item = ctx["item"]
             sku = ctx["sku"]
             properties = ctx["properties"]
@@ -912,6 +1001,10 @@ class OrderService:
                 "quantity": item.get("quantity", 1),
                 "productDesignData": product_design_data,
             }
+            # Parallel-card orders carry the generated barcode as the stock
+            # number, suffixed with the item's 1-based position (01, 02, ...)
+            if order.type == OrderType.PARALLEL_CARD and order.barcode:
+                line_item["supplierStockNo"] = f"{order.barcode}{idx:02d}"
             line_items.append(line_item)
 
         payload = {
@@ -924,9 +1017,6 @@ class OrderService:
             "billingAddress": self._address_to_open_api_payload(session, billing_address),
             "items": line_items,
         }
-        print("----------------------------------------------")
-        print(payload)
-        print("=============================================")
         logger.info("[OrderService] Built Open API payload for order %s", order_id)
         return payload
 

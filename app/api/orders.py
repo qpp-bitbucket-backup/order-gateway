@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 from app.core.config import settings
 
 from app.core.database import get_session
-from app.models.order import Order, OrderStatus
+from app.models.order import Order, OrderStatus, OrderType
 from app.models.product import Sku, Product
 from app.schemas.order import (
     OrderValidationRequest,
@@ -40,7 +40,7 @@ from app.core.auth_jwt import get_current_user
 from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection
-from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES
+from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, parse_parallel_card_id
 from app.services.oss import oss_service
 
 router = APIRouter(
@@ -91,6 +91,27 @@ def _enrich_order_data_with_status(order_data: Optional[dict], status: OrderStat
         return {"status": _EXTERNAL_STATUS_MAP.get(status, status.value)}
     enriched = dict(order_data)
     enriched["status"] = _EXTERNAL_STATUS_MAP.get(status, status.value)
+    return enriched
+
+
+def _with_parallel_card_barcodes(order_data: Optional[dict], barcode: Optional[str]) -> Optional[dict]:
+    """Return a copy of *order_data* with item barcodes injected.
+
+    Parallel-card orders submit ``supplierStockNo = barcode + two-digit item
+    index`` (e.g. ``"4935768626" + "01"``) to QPMN; the status response
+    exposes the same value as ``items[].barcode``. Items are copied so the
+    DB-backed ``order_data`` object stays untouched.
+    """
+    if not barcode or not isinstance(order_data, dict):
+        return order_data
+    items = order_data.get("items")
+    if not isinstance(items, list) or not items:
+        return order_data
+    enriched = dict(order_data)
+    enriched["items"] = [
+        {**item, "barcode": f"{barcode}{idx:02d}"} if isinstance(item, dict) else item
+        for idx, item in enumerate(items, start=1)
+    ]
     return enriched
 
 
@@ -233,82 +254,105 @@ def validate_order(
             )
         )
 
-    # Validate items
-    for idx, item in enumerate(request.orderData.items):
-        item_loc = ["orderData", "items", idx]
+    # Parallel-card detection: a sourceOrderId of the form "aaaaaaa[-_]b_Sccccc"
+    # (base-card id + "-"/"_" + version + "_S" + shipping number, e.g.
+    # "CN-TEST20260811-1_S1055552" or "IVAN-TEST-0004_1_S10098923"). When the
+    # base-card part matches an existing order in the same store,
+    # items/shipments validation is skipped entirely.
+    parallel_parent = order_service.find_parallel_card_parent(
+        session,
+        source_order_id=request.orderData.sourceOrderId,
+        store_id=store_id,
+    )
+    if parallel_parent:
+        _, version, shipping_no = parse_parallel_card_id(request.orderData.sourceOrderId)
+        logger.info(
+            "[validate_order] Parallel card order detected: sourceOrderId '%s' "
+            "matches base card order %s ('%s', version %s, shipping %s) — skipping items/shipments validation",
+            request.orderData.sourceOrderId,
+            parallel_parent.order_id,
+            parallel_parent.source_order_id,
+            version,
+            shipping_no,
+        )
 
-        # Check if SKU is provided and refers to a valid, active SKU
-        if not item.sku:
-            validation_errors.append(
-                _error(item_loc + ["sku"], "SKU is required for all items", "missing")
-            )
-        else:
-            # Look up the SKU by its third-party platform code (source_sku),
-            # scoped to the client's store if set
-            sku_query = select(Sku).where(
-                (Sku.source_sku == item.sku) & Sku.active.is_(True)
-            )
-            if store_id:
-                sku_query = sku_query.where(Sku.store_id == store_id)
-            existing_sku = session.exec(sku_query).first()
+    if not parallel_parent:
+        # Validate items
+        for idx, item in enumerate(request.orderData.items):
+            item_loc = ["orderData", "items", idx]
 
-            if not existing_sku:
+            # Check if SKU is provided and refers to a valid, active SKU
+            if not item.sku:
                 validation_errors.append(
-                    _error(item_loc + ["sku"], "Invalid or inactive SKU", "value_error", item.sku)
+                    _error(item_loc + ["sku"], "SKU is required for all items", "missing")
                 )
             else:
-                # Ensure all components marked as required on the product are present
-                product = session.exec(
-                    select(Product).where(
-                        Product.product_id == existing_sku.product_id
-                    )
-                ).first()
+                # Look up the SKU by its third-party platform code (source_sku),
+                # scoped to the client's store if set
+                sku_query = select(Sku).where(
+                    (Sku.source_sku == item.sku) & Sku.active.is_(True)
+                )
+                if store_id:
+                    sku_query = sku_query.where(Sku.store_id == store_id)
+                existing_sku = session.exec(sku_query).first()
 
-                if product and product.components:
-                    provided_codes = {
-                        component.code for component in (item.components or [])
-                    }
-                    for product_component in product.components:
-                        required_code = product_component.get("code")
-                        if product_component.get("required") and (
-                            required_code not in provided_codes
-                        ):
-                            validation_errors.append(
-                                _error(
-                                    item_loc + ["components"],
-                                    f"Missing required component '{required_code}'",
-                                    "missing",
-                                    sorted(provided_codes),
+                if not existing_sku:
+                    validation_errors.append(
+                        _error(item_loc + ["sku"], "Invalid or inactive SKU", "value_error", item.sku)
+                    )
+                else:
+                    # Ensure all components marked as required on the product are present
+                    product = session.exec(
+                        select(Product).where(
+                            Product.product_id == existing_sku.product_id
+                        )
+                    ).first()
+
+                    if product and product.components:
+                        provided_codes = {
+                            component.code for component in (item.components or [])
+                        }
+                        for product_component in product.components:
+                            required_code = product_component.get("code")
+                            if product_component.get("required") and (
+                                required_code not in provided_codes
+                            ):
+                                validation_errors.append(
+                                    _error(
+                                        item_loc + ["components"],
+                                        f"Missing required component '{required_code}'",
+                                        "missing",
+                                        sorted(provided_codes),
+                                    )
                                 )
+
+            # Validate components
+            if item.components:
+                for cidx, component in enumerate(item.components):
+                    component_loc = item_loc + ["components", cidx, "path"]
+                    if component.fetch:
+                        if not component.path:
+                            validation_errors.append(
+                                _error(component_loc, "Path required when fetch=true", "missing")
+                            )
+                        elif not is_file_accessible(component.path):
+                            validation_errors.append(
+                                _error(component_loc, "File not accessible", "value_error", component.path)
                             )
 
-        # Validate components
-        if item.components:
-            for cidx, component in enumerate(item.components):
-                component_loc = item_loc + ["components", cidx, "path"]
-                if component.fetch:
-                    if not component.path:
+        # Validate shipments
+        if request.orderData.shipments:
+            for sidx, shipment in enumerate(request.orderData.shipments):
+                shipment_loc = ["orderData", "shipments", sidx, "shipTo"]
+                if shipment.shipTo:
+                    if not shipment.shipTo.name and not shipment.shipTo.companyName:
                         validation_errors.append(
-                            _error(component_loc, "Path required when fetch=true", "missing")
+                            _error(shipment_loc, "Either name or companyName required", "missing")
                         )
-                    elif not is_file_accessible(component.path):
+                    if not shipment.shipTo.isoCountry:
                         validation_errors.append(
-                            _error(component_loc, "File not accessible", "value_error", component.path)
+                            _error(shipment_loc + ["isoCountry"], "isoCountry is required", "missing")
                         )
-
-    # Validate shipments
-    if request.orderData.shipments:
-        for sidx, shipment in enumerate(request.orderData.shipments):
-            shipment_loc = ["orderData", "shipments", sidx, "shipTo"]
-            if shipment.shipTo:
-                if not shipment.shipTo.name and not shipment.shipTo.companyName:
-                    validation_errors.append(
-                        _error(shipment_loc, "Either name or companyName required", "missing")
-                    )
-                if not shipment.shipTo.isoCountry:
-                    validation_errors.append(
-                        _error(shipment_loc + ["isoCountry"], "isoCountry is required", "missing")
-                    )
 
     # If there are validation errors, respond in VFS's expected shape:
     # {"success": false, "error": {"message": "...", "name": "...", "code": 422}}
@@ -405,6 +449,16 @@ def submit_order(
     **Duplicate detection:** If an order with the same `source_order_id` already
     exists for this store, the API returns HTTP **400** with a SiteFlow-compatible
     error response.
+
+    **Parallel card orders:** When `sourceOrderId` follows the format
+    `aaaaaaa[-_]b_Sccccc` — `aaaaaaa` being the `sourceOrderId` of an existing
+    base card order, `b` a version number (separated by `-` or `_`) and
+    `ccccc` a shipping number, e.g. `CN-TEST20260811-1_S1055552` or
+    `IVAN-TEST-0004_1_S10098923` — the order is treated as a parallel card:
+    `items` and `shipments` in the payload are not validated. Parallel card
+    payloads still carry items — the schema-level requirement (at least one
+    item) is unchanged. The base card lookup is not store-scoped (base and
+    parallel card may belong to different stores).
     """
     _log_request("POST /order", request.model_dump())
     try:
@@ -436,6 +490,29 @@ def submit_order(
                 content=error_resp.model_dump(),
             )
 
+        # Parallel-card detection: a sourceOrderId of the form "aaaaaaa[-_]b_Sccccc"
+        # (base-card id + "-"/"_" + version + "_S" + shipping number, e.g.
+        # "CN-TEST20260811-1_S1055552" or "IVAN-TEST-0004_1_S10098923"). When the
+        # base-card part matches an existing order in the same store,
+        # items/shipments validation is skipped entirely — the payload itself
+        # still carries items (schema-level requirement).
+        parallel_parent = order_service.find_parallel_card_parent(
+            session,
+            source_order_id=request.orderData.sourceOrderId,
+            store_id=store_id,
+        )
+        if parallel_parent:
+            _, version, shipping_no = parse_parallel_card_id(request.orderData.sourceOrderId)
+            logger.info(
+                "[submit_order] Parallel card order detected: sourceOrderId '%s' "
+                "matches base card order %s ('%s', version %s, shipping %s) — skipping items/shipments validation",
+                request.orderData.sourceOrderId,
+                parallel_parent.order_id,
+                parallel_parent.source_order_id,
+                version,
+                shipping_no,
+            )
+
         # Create order via service
         order = order_service.create_order(
             session,
@@ -444,7 +521,24 @@ def submit_order(
             destination=request.destination.model_dump(),
             order_data=request.orderData.model_dump(),
             store_id=store_id,
+            order_type=OrderType.PARALLEL_CARD if parallel_parent else OrderType.BASE_CARD,
         )
+
+        # Record the parallel-card link on the created order's logs
+        if parallel_parent:
+            _, version, shipping_no = parse_parallel_card_id(request.orderData.sourceOrderId)
+            order.logs = (order.logs or []) + [{
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "action": "parallel_card_detected",
+                "message": (
+                    f"Parallel card (version {version}, shipping {shipping_no}) of "
+                    f"base card order {parallel_parent.order_id} "
+                    f"(sourceOrderId '{parallel_parent.source_order_id}'); "
+                ),
+            }]
+            session.add(order)
+            session.commit()
+            session.refresh(order)
 
         # Upload order payload to OSS and get pre-signed URL
         oss_url = None
@@ -710,11 +804,16 @@ def get_order_status(
             return JSONResponse(status_code=404, content=error_resp.model_dump())
 
         # Build order object with enriched status
+        order_data = _enrich_order_data_with_status(order.order_data, order.status)
+        # Parallel-card orders expose each item's QPMN supplierStockNo
+        # (order barcode + two-digit item index) as orderData.items[].barcode.
+        if order.type == OrderType.PARALLEL_CARD:
+            order_data = _with_parallel_card_barcodes(order_data, order.barcode)
         full_order = FullOrder(
             id=order.order_id,
             destination=order.destination,
             source=_clean_source(order.source),
-            orderData=_enrich_order_data_with_status(order.order_data, order.status),
+            orderData=order_data,
             version=order.version,
         )
 
@@ -930,6 +1029,8 @@ def update_order(
                 destination=request.destination.model_dump(),
                 order_data=order_data,
                 store_id=store_id,
+                # Content updates recreate the same order — keep its type
+                order_type=order.type,
             )
 
             full_order = FullOrder(
@@ -1107,6 +1208,7 @@ def platform_get_orders(
                 version=order.version,
                 storeId=order.store_id,
                 storeOrderId=order.store_order_id,
+                type=order.type.value,
                 createdAt=order.created_at.isoformat() if order.created_at else None,
                 updatedAt=order.updated_at.isoformat() if order.updated_at else None,
             )
@@ -1207,6 +1309,7 @@ def platform_get_order(
             version=order.version,
             storeId=order.store_id,
             storeOrderId=order.store_order_id,
+            type=order.type.value,
             createdAt=order.created_at.isoformat() if order.created_at else None,
             updatedAt=order.updated_at.isoformat() if order.updated_at else None,
             deliveryAddress=masked_delivery,
