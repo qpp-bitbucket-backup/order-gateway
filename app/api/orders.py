@@ -534,7 +534,6 @@ def submit_order(
                     f"Parallel card (version {version}, shipping {shipping_no}) of "
                     f"base card order {parallel_parent.order_id} "
                     f"(sourceOrderId '{parallel_parent.source_order_id}'); "
-                    f"items/shipments validation skipped."
                 ),
             }]
             session.add(order)
