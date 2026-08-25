@@ -20,6 +20,12 @@ class OrderStatus(str, Enum):
     SHIPPED = "shipped"
 
 
+class OrderType(str, Enum):
+    """Order type enumeration."""
+    BASE_CARD = "base_card"
+    PARALLEL_CARD = "parallel_card"
+
+
 # Order state machine - defines valid status transitions
 ORDER_STATE_TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
     # 初始狀態：訂單剛接收
@@ -264,3 +270,13 @@ class Order(BaseModel, table=True):
     version: int = Field(default=1, description="Document version (__v)")
     store_id: Optional[str] = Field(None, index=True, description="Store identifier")
     store_order_id: Optional[str] = Field(None, max_length=255, index=True, description="Store order ID for external reference")
+    type: OrderType = Field(
+        default=OrderType.BASE_CARD,
+        description="Order type: base card or parallel card",
+        sa_column=Column(
+            SAEnum(OrderType, values_callable=lambda x: [e.value for e in x], name="ordertype"),
+            nullable=False,
+            server_default="base_card",
+        ),
+    )
+    barcode: Optional[str] = Field(None, max_length=32, description="Barcode for the order")
