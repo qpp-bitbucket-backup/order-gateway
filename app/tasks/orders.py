@@ -1,7 +1,6 @@
 """Order processing Celery tasks."""
 import json
 import logging
-import random
 import tempfile
 import httpx
 import sentry_sdk
@@ -51,17 +50,6 @@ def _capture_push_alert(alert_key: str, order_id: str, **format_args) -> None:
 def _exponential_backoff(base: int, retry_count: int, cap: int) -> int:
     """Calculate exponential backoff delay: min(base * 2^retry_count, cap)."""
     return min(base * (2 ** retry_count), cap)
-
-
-def _generate_barcode(session: Session) -> str:
-    """Generate a unique 10-digit numeric barcode (uniqueness checked
-    against existing orders.barcode values)."""
-    while True:
-        candidate = str(random.randint(1_000_000_000, 9_999_999_999))
-        if not session.exec(
-            select(Order.id).where(Order.barcode == candidate)
-        ).first():
-            return candidate
 
 
 _ADDRESS_FIELDS = (
@@ -483,19 +471,35 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
 
             logger.info(f"[Celery] Order {order_id} pushing to QPMN (current status: {order.status.value})")
 
-            # Parallel-card orders: generate the 10-digit barcode once and
-            # persist it before building the payload — retries (503 backoff)
-            # reuse the same value, and the payload builders echo it into each
-            # item's supplierStockNo with the item's 1-based position as a
-            # two-digit suffix (01, 02, ...).
-            if order.type == OrderType.PARALLEL_CARD and not order.barcode:
-                order.barcode = _generate_barcode(session)
-                _append_order_log(order, "barcode_generated", f"Generated barcode {order.barcode}")
-                session.add(order)
-                session.commit()
-
             # Build payload via order_service (lazy import to avoid circular dependency)
             from app.services.order import order_service
+
+            # Parallel-card orders: use the parent (base card) order's QPMN
+            # store_order_id as the barcode, persisted once before building
+            # the payload — retries (503 backoff) reuse the same value, and
+            # the payload builders echo it into each item's supplierStockNo
+            # with the item's 1-based position as a two-digit suffix (01, 02,
+            # ...). Without a parent store_order_id (base not pushed yet)
+            # barcode stays empty and supplierStockNo is omitted.
+            if order.type == OrderType.PARALLEL_CARD and not order.barcode:
+                parent = order_service.find_parallel_card_parent(
+                    session, order.source_order_id, store_id=order.store_id
+                )
+                if parent and parent.store_order_id:
+                    order.barcode = str(parent.store_order_id)
+                    _append_order_log(
+                        order, "barcode_generated",
+                        f"Barcode {order.barcode} taken from parent order "
+                        f"{parent.source_order_id} store_order_id",
+                    )
+                    session.add(order)
+                    session.commit()
+                else:
+                    logger.warning(
+                        f"[Celery] Order {order_id}: parallel card has no parent "
+                        f"store_order_id, skipping barcode (supplierStockNo omitted)"
+                    )
+
             payload = order_service.build_push_payload(session, order_id)
 
             # Select API URL based on configured API version

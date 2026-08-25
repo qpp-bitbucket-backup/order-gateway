@@ -46,3 +46,4 @@ htmlcov/
 Thumbs.db
 *.bat
 *.exe
+app/tmp
