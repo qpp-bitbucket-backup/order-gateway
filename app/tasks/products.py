@@ -209,6 +209,13 @@ def sync_products_to_db(
                     logger.warning(f"Skipping product with missing id or code: {qpmn_product}")
                     continue
                 
+                # Skip inactive products (status 0): not added to
+                # qpmn_product_ids, so the deletion pass below also removes
+                # them from the database.
+                if qpmn_product.get("status") in (0, "0"):
+                    logger.info(f"Skipping product with status 0: {product_code} ({product_id})")
+                    continue
+                
                 qpmn_product_ids.add(product_id)
                 
                 # Collect SKU IDs from product data
@@ -370,6 +377,75 @@ def _apply_product_design_data_from_sample(
         )
 
 
+def fetch_product_retail_price(product_id: str, store_key: str) -> Optional[float]:
+    """
+    Fetch the product's retail price from the QPMN resale price config API.
+
+    GET {QPMN_API_URL}/v2/storeProduct/{product_id}/resalePriceConfigs
+
+    The API returns e.g. ``"retailPriceString": "CNY 35.4"`` — the numeric
+    part is extracted and returned as float (35.4).
+
+    Args:
+        product_id: QPMN product ID
+        store_key: Store key for API authentication (from clients table)
+
+    Returns:
+        The retail price as float, or None on any failure (errors are logged,
+        never raised, so the product sync is not affected).
+    """
+    api_url = (
+        f"{settings.QPMN_API_URL.rstrip('/')}/v2/storeProduct/{product_id}/resalePriceConfigs"
+    )
+    try:
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": "application/json",
+        }
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(api_url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        retail_price_string = data.get("data",{}).get("retailPriceString")
+        if not retail_price_string:
+            return None
+        # "CNY 35.4" -> 35.4 (take the trailing numeric part)
+        numbers = re.findall(r"[\d.]+", str(retail_price_string))
+        if not numbers:
+            return None
+        return float(numbers[-1])
+    except Exception as e:
+        logger.error(f"Error fetching resale price for product {product_id}: {str(e)}")
+        return None
+
+
+def _apply_retail_price(
+    sku: Sku,
+    product_id: str,
+    store_id: Optional[str],
+) -> None:
+    """
+    Best-effort: fetch the product's retail price from the resale price
+    config API and store it on the SKU's unit_price. Failures only log an
+    error and never block the product sync.
+    """
+    if not store_id:
+        return
+    try:
+        store_key = client_service.get_store_key_by_id(store_id)
+        if not store_key:
+            return
+        retail_price = fetch_product_retail_price(product_id, store_key)
+        if retail_price is not None:
+            sku.unit_price = retail_price
+            logger.debug(f"Stored retail price {retail_price} for SKU: {sku.code}")
+    except Exception as price_err:
+        logger.error(
+            f"Error fetching resale price for product {product_id}: {price_err}"
+        )
+
+
 def sync_sku_to_db(
     session: Session,
     qpmn_sku: Dict[str, Any],
@@ -428,6 +504,8 @@ def sync_sku_to_db(
             # one yet (e.g. synced before this field existed)
             if existing_sku.product_design_data is None:
                 _apply_product_design_data_from_sample(existing_sku, product_id, store_id)
+            # Refresh the retail price from the resale price config API
+            _apply_retail_price(existing_sku, product_id, store_id)
             logger.debug(f"Updated SKU: {sku_code}")
         else:
             # Create new SKU
@@ -445,6 +523,8 @@ def sync_sku_to_db(
             # productDesignData (best-effort: failures only log an error and
             # never block the product sync)
             _apply_product_design_data_from_sample(new_sku, product_id, store_id)
+            # Store the retail price from the resale price config API
+            _apply_retail_price(new_sku, product_id, store_id)
             session.add(new_sku)
             logger.debug(f"Created new SKU: {sku_code}")
         

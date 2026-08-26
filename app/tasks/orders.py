@@ -115,6 +115,19 @@ def _resolve_parallel_card_addresses(session: Session, order: Order) -> Dict[str
             "billing": next((a for a in rows if a.type == AddressType.BILLING), None),
         }
         if fetched["delivery"]:
+            if not fetched["billing"]:
+                # Base stored delivery only — ask OMS for the missing billing
+                # with the base prefix (same orderNo a full fetch would use),
+                # otherwise the push payload falls back to billing == delivery.
+                parsed = parse_parallel_card_id(order.source_order_id)
+                prefix = parsed[0] if parsed else order.source_order_id
+                logger.info(
+                    f"[Celery] Base-card {parent.source_order_id} has no billing "
+                    f"address for parallel card {order.order_id}, fetching from "
+                    f"OMS with prefix {prefix}"
+                )
+                oms_fetched = oms_service.fetch_order_addresses(prefix, session)
+                fetched["billing"] = oms_fetched.get("billing")
             logger.info(
                 f"[Celery] Reusing base-card {parent.source_order_id} addresses "
                 f"for parallel card {order.order_id}"
@@ -501,6 +514,12 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     )
 
             payload = order_service.build_push_payload(session, order_id)
+
+            # Persist the payload actually submitted to QPMN (overwritten on
+            # each retry) for auditing and replay of the last push attempt.
+            order.creation_payload = payload
+            session.add(order)
+            session.commit()
 
             # Select API URL based on configured API version
             use_open_api = settings.QPMN_ORDER_API_VERSION == "open"
