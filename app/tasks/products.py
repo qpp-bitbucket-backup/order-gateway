@@ -656,6 +656,11 @@ def sync_all_stores_products(self) -> Dict[str, Any]:
             }
         
         for client in clients:
+            # Skip disabled clients: their store_key may be stale or belong
+            # to another environment, which would only produce 401 noise.
+            if not client.is_active:
+                logger.info(f"[Celery Beat] Skipping inactive client for store: {client.store_id}")
+                continue
             store_id = client.store_id
             logger.info(f"[Celery Beat] Syncing products for store: {store_id}")
             
