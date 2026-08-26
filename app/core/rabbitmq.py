@@ -14,6 +14,8 @@ QUEUE_ORDER_VALIDATING = 'order_validating'
 QUEUE_ORDER_PUSHING = 'order_pushing'
 # Notify OMS/VFS of order status updates (outbound)
 QUEUE_ORDER_NOTIFYING = 'order_notifying'
+# Product/SKU sync tasks (manual triggers + beat periodic)
+QUEUE_PRODUCT_SYNCING = 'product_syncing'
 
 
 def get_rabbitmq_connection_params() -> pika.ConnectionParameters:
