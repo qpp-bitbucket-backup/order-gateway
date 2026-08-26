@@ -280,3 +280,8 @@ class Order(BaseModel, table=True):
         ),
     )
     barcode: Optional[str] = Field(None, max_length=32, description="Barcode for the order")
+    creation_payload: Optional[Dict[str, Any]] = Field(
+        None,
+        sa_column=Column(JSON),
+        description="QPMN create-order payload submitted by the last push attempt",
+    )

@@ -115,6 +115,21 @@ def _with_parallel_card_barcodes(order_data: Optional[dict], barcode: Optional[s
     return enriched
 
 
+def _parallel_parent_refs(session: Session, order: Order) -> tuple:
+    """Return ``(parent_order_id, parent_source_order_id, parent_store_order_id)``
+    for a parallel-card order, or all-``None`` for base-card orders / missing
+    parents.
+    """
+    if order.type != OrderType.PARALLEL_CARD:
+        return (None, None, None)
+    parent = order_service.find_parallel_card_parent(
+        session, order.source_order_id, store_id=order.store_id
+    )
+    if not parent:
+        return (None, None, None)
+    return (parent.order_id, parent.source_order_id, parent.store_order_id)
+
+
 # Internal keys stored in the DB ``source`` JSON column that are not part of
 # the SiteFlow ``source`` object and should be stripped from API responses.
 _INTERNAL_SOURCE_KEYS = {"submitted_at"}
@@ -1195,8 +1210,10 @@ def platform_get_orders(
             source_order_id=sourceOrderId,
         )
 
-        order_summaries = [
-            PlatformOrderSummary(
+        order_summaries = []
+        for order in orders:
+            parent_order_id, parent_source_order_id, parent_store_order_id = _parallel_parent_refs(session, order)
+            order_summaries.append(PlatformOrderSummary(
                 id=order.order_id,
                 sourceOrderId=order.source_order_id,
                 destination=order.destination,
@@ -1209,11 +1226,13 @@ def platform_get_orders(
                 storeId=order.store_id,
                 storeOrderId=order.store_order_id,
                 type=order.type.value,
+                creationPayload=order.creation_payload,
+                parentSourceOrderId=parent_source_order_id,
+                parentOrderId=parent_order_id,
+                parentStoreOrderId=parent_store_order_id,
                 createdAt=order.created_at.isoformat() if order.created_at else None,
                 updatedAt=order.updated_at.isoformat() if order.updated_at else None,
-            )
-            for order in orders
-        ]
+            ))
 
         return PlatformOrdersListResponse(
             success=True,
@@ -1297,6 +1316,7 @@ def platform_get_order(
             for log in webhook_logs
         ] if webhook_logs else None
 
+        parent_order_id, parent_source_order_id, parent_store_order_id = _parallel_parent_refs(session, order)
         full_order = PlatformFullOrder(
             id=order.order_id,
             sourceOrderId=order.source_order_id,
@@ -1310,6 +1330,10 @@ def platform_get_order(
             storeId=order.store_id,
             storeOrderId=order.store_order_id,
             type=order.type.value,
+            creationPayload=order.creation_payload,
+            parentSourceOrderId=parent_source_order_id,
+            parentOrderId=parent_order_id,
+            parentStoreOrderId=parent_store_order_id,
             createdAt=order.created_at.isoformat() if order.created_at else None,
             updatedAt=order.updated_at.isoformat() if order.updated_at else None,
             deliveryAddress=masked_delivery,

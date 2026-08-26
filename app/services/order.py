@@ -955,6 +955,17 @@ class OrderService:
                 line_item["supplierStockNo"] = f"{order.barcode}{idx:02d}"
             line_items.append(line_item)
 
+        # Order totals mirroring the legacy API's orderTotals block:
+        # SUBTOTAL sums unitPrice x qty of the line items above; TAX and
+        # SHIPPING have no source in the gateway and default to 0, making
+        # ORDER_TOTAL equal to SUBTOTAL.
+        subtotal = round(
+            sum(
+                (li["unitPrice"] or 0) * (li["qty"] or 1)
+                for li in line_items
+            ),
+            2,
+        )
         payload = {
             "thirdOrderId": order.order_id,
             "thirdOrderNumber": order.source_order_id,
@@ -964,6 +975,12 @@ class OrderService:
             "paymentMethod": settings.QPMN_PAYMENT_METHOD,
             "deliveryAddress": self._address_to_legacy_payload(delivery_address),
             "billingAddress": self._address_to_legacy_payload(billing_address),
+            "orderTotals": [
+                {"name": "TAX", "value": 0.0},
+                {"name": "SHIPPING", "value": 0.0},
+                {"name": "SUBTOTAL", "value": subtotal},
+                {"name": "ORDER_TOTAL", "value": subtotal},
+            ],
         }
 
         logger.info("[OrderService] Built legacy payload for order %s", order_id)
@@ -1007,14 +1024,33 @@ class OrderService:
                 line_item["supplierStockNo"] = f"{order.barcode}{idx:02d}"
             line_items.append(line_item)
 
+        # Fetched once and shared by the top-level currency field and
+        # priceInfo.currency (the fetch is an HTTP call to QPMN).
+        payload_currency = self.fetch_currency_from_qpmn(order.store_id)
         payload = {
             "externalId": order.order_id,
             "externalOrderNumber": order.source_order_id,
             "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
             "paymentMethod": settings.QPMN_PAYMENT_METHOD,
-            "currency": self.fetch_currency_from_qpmn(order.store_id),
+            "currency": payload_currency,
             "deliveryAddress": self._address_to_open_api_payload(session, delivery_address),
             "billingAddress": self._address_to_open_api_payload(session, billing_address),
+            # Order price summary: subtotal sums the same unitPrice x quantity
+            # the line items above carry; discount/shipping/tax have no source
+            # in the gateway and default to 0.
+            "priceInfo": {
+                "currency": payload_currency,
+                "subtotal": round(
+                    sum(
+                        (li["unitPrice"] or 0) * (li["quantity"] or 1)
+                        for li in line_items
+                    ),
+                    2,
+                ),
+                "discount": 0.0,
+                "shipping": 0.0,
+                "tax": 0.0,
+            },
             "items": line_items,
         }
         logger.info("[OrderService] Built Open API payload for order %s", order_id)
