@@ -383,8 +383,12 @@ def fetch_product_retail_price(product_id: str, store_key: str) -> Optional[floa
 
     GET {QPMN_API_URL}/v2/storeProduct/{product_id}/resalePriceConfigs
 
-    The API returns e.g. ``"retailPriceString": "CNY 35.4"`` — the numeric
-    part is extracted and returned as float (35.4).
+    The response body wraps the config in ``{"success": true, "data": {...}}``.
+    Two shapes carry the price, checked in order:
+    1. ``data.retailPriceString`` e.g. ``"CNY 35.4"`` — the trailing
+       numeric part is extracted as float (35.4).
+    2. ``data.strategy.setting.price`` e.g. 48.1 (SinglePricingSetting) —
+       used when retailPriceString is absent (some environments omit it).
 
     Args:
         product_id: QPMN product ID
@@ -406,15 +410,24 @@ def fetch_product_retail_price(product_id: str, store_key: str) -> Optional[floa
             response = client.get(api_url, headers=headers)
             response.raise_for_status()
             data = response.json()
-
-        retail_price_string = data.get("data",{}).get("retailPriceString")
-        if not retail_price_string:
-            return None
-        # "CNY 35.4" -> 35.4 (take the trailing numeric part)
-        numbers = re.findall(r"[\d.]+", str(retail_price_string))
-        if not numbers:
-            return None
-        return float(numbers[-1])
+        config = data.get("data") or {}
+        retail_price_string = config.get("retailPriceString")
+        if retail_price_string:
+            # "CNY 35.4" -> 35.4 (take the trailing numeric part)
+            numbers = re.findall(r"[\d.]+", str(retail_price_string))
+            if numbers:
+                return float(numbers[-1])
+        # Some environments omit retailPriceString — the same price lives
+        # in strategy.setting.price (e.g. SinglePricingSetting 48.1).
+        setting = (config.get("strategy") or {}).get("setting") or {}
+        setting_price = setting.get("price")
+        if setting_price is not None:
+            return float(setting_price)
+        logger.warning(
+            f"No retail price found for product {product_id}: "
+            f"retailPriceString and strategy.setting.price both absent"
+        )
+        return None
     except Exception as e:
         logger.error(f"Error fetching resale price for product {product_id}: {str(e)}")
         return None
@@ -476,7 +489,6 @@ def sync_sku_to_db(
         existing_sku = session.exec(
             select(Sku).where(Sku.sku_id == sku_id)
         ).first()
-        
         if existing_sku:
             # Update existing SKU
             existing_sku.code = sku_code
