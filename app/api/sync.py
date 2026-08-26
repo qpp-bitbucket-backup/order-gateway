@@ -4,7 +4,8 @@ from typing import Optional
 from app.core.auth_admin import verify_admin_key
 from app.core.auth_jwt import require_editor_or_above
 from app.models.user import User
-from app.tasks.products import sync_products_task, sync_skus_task
+from app.services.client import client_service
+from app.tasks.products import sync_products_from_qpmn, sync_products_task, sync_skus_task
 
 router = APIRouter(
     prefix="/api/sync",
@@ -143,6 +144,35 @@ def platform_trigger_product_sync(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to start product sync: {str(e)}"
         )
+
+
+@jwt_router.post("/products/sync")
+def platform_sync_store_products(
+    store_id: str = Query(..., description="Store ID whose products should be synced"),
+    current_user: User = Depends(require_editor_or_above),
+):
+    """
+    Sync products for a specific store (JWT, runs synchronously).
+
+    Requires JWT Bearer token with editor or admin role.
+    The store must exist in the clients table; returns 404 otherwise.
+    """
+    if not client_service.get_store_key_by_id(store_id):
+        # Covers both "store missing from clients" and "store_key not
+        # configured" — the sync needs the key for QPMN Basic auth.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Store not found or store_key not configured: {store_id}",
+        )
+    # Called synchronously (not via Celery) so the response carries the
+    # final result; expect the request to take as long as the sync itself.
+    result = sync_products_from_qpmn(store_id)
+    return {
+        "success": result.get("success", False),
+        "message": result.get("message", ""),
+        "store_id": store_id,
+        "result": result,
+    }
 
 
 @jwt_router.post("/skus")
