@@ -2,7 +2,7 @@
 from celery import Celery
 from celery.schedules import crontab
 from app.core.config import settings
-from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING, QUEUE_ORDER_NOTIFYING
+from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING, QUEUE_ORDER_NOTIFYING, QUEUE_PRODUCT_SYNCING
 
 # All order processing queues
 ORDER_QUEUES = [QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING, QUEUE_ORDER_NOTIFYING]
@@ -33,6 +33,12 @@ celery_app.conf.update(
         "tasks.orders.push_order": {"queue": QUEUE_ORDER_PUSHING},
         "tasks.notifications.notify_oms": {"queue": QUEUE_ORDER_NOTIFYING},
         "tasks.notifications.notify_vfs": {"queue": QUEUE_ORDER_NOTIFYING},
+        # Product/SKU sync tasks (manual triggers + beat periodic) get
+        # their own queue so they never land in the default "celery" queue
+        # and can be consumed/scaled independently from order flow.
+        "tasks.products.sync_products_from_qpmn": {"queue": QUEUE_PRODUCT_SYNCING},
+        "tasks.products.sync_skus_from_qpmn": {"queue": QUEUE_PRODUCT_SYNCING},
+        "tasks.products.sync_all_stores_products": {"queue": QUEUE_PRODUCT_SYNCING},
     },
     # Celery Beat schedule for periodic tasks
     beat_schedule={
