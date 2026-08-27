@@ -24,6 +24,11 @@ ALERTS: Dict[str, Dict[str, Dict[str, str]]] = {
             "failure_type": "qpmn_retry",
             "message": "push_order: QPMN returned 503 for order {order_id}, first retry scheduled",
         },
+        "RETRY_504": {
+            "level": SENTRY_LEVEL_WARNING,
+            "failure_type": "qpmn_retry",
+            "message": "push_order: QPMN returned 504 for order {order_id}, first retry scheduled",
+        },
         "RETRY_TIMEOUT": {
             "level": SENTRY_LEVEL_WARNING,
             "failure_type": "qpmn_retry",
@@ -33,6 +38,11 @@ ALERTS: Dict[str, Dict[str, Dict[str, str]]] = {
             "level": SENTRY_LEVEL_ERROR,
             "failure_type": "qpmn_retry_exhausted",
             "message": "push_order: QPMN returned 503 for order {order_id}, retries exhausted ({max_retries})",
+        },
+        "RETRY_EXHAUSTED_504": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_retry_exhausted",
+            "message": "push_order: QPMN returned 504 for order {order_id}, retries exhausted ({max_retries})",
         },
         "RETRY_EXHAUSTED_TIMEOUT": {
             "level": SENTRY_LEVEL_ERROR,
