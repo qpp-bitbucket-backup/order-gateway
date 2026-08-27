@@ -2,7 +2,16 @@
 from celery import Celery
 from celery.schedules import crontab
 from app.core.config import settings
+from app.core.monitoring import init_sentry
 from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING, QUEUE_ORDER_NOTIFYING, QUEUE_PRODUCT_SYNCING
+
+# Initialize Sentry in every process launched via `-A app.core.celery.celery_app`
+# (worker and beat). These processes never run the FastAPI lifespan in
+# main.py, and capture_integration_alert() in tasks is a silent no-op unless
+# the SDK was initialized — alert events were getting dropped here.
+# CeleryIntegration (enabled inside init_sentry) makes this fork-safe for
+# prefork workers. Re-init in the API process (lifespan) is harmless.
+init_sentry()
 
 # All order processing queues
 ORDER_QUEUES = [QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING, QUEUE_ORDER_NOTIFYING]
