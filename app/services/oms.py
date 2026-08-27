@@ -106,9 +106,9 @@ class OMSService:
                 logger.warning("[OMS] API-001 timeout for order %s", order_id)
                 raise OMSRetryableError(f"OMS API timeout for order {order_id}")
 
-            if response.status_code == 503:
-                logger.warning("[OMS] API-001 returned 503 for order %s", order_id)
-                raise OMSRetryableError(f"OMS API returned 503 for order {order_id}")
+            if response.status_code in (503, 504):
+                logger.warning("[OMS] API-001 returned %s for order %s", response.status_code, order_id)
+                raise OMSRetryableError(f"OMS API returned {response.status_code} for order {order_id}")
 
             response.raise_for_status()
             body = response.json()

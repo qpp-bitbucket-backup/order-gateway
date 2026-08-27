@@ -105,3 +105,35 @@ def require_editor_or_above(user: User = Depends(get_current_user)) -> User:
             detail="Editor or admin access required",
         )
     return user
+
+
+def resolve_scoped_store_id(
+    user: User,
+    requested_store_id: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Resolve the store scope for platform data access, by role:
+
+    - ADMIN: unrestricted — the optional ``requested_store_id`` filter
+      (None = all stores) is honored as-is, regardless of the admin's own
+      ``store_id``.
+    - EDITOR / VIEWER: always scoped to ``user.store_id``. A user bound to
+      no store sees nothing (403), and requests targeting a different
+      store are rejected (403) instead of silently falling back.
+
+    Returns the store ID the query must be filtered by (None = no filter,
+    admin only).
+    """
+    if user.role == UserRole.ADMIN:
+        return requested_store_id
+    if not user.store_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User is not associated with any store",
+        )
+    if requested_store_id and requested_store_id != user.store_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied to store '{requested_store_id}'",
+        )
+    return user.store_id

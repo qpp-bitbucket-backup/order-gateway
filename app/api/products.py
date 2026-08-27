@@ -14,7 +14,7 @@ from app.schemas.product import (
 )
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
 from app.core.auth_admin import verify_admin_key
-from app.core.auth_jwt import get_current_user, require_editor_or_above
+from app.core.auth_jwt import get_current_user, require_editor_or_above, resolve_scoped_store_id
 from app.models.user import User
 
 router = APIRouter(
@@ -189,16 +189,19 @@ def jwt_get_products(
     """
     Get Products (JWT) - Retrieves a list of available products.
 
-    Requires JWT Bearer token. Admin/Editor/Viewer all have access.
-    If user has a store_id, only returns products for that store.
+    Requires JWT Bearer token. ADMIN sees all stores (optional store filter
+    via user binding is NOT applied); EDITOR/VIEWER only see their own
+    store's products and must be bound to a store.
     """
+    # Outside the try block so the 403 for unbound users is not swallowed
+    # into a 500 by the generic exception handler below.
+    scoped_store_id = resolve_scoped_store_id(current_user)
     try:
         offset = (page - 1) * pagesize
-        user_store_id = current_user.store_id
 
         query = select(Product).where(Product.is_active == True)
-        if user_store_id:
-            query = query.where(Product.store_id == user_store_id)
+        if scoped_store_id:
+            query = query.where(Product.store_id == scoped_store_id)
 
         total_count = len(session.exec(query).all())
         total_pages = (total_count + pagesize - 1) // pagesize if total_count > 0 else 1
@@ -245,18 +248,17 @@ def jwt_get_skus(
     """
     Get SKUs (JWT) - Retrieves a list of available SKUs.
 
-    Requires JWT Bearer token. Admin/Editor/Viewer all have access.
-    If user has a store_id, only returns SKUs for that store.
-    Admin users can optionally filter by store_id query parameter.
+    Requires JWT Bearer token. ADMIN sees all stores (optional store_id
+    filter); EDITOR/VIEWER only see their own store's SKUs.
     """
+    # Outside the try block so the 403 for out-of-scope stores is not
+    # swallowed into a 500 by the generic exception handler below.
+    # ADMIN is unrestricted (optional store_id filter honored as-is);
+    # EDITOR/VIEWER are always scoped to their own store and cannot
+    # query another store via the store_id parameter.
+    effective_store_id = resolve_scoped_store_id(current_user, store_id)
     try:
         offset = (page - 1) * pagesize
-
-        # Scope by user's store_id (null store_id = all stores)
-        user_store_id = current_user.store_id
-        # Non-admin users are always scoped to their own store
-        # Admin users can optionally filter by store_id param
-        effective_store_id = user_store_id or store_id
 
         if effective_store_id:
             from sqlmodel import col
@@ -322,7 +324,8 @@ def jwt_get_sku_by_id(
     """
     Get SKU by ID (JWT) - Retrieves a single SKU by its internal sku_id.
 
-    Requires JWT Bearer token. Admin/Editor/Viewer all have access.
+    Requires JWT Bearer token. EDITOR/VIEWER users only see SKUs belonging
+    to their own store; ADMIN is unrestricted.
     """
     try:
         sku = session.exec(select(Sku).where(Sku.sku_id == sku_id)).first()
@@ -332,6 +335,19 @@ def jwt_get_sku_by_id(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"SKU with sku_id '{sku_id}' not found",
             )
+
+        # Store-ownership check for non-admin users: a SKU in another
+        # store is indistinguishable from a missing one (404).
+        scoped_store_id = resolve_scoped_store_id(current_user)
+        if scoped_store_id:
+            product = session.exec(
+                select(Product).where(Product.product_id == sku.product_id)
+            ).first()
+            if not product or product.store_id != scoped_store_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"SKU with sku_id '{sku_id}' not found",
+                )
 
         sku_schema = SkuSchema(
             id=sku.sku_id,
@@ -375,7 +391,8 @@ def jwt_update_sku(
     """
     Update SKU (JWT) - Updates an existing SKU by its internal sku_id.
 
-    Requires JWT Bearer token with editor or admin role.
+    Requires JWT Bearer token with editor or admin role. EDITOR users can
+    only update SKUs belonging to their own store; ADMIN is unrestricted.
     """
     try:
         sku = session.exec(select(Sku).where(Sku.sku_id == sku_id)).first()
@@ -385,6 +402,19 @@ def jwt_update_sku(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"SKU with sku_id '{sku_id}' not found",
             )
+
+        # Store-ownership check for non-admin users: a SKU in another
+        # store is indistinguishable from a missing one (404).
+        scoped_store_id = resolve_scoped_store_id(current_user)
+        if scoped_store_id:
+            product = session.exec(
+                select(Product).where(Product.product_id == sku.product_id)
+            ).first()
+            if not product or product.store_id != scoped_store_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"SKU with sku_id '{sku_id}' not found",
+                )
 
         changes = []
 

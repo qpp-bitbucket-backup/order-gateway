@@ -527,6 +527,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                 api_url = f"{settings.QPMN_OPEN_API_URL.rstrip('/')}/orders"
             else:
                 api_url = f"{settings.QPMN_API_URL}/store/orders"
+
             store_key = client_service.get_store_key_by_id(order.store_id)
             headers = {"Authorization": f"Basic {store_key}"}
             max_retries = settings.QPMN_PUSH_RETRY_COUNT
@@ -536,20 +537,23 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             try:
                 with httpx.Client(timeout=30.0) as client:
                     response = client.post(api_url, json=payload, headers=headers)
-                # Handle 503 - retry with delay
-                if response.status_code == 503:
+                # Handle 503/504 (service unavailable / gateway timeout) -
+                # both are transient server-side failures, retry with backoff
+                if response.status_code in (503, 504):
+                    retry_alert = "RETRY_503" if response.status_code == 503 else "RETRY_504"
+                    exhausted_alert = "RETRY_EXHAUSTED_503" if response.status_code == 503 else "RETRY_EXHAUSTED_504"
                     if retry_count < max_retries:
                         countdown = _exponential_backoff(base_delay, retry_count, max_delay)
                         order_data["_qpmn_retry_count"] = retry_count + 1
                         logger.warning(
-                            f"[Celery] QPMN returned 503 for order {order_id} "
+                            f"[Celery] QPMN returned {response.status_code} for order {order_id} "
                             f"(attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s"
                         )
                         if retry_count == 0:
-                            _capture_push_alert("RETRY_503", order_id)
+                            _capture_push_alert(retry_alert, order_id)
                         _append_order_log(
                             order, "order_push_retry",
-                            f"QPMN returned 503 (attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s",
+                            f"QPMN returned {response.status_code} (attempt {retry_count + 1}/{max_retries}), retrying in {countdown}s",
                         )
                         session.add(order)
                         session.commit()
@@ -557,11 +561,11 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                         return True
                     else:
                         logger.error(
-                            f"[Celery] QPMN returned 503 for order {order_id} "
+                            f"[Celery] QPMN returned {response.status_code} for order {order_id} "
                             f"after {max_retries} attempts, marking as FAILED"
                         )
-                        _capture_push_alert("RETRY_EXHAUSTED_503", order_id, max_retries=max_retries)
-                        _mark_order_failed(order_id, f"QPMN returned 503 after {max_retries} retries")
+                        _capture_push_alert(exhausted_alert, order_id, max_retries=max_retries)
+                        _mark_order_failed(order_id, f"QPMN returned {response.status_code} after {max_retries} retries")
                         return False
 
                 result = response.json()
