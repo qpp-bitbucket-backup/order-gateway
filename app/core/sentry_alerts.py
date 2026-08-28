@@ -253,7 +253,7 @@ def capture_integration_alert(
     """
     failure_type = alert_def["failure_type"]
     message = alert_def["message"].format(**(format_args or {}))
-
+    logger.debug(f"[Sentry]: Capture {failure_type} alert, {message}")
     with sentry_sdk.new_scope() as scope:
         for key, value in category_tags.items():
             scope.set_tag(key, value)
