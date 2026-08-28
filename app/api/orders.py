@@ -1119,7 +1119,6 @@ def cancel_order(
             (Order.source_account == source_account)
             & (Order.source_order_id == source_order_id)
         )
-        print(store_id)
         if store_id:
             query = query.where(Order.store_id == store_id)
         order = session.exec(query).first()

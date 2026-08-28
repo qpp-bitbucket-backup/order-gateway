@@ -11,7 +11,8 @@ each of the ~34 call sites — one place to see every alert this app can
 raise, and to keep wording/level/failure_type consistent.
 """
 from typing import Any, Dict, Optional
-
+import logging
+logger = logging.getLogger(__name__)
 import sentry_sdk
 
 SENTRY_LEVEL_WARNING = "warning"
