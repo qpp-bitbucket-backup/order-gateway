@@ -194,6 +194,9 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
             is_parallel_card = order.type == OrderType.PARALLEL_CARD
             file_quantity = 0
             file_index = 0
+            # PDF->PNG converted page count (CONVERT_TO_PNG), logged once
+            # alongside the upload summary below
+            png_file_count = 0
             with tempfile.TemporaryDirectory(prefix=f"order_{order_id}_") as tmp_dir:
                 for product in products:
                     components = product.get("components", [])
@@ -234,6 +237,24 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                                 _mark_order_failed(order_id, f"Unsupported file format: {file_url}")
                                 logger.error(f"File: [{file_url}] unsupported format, only pdf/jpg/png are supported")
                                 return True
+                            # CONVERT_TO_PNG: render the split single-page
+                            # PDFs to PNG before upload; image files pass
+                            # through unchanged (parallel-card files are
+                            # watermarked to PNG below regardless)
+                            if settings.CONVERT_TO_PNG:
+                                converted_files: List[str] = []
+                                for page_file in page_files:
+                                    if not page_file.lower().endswith(".pdf"):
+                                        converted_files.append(page_file)
+                                        continue
+                                    png_path = file_service.pdf_to_png(page_file, tmp_dir)
+                                    if not png_path:
+                                        _mark_order_failed(order_id, "Cannot convert design PDF to PNG")
+                                        logger.error(f"File: [{page_file}] PDF to PNG conversion failed")
+                                        return True
+                                    converted_files.append(png_path)
+                                    png_file_count += 1
+                                page_files = converted_files
 
                             for page_file in page_files:
                                 if is_parallel_card:
@@ -266,6 +287,13 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                             order,
                             "parallel_card_watermarked",
                             f"Applied '{WATERMARK_TEXT}' watermark to {file_quantity} file(s) before QPMN upload",
+                        )
+                    if png_file_count:
+                        _append_order_log(
+                            order,
+                            "design_files_converted_to_png",
+                            f"Converted {png_file_count} design PDF page(s) to PNG "
+                            f"({settings.PDF_TO_PNG_DPI} dpi) before QPMN upload",
                         )
                     session.add(order)
                     session.commit()
@@ -535,14 +563,14 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             max_delay = settings.QPMN_PUSH_RETRY_MAX_COUNTDOWN
             retry_count = order_data.get("_qpmn_retry_count", 0)
             try:
-                with httpx.Client(timeout=30.0) as client:
+                with httpx.Client(timeout=30) as client:
                     response = client.post(api_url, json=payload, headers=headers)
                 # Handle 503/504 (service unavailable / gateway timeout) -
                 # both are transient server-side failures, retry with backoff
                 if response.status_code in (503, 504):
                     retry_alert = "RETRY_503" if response.status_code == 503 else "RETRY_504"
                     exhausted_alert = "RETRY_EXHAUSTED_503" if response.status_code == 503 else "RETRY_EXHAUSTED_504"
-                    if retry_count < max_retries:
+                    if retry_count < 0 :
                         countdown = _exponential_backoff(base_delay, retry_count, max_delay)
                         order_data["_qpmn_retry_count"] = retry_count + 1
                         logger.warning(

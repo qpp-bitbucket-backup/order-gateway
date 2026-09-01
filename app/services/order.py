@@ -382,7 +382,6 @@ class OrderService:
             logger.error("[OrderService] QPMN cancel API request failed for order %s: %s", order.order_id, exc)
             _capture_cancel_alert("REQUEST_FAILED", order.order_id, exc=exc)
             return {"success": False, "status_code": None, "error": str(exc)}
-
         # Non-200 responses are failures
         if response.status_code != 200:
             error_body = None
@@ -838,6 +837,7 @@ class OrderService:
             # Inject uploaded file URLs into pageContentDesigns images (legacy structure)
             for index, design in enumerate(designs):
                 file_obj = files[index] if index < len(files) else None
+                
                 if not file_obj:
                     raise ValueError(f"SKU: [{sku_id}] design file not found")
                 file_url = file_obj.get("url", None)
@@ -858,14 +858,14 @@ class OrderService:
             for material in design_data:
                 for view in material.get("views", []):
                     view_designs = view.get("designs") or []
-                    if not any(d.get("effectImages") for d in view_designs):
+                    if not any(d.get("effectImages") for d in view_designs) or open_file_index > len(files):
                         continue
                     file_obj = files[open_file_index] if open_file_index < len(files) else None
                     if not file_obj:
                         raise ValueError(f"SKU: [{sku_id}] design file not found")
                     file_url = file_obj.get("url", None)
                     if not file_url:
-                        raise ValueError(f"SKU: [{sku_id}] design file not found")
+                        raise ValueError(f"SKU: [{sku_id}] design file URL not found")
                     open_file_index += 1
                     for d in view_designs:
                         for effect_image in d.get("effectImages", []):
