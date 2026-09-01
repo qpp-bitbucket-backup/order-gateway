@@ -36,7 +36,7 @@ from app.schemas.order import (
     SiteFlowErrorResponse,
 )
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
-from app.core.auth_jwt import get_current_user
+from app.core.auth_jwt import get_current_user, resolve_scoped_store_id
 from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection
@@ -1119,7 +1119,6 @@ def cancel_order(
             (Order.source_account == source_account)
             & (Order.source_order_id == source_order_id)
         )
-        print(store_id)
         if store_id:
             query = query.where(Order.store_id == store_id)
         order = session.exec(query).first()
@@ -1195,12 +1194,13 @@ def platform_get_orders(
     Supports fuzzy search on sourceOrderId: ?sourceOrderId=ORD-12
     Returns additional fields: sourceOrderId, logs, files, version, storeId.
     """
+    # Outside the try block so the 403 for out-of-scope stores is not
+    # swallowed into a 500 by the generic exception handler below.
+    # ADMIN is unrestricted (optional store_id filter honored as-is);
+    # EDITOR/VIEWER are always scoped to their own store and cannot
+    # fall back to seeing other stores' data.
+    effective_store_id = resolve_scoped_store_id(current_user, store_id)
     try:
-        user_store_id = current_user.store_id
-        # Non-admin users are always scoped to their own store
-        # Admin users can optionally filter by store_id param
-        effective_store_id = user_store_id or store_id
-
         orders, total_count, total_pages = order_service.get_all_orders(
             session,
             store_id=effective_store_id,
@@ -1259,12 +1259,13 @@ def platform_get_order(
     """
     Get Order (JWT) - Retrieves detailed information for a specific order.
 
-    Requires JWT Bearer token. If user has a store_id, only returns orders for that store.
+    Requires JWT Bearer token. EDITOR/VIEWER users only see orders for
+    their own store; ADMIN is unrestricted.
     Returns additional fields: sourceOrderId, logs, files, version, storeId.
     """
     try:
-        user_store_id = current_user.store_id
-        order = order_service.get_order_by_id(session, order_id, store_id=user_store_id)
+        scoped_store_id = resolve_scoped_store_id(current_user)
+        order = order_service.get_order_by_id(session, order_id, store_id=scoped_store_id)
 
         if not order:
             raise HTTPException(

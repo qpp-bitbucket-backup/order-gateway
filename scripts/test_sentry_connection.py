@@ -21,7 +21,7 @@ issue until it's fixed.
 
 All 4 also carry test_run_id + source=test_sentry_connection.py, so they're
 easy to find/filter in the Sentry UI:
-    https://uat-qpmn-cn-sentry.qppdev.com/organizations/sentry/projects/order-gateway/?project=38
+    https://prod-qpmn-cn-sentry.qppdev.com/organizations/sentry/projects/order-gateway/?project=38
 
 Usage:
     python scripts/test_sentry_connection.py

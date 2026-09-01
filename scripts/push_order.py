@@ -5,6 +5,7 @@ Usage:
     python scripts/push_order.py                          # 用預設 order_id 測試
     python scripts/push_order.py --order-id YOUR_ORDER_ID # 指定 order_id
     python scripts/push_order.py --direct                 # 直接調用函數（不走 Celery）
+    python scripts/push_order.py --delay                  # 透過 Celery delay() 發送到 broker（需要 RabbitMQ + worker）
 """
 import os
 import sys

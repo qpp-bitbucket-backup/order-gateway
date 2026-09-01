@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from typing import Optional
 from app.core.auth_admin import verify_admin_key
-from app.core.auth_jwt import require_editor_or_above
+from app.core.auth_jwt import require_editor_or_above, resolve_scoped_store_id
 from app.models.user import User
 from app.services.client import client_service
 from app.tasks.products import sync_products_from_qpmn, sync_products_task, sync_skus_task
@@ -130,14 +130,19 @@ def platform_trigger_product_sync(
     Trigger product synchronization from QPMN API (JWT).
 
     Requires JWT Bearer token with editor or admin role.
+    ADMIN can sync any store (or all stores when store_id is omitted);
+    EDITOR is limited to their own store.
     """
+    # Outside the try block so the 403 for out-of-scope stores is not
+    # swallowed into a 500 by the generic exception handler below.
+    scoped_store_id = resolve_scoped_store_id(current_user, store_id)
     try:
-        task = sync_products_task.delay(store_id=store_id)
+        task = sync_products_task.delay(store_id=scoped_store_id)
         return {
             "success": True,
             "message": "Product sync started",
             "task_id": task.id,
-            "store_id": store_id,
+            "store_id": scoped_store_id,
         }
     except Exception as e:
         raise HTTPException(
@@ -155,8 +160,11 @@ def platform_sync_store_products(
     Sync products for a specific store (JWT, runs synchronously).
 
     Requires JWT Bearer token with editor or admin role.
+    ADMIN can sync any store; EDITOR is limited to their own store.
     The store must exist in the clients table; returns 404 otherwise.
     """
+    # Non-admin users can only trigger a sync for their own store.
+    resolve_scoped_store_id(current_user, store_id)
     if not client_service.get_store_key_by_id(store_id):
         # Covers both "store missing from clients" and "store_key not
         # configured" — the sync needs the key for QPMN Basic auth.
@@ -184,14 +192,19 @@ def platform_trigger_sku_sync(
     Trigger SKU synchronization from QPMN API (JWT).
 
     Requires JWT Bearer token with editor or admin role.
+    ADMIN can sync any store (or all stores when store_id is omitted);
+    EDITOR is limited to their own store.
     """
+    # Outside the try block so the 403 for out-of-scope stores is not
+    # swallowed into a 500 by the generic exception handler below.
+    scoped_store_id = resolve_scoped_store_id(current_user, store_id)
     try:
-        task = sync_skus_task.delay(store_id=store_id)
+        task = sync_skus_task.delay(store_id=scoped_store_id)
         return {
             "success": True,
             "message": "SKU sync started",
             "task_id": task.id,
-            "store_id": store_id,
+            "store_id": scoped_store_id,
         }
     except Exception as e:
         raise HTTPException(

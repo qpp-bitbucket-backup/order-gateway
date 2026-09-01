@@ -11,7 +11,8 @@ each of the ~34 call sites — one place to see every alert this app can
 raise, and to keep wording/level/failure_type consistent.
 """
 from typing import Any, Dict, Optional
-
+import logging
+logger = logging.getLogger(__name__)
 import sentry_sdk
 
 SENTRY_LEVEL_WARNING = "warning"
@@ -24,6 +25,11 @@ ALERTS: Dict[str, Dict[str, Dict[str, str]]] = {
             "failure_type": "qpmn_retry",
             "message": "push_order: QPMN returned 503 for order {order_id}, first retry scheduled",
         },
+        "RETRY_504": {
+            "level": SENTRY_LEVEL_WARNING,
+            "failure_type": "qpmn_retry",
+            "message": "push_order: QPMN returned 504 for order {order_id}, first retry scheduled",
+        },
         "RETRY_TIMEOUT": {
             "level": SENTRY_LEVEL_WARNING,
             "failure_type": "qpmn_retry",
@@ -33,6 +39,11 @@ ALERTS: Dict[str, Dict[str, Dict[str, str]]] = {
             "level": SENTRY_LEVEL_ERROR,
             "failure_type": "qpmn_retry_exhausted",
             "message": "push_order: QPMN returned 503 for order {order_id}, retries exhausted ({max_retries})",
+        },
+        "RETRY_EXHAUSTED_504": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_retry_exhausted",
+            "message": "push_order: QPMN returned 504 for order {order_id}, retries exhausted ({max_retries})",
         },
         "RETRY_EXHAUSTED_TIMEOUT": {
             "level": SENTRY_LEVEL_ERROR,
@@ -243,7 +254,7 @@ def capture_integration_alert(
     """
     failure_type = alert_def["failure_type"]
     message = alert_def["message"].format(**(format_args or {}))
-
+    logger.debug(f"[Sentry]: Capture {failure_type} alert, {message}")
     with sentry_sdk.new_scope() as scope:
         for key, value in category_tags.items():
             scope.set_tag(key, value)

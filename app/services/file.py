@@ -129,7 +129,9 @@ class FileService:
                 single_page_doc = fitz.open()  # new empty PDF
                 single_page_doc.insert_pdf(doc, from_page=page_idx, to_page=page_idx)
 
-                if settings.PDF_CONVERT_TO_PDFX:
+                if settings.PDF_CONVERT_TO_PDFX and not settings.CONVERT_TO_PNG:
+                    # (skipped when CONVERT_TO_PNG is on — the PDF/X
+                    # declaration is pointless on pages rendered to PNG)
                     if pdf_processor.apply_pdfx(single_page_doc, settings.PDF_X_STANDARD):
                         logger.info(
                             f"[FileService] Declared page {page_idx + 1} as {settings.PDF_X_STANDARD}"
@@ -157,6 +159,38 @@ class FileService:
 
         return page_files
 
+    def pdf_to_png(self, pdf_path: str, dest_dir: str) -> Optional[str]:
+        """
+        Render a single-page PDF to a PNG file at ``PDF_TO_PNG_DPI``.
+
+        Used when CONVERT_TO_PNG is enabled: the split single-page design
+        PDFs are uploaded to QPMN as PNG images instead of PDFs.
+
+        Args:
+            pdf_path: Path to a (single-page) PDF file.
+            dest_dir: Directory where the PNG will be saved.
+
+        Returns:
+            Path to the generated PNG, or None on failure.
+        """
+        base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        png_path = os.path.join(dest_dir, f"{base_name}.png")
+        try:
+            doc = fitz.open(pdf_path)
+            try:
+                pix = doc[0].get_pixmap(dpi=settings.PDF_TO_PNG_DPI)
+                pix.save(png_path)
+            finally:
+                doc.close()
+            logger.info(
+                f"[FileService] Converted {os.path.basename(pdf_path)} -> {png_path} "
+                f"({settings.PDF_TO_PNG_DPI} dpi, {os.path.getsize(png_path)} bytes)"
+            )
+            return png_path
+        except Exception as exc:
+            logger.error(f"[FileService] Failed to convert {pdf_path} to PNG: {exc}", exc_info=True)
+            return None
+
     def upload_to_qpmn(self, file_path: str, store_key: str) -> Dict[str, Any] | None:
         """
         Upload a file to the QPMN API file endpoint.
@@ -177,7 +211,6 @@ class FileService:
                 files = {"file": (filename, fh)}
                 with httpx.Client(timeout=120.0) as client:
                     resp = client.post(api_url, headers=headers, files=files)
-                    print(resp)
                     resp.raise_for_status()
 
             result = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}

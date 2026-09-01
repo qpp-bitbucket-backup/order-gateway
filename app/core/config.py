@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     # Use PDF/X-4:2008 for RGB image content; X-1a flavors forbid RGB.
     PDF_CONVERT_TO_PDFX: bool = True
     PDF_X_STANDARD: str = "PDF/X-4:2008"
+    # Render the split single-page design PDFs to PNG before QPMN upload
+    # (parallel-card files are always watermarked to PNG regardless of this)
+    CONVERT_TO_PNG: bool = False
+    PDF_TO_PNG_DPI: int = 300
 
     # OMS API Configuration
     OMS_API_URL: str = ""
