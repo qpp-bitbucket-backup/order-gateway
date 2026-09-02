@@ -52,6 +52,27 @@ def _exponential_backoff(base: int, retry_count: int, cap: int) -> int:
     return min(base * (2 ** retry_count), cap)
 
 
+def _extract_store_order_item_ids(data: Any) -> List[str]:
+    """Pull the QPMN-assigned id of every pushed order item out of the
+    create-order response's ``data``, so later ``order_item_produced``
+    webhooks (keyed by these same ids) can be matched against the full set
+    to detect "all items produced" (TI-65).
+
+    Legacy API: ``data.orderItems[].orderItemId``.
+    Open API: ``data.items[].id``.
+    """
+    if not isinstance(data, dict):
+        return []
+    item_ids: List[str] = []
+    for item in data.get("orderItems") or data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("orderItemId") or item.get("id")
+        if item_id is not None:
+            item_ids.append(str(item_id))
+    return item_ids
+
+
 _ADDRESS_FIELDS = (
     "country", "state", "city", "address1", "address2", "postcode",
     "first_name", "last_name", "phone", "mobile", "email", "company",
@@ -618,6 +639,10 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     if not store_order_id and not isinstance(data, dict):
                         store_order_id = result.get("orderId")
                     order.store_order_id = store_order_id if store_order_id else None
+                    # TI-65: record the expected set of QPMN item ids so we
+                    # can later tell when every one of them has been produced.
+                    item_ids = _extract_store_order_item_ids(data)
+                    order.store_order_item_ids = item_ids or None
                     _append_order_log(order, "order_push_success", "Order pushed to QPMN successfully")
                     session.add(order)
                     session.commit()

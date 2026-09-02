@@ -1,6 +1,6 @@
 """Unit tests for Order model and status transitions."""
 import pytest
-from app.models.order import Order, OrderStatus, can_transition, ORDER_STATE_TRANSITIONS
+from app.models.order import Order, OrderStatus, can_transition, is_item_event_superseded, ORDER_STATE_TRANSITIONS
 
 
 class TestOrderStatus:
@@ -13,6 +13,7 @@ class TestOrderStatus:
         assert OrderStatus.VALIDATED.value == "validated"
         assert OrderStatus.PRINTREADY.value == "printready"
         assert OrderStatus.PRINTED.value == "printed"
+        assert OrderStatus.PRODUCED.value == "produced"
         assert OrderStatus.CANCELLED.value == "cancelled"
         assert OrderStatus.FAILED.value == "failed"
         assert OrderStatus.ERRORED.value == "errored"
@@ -46,9 +47,17 @@ class TestOrderStatus:
         """Test PRINTREADY -> PRINTED transition is allowed."""
         assert can_transition(OrderStatus.PRINTREADY, OrderStatus.PRINTED) is True
 
-    def test_can_transition_printed_to_shipped(self):
-        """Test PRINTED -> SHIPPED transition is allowed."""
-        assert can_transition(OrderStatus.PRINTED, OrderStatus.SHIPPED) is True
+    def test_can_transition_printed_to_produced(self):
+        """Test PRINTED -> PRODUCED transition is allowed (TI-65)."""
+        assert can_transition(OrderStatus.PRINTED, OrderStatus.PRODUCED) is True
+
+    def test_cannot_transition_printed_to_shipped_directly(self):
+        """TI-65: PRINTED must go through PRODUCED before SHIPPED."""
+        assert can_transition(OrderStatus.PRINTED, OrderStatus.SHIPPED) is False
+
+    def test_can_transition_produced_to_shipped(self):
+        """Test PRODUCED -> SHIPPED transition is allowed (TI-65)."""
+        assert can_transition(OrderStatus.PRODUCED, OrderStatus.SHIPPED) is True
 
     def test_cannot_transition_shipped(self):
         """Test SHIPPED is a terminal state - no transitions allowed."""
@@ -69,6 +78,22 @@ class TestOrderStatus:
     def test_can_retry_from_errored(self):
         """Test ERRORED can transition to PENDING for retry."""
         assert can_transition(OrderStatus.ERRORED, OrderStatus.PENDING) is True
+
+
+class TestItemEventSuperseded:
+    """Test is_item_event_superseded (TI-65 adds PRODUCED to the terminal set)."""
+
+    def test_second_produced_event_while_still_printed_is_superseded(self):
+        """A later item's order_item_produced, while the order is already
+        PRINTED (from an earlier item), is a superseded straggler."""
+        assert is_item_event_superseded(OrderStatus.PRINTED, OrderStatus.PRINTED) is True
+
+    def test_item_event_after_produced_is_superseded(self):
+        """Any order_item_* event arriving after the order already reached
+        PRODUCED (all items accounted for) is superseded, not invalid."""
+        assert is_item_event_superseded(OrderStatus.PRODUCED, OrderStatus.RECEIVED) is True
+        assert is_item_event_superseded(OrderStatus.PRODUCED, OrderStatus.PRINTREADY) is True
+        assert is_item_event_superseded(OrderStatus.PRODUCED, OrderStatus.PRINTED) is True
 
 
 class TestOrderModel:

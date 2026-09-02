@@ -78,6 +78,7 @@ _EXTERNAL_STATUS_MAP: dict = {
     OrderStatus.PROCESSING: "dataready",
     OrderStatus.PRINTREADY: "printready",
     OrderStatus.PRINTED: "printed",
+    OrderStatus.PRODUCED: "produced",
     OrderStatus.SHIPPED: "shipped",
     OrderStatus.ERRORED: "error",
     OrderStatus.CANCELLED: "cancelled",
