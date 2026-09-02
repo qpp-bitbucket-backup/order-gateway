@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 from app.core.database import get_session
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from app.models.client import Client
-from app.models.order import Order, can_transition, is_item_event_superseded, EVENT_STATUS_MAP, OMS_STATUS_MAP
+from app.models.order import Order, OrderStatus, can_transition, is_item_event_superseded, EVENT_STATUS_MAP, OMS_STATUS_MAP
 from app.models.shipment import OrderShipment
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.schemas.webhook import QpmnOrderItemEvent, QpmnPackageShippedEvent, WebhookResponse
@@ -64,6 +64,105 @@ def _verify_qpmn_signature(session: Session, raw_body: bytes, signature: Optiona
         if hmac.compare_digest(expected, signature.lower()):
             return client
     return None
+
+
+def _notify_component_printed(
+    session: Session, order: Order, item_id_value: Optional[str], x_qpmn_event_id: Optional[str],
+) -> None:
+    """TI-65: notify OMS/VFS of a single component's completion ("printed"),
+    independent of whether this event also advances the order's own status —
+    QPMN sends one order_item_produced event per item, and OMS wants to know
+    about each one, not just the first (which is the only one the pre-TI-65
+    flow ever notified, since every later item's event was silently SKIPPED
+    as superseded).
+    """
+    oms_status = OMS_STATUS_MAP[OrderStatus.PRINTED]
+    oms_log = WebhookLog(
+        direction=WebhookDirection.OUTBOUND, source="OMS",
+        order_id=order.order_id, source_order_id=order.source_order_id,
+        store_order_id=order.store_order_id, store_order_item_id=item_id_value,
+        event_id=x_qpmn_event_id, event_status="order_item_produced",
+        payload={"orderNo": order.order_id, "status": oms_status, "shipments": []},
+        process_status=WebhookProcessStatus.RECEIVED,
+    )
+    session.add(oms_log)
+    session.commit()
+    session.refresh(oms_log)
+    notify_oms.delay(webhook_log_id=oms_log.id, order_id=order.order_id, event_status=oms_status, shipments=None)
+
+    vfs_log = WebhookLog(
+        direction=WebhookDirection.OUTBOUND, source="VFS",
+        order_id=order.order_id, source_order_id=order.source_order_id,
+        store_order_id=order.store_order_id, store_order_item_id=item_id_value,
+        event_id=x_qpmn_event_id, event_status="order_item_produced",
+        payload={"sourceOrderId": order.source_order_id, "status": OrderStatus.PRINTED.value, "shipments": []},
+        process_status=WebhookProcessStatus.RECEIVED,
+    )
+    session.add(vfs_log)
+    session.commit()
+    session.refresh(vfs_log)
+    notify_vfs.delay(webhook_log_id=vfs_log.id, order_id=order.order_id, event_status=OrderStatus.PRINTED.value, shipments=None)
+
+
+def _record_produced_item_and_maybe_complete(
+    session: Session, order: Order, item_id_value: Optional[str], x_qpmn_event_id: Optional[str],
+) -> None:
+    """TI-65: record ``item_id_value`` as produced and, once every item QPMN
+    was pushed for this order (``order.store_order_item_ids``, captured from
+    the create-order response — see ``_extract_store_order_item_ids`` in
+    app/tasks/orders.py) has reported produced, advance the order to
+    ``PRODUCED`` and notify OMS (only — not VFS) of that aggregate status.
+
+    A no-op (order stays wherever it is) if ``store_order_item_ids`` was
+    never captured (e.g. an order pushed before this feature existed) —
+    there is no way to know the expected item count, so we simply never
+    reach "all produced" for it.
+    """
+    if item_id_value:
+        if order.produced_item_ids is None:
+            order.produced_item_ids = []
+        if item_id_value not in order.produced_item_ids:
+            order.produced_item_ids = [*order.produced_item_ids, item_id_value]
+            flag_modified(order, "produced_item_ids")
+            session.add(order)
+            session.commit()
+
+    expected = set(order.store_order_item_ids or [])
+    produced = set(order.produced_item_ids or [])
+    if not expected or not expected.issubset(produced):
+        return
+    if not can_transition(order.status, OrderStatus.PRODUCED):
+        # Already PRODUCED (or moved further, e.g. SHIPPED/CANCELLED) — nothing to do.
+        return
+
+    order.status = OrderStatus.PRODUCED
+    if order.logs is None:
+        order.logs = []
+    order.logs.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": "qpmn_status_webhook",
+        "message": "All order items produced — status updated to 'produced'",
+        "event_status": "order_item_produced",
+        "worker": "webhook_handler",
+    })
+    flag_modified(order, "logs")
+    session.add(order)
+    session.commit()
+
+    produced_oms_status = OMS_STATUS_MAP[OrderStatus.PRODUCED]
+    oms_log = WebhookLog(
+        direction=WebhookDirection.OUTBOUND, source="OMS",
+        order_id=order.order_id, source_order_id=order.source_order_id,
+        store_order_id=order.store_order_id,
+        event_id=x_qpmn_event_id, event_status="order_produced",
+        payload={"orderNo": order.order_id, "status": produced_oms_status, "shipments": []},
+        process_status=WebhookProcessStatus.RECEIVED,
+    )
+    session.add(oms_log)
+    session.commit()
+    session.refresh(oms_log)
+    notify_oms.delay(webhook_log_id=oms_log.id, order_id=order.order_id, event_status=produced_oms_status, shipments=None)
+    # OMS only — VFS is not notified of the aggregate "produced" status.
 
 
 @router.post("/order-status", response_model=WebhookResponse)
@@ -211,6 +310,15 @@ async def receive_order_status(
 
     if not can_transition(order.status, new_status):
         if not is_shipped_event and is_item_event_superseded(order.status, new_status):
+            # TI-65: a superseded order_item_produced still represents a real
+            # component finishing — record it and notify OMS "printed" for
+            # this component, even though the order itself already moved on
+            # (via another item). May also complete the order to PRODUCED if
+            # this was the last outstanding item.
+            if effective_status == "order_item_produced":
+                _notify_component_printed(session, order, event.id, x_qpmn_event_id)
+                _record_produced_item_and_maybe_complete(session, order, event.id, x_qpmn_event_id)
+
             response = WebhookResponse(
                 success=True,
                 message=f"Item status recorded; order already at '{order.status.value}', not moved back to '{new_status.value}'",
@@ -251,6 +359,13 @@ async def receive_order_status(
     flag_modified(order, "logs")
     session.add(order)
     session.commit()
+
+    # TI-65: record this (first) produced item too, and complete straight to
+    # PRODUCED if the order only ever had one item — the generic notify block
+    # below already sends the per-component "printed" notification for it,
+    # so we don't call _notify_component_printed here (would double-send).
+    if effective_status == "order_item_produced":
+        _record_produced_item_and_maybe_complete(session, order, event.id, x_qpmn_event_id)
 
     # Persist shipment tracking info for package_shipped events — a real,
     # queryable record instead of leaving it only inside webhook_logs.payload.

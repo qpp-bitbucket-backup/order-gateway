@@ -14,6 +14,7 @@ class OrderStatus(str, Enum):
     PROCESSING = "processing"
     PRINTREADY = "printready"
     PRINTED = "printed"
+    PRODUCED = "produced"
     CANCELLED = "cancelled"
     FAILED = "failed"
     ERRORED = "errored"
@@ -62,8 +63,14 @@ ORDER_STATE_TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
         OrderStatus.FAILED,       # 列印失敗
         OrderStatus.ERRORED       # 列印過程異常
     ],
-    # 已列印：準備出貨， 不能進行取消
+    # 已列印（單一組件完成）：等待其餘組件一併列印完成， 不能進行取消
     OrderStatus.PRINTED: [
+        OrderStatus.PRODUCED,     # 全部訂單項目已完成生產
+        OrderStatus.FAILED,       # 生產過程失敗
+        OrderStatus.ERRORED       # 生產過程異常
+    ],
+    # 已完成生產：全部訂單項目均已列印完成，準備出貨， 不能進行取消
+    OrderStatus.PRODUCED: [
         OrderStatus.SHIPPED,      # 已出貨（終端狀態）
         OrderStatus.FAILED,       # 出貨準備失敗
         OrderStatus.ERRORED       # 出貨過程異常
@@ -140,7 +147,10 @@ def is_item_event_superseded(order_status: OrderStatus, new_status: OrderStatus)
     to the normal invalid-transition handling since those are worth surfacing
     even if another item has moved ahead.
     """
-    if order_status in (OrderStatus.CANCELLED, OrderStatus.SHIPPED, OrderStatus.ERRORED):
+    if order_status in (OrderStatus.PRODUCED, OrderStatus.CANCELLED, OrderStatus.SHIPPED, OrderStatus.ERRORED):
+        # PRODUCED means every item already reported produced (TI-65) — any
+        # order_item_* event arriving after that is a straggler, same as the
+        # other terminal/near-terminal statuses below.
         return new_status in ITEM_EVENT_STATUS_ORDER
     if order_status == OrderStatus.PROCESSING and new_status == OrderStatus.RECEIVED:
         # QPMN's order_item_received webhook always arrives after push_order()
@@ -161,6 +171,7 @@ OMS_STATUS_MAP: Dict[OrderStatus, str] = {
     OrderStatus.VALIDATED: "dataready",
     OrderStatus.PRINTREADY: "printready",
     OrderStatus.PRINTED: "printed",
+    OrderStatus.PRODUCED: "produced",
     OrderStatus.SHIPPED: "shipped",
     OrderStatus.CANCELLED: "cancelled",
     OrderStatus.ERRORED: "error",
@@ -270,6 +281,14 @@ class Order(BaseModel, table=True):
     version: int = Field(default=1, description="Document version (__v)")
     store_id: Optional[str] = Field(None, index=True, description="Store identifier")
     store_order_id: Optional[str] = Field(None, max_length=255, index=True, description="Store order ID for external reference")
+    store_order_item_ids: Optional[List[str]] = Field(
+        None, sa_column=Column(JSON),
+        description="QPMN-assigned ids of every order item pushed for this order (captured from the create-order response), used to detect when all items have been produced",
+    )
+    produced_item_ids: Optional[List[str]] = Field(
+        None, sa_column=Column(JSON),
+        description="QPMN order item ids that have reported order_item_produced so far",
+    )
     type: OrderType = Field(
         default=OrderType.BASE_CARD,
         description="Order type: base card or parallel card",

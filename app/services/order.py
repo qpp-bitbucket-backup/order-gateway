@@ -66,6 +66,7 @@ UPDATABLE_STATUSES = {
 NON_CANCELLABLE_STATUSES = {
     OrderStatus.PRINTREADY,
     OrderStatus.PRINTED,
+    OrderStatus.PRODUCED,
     OrderStatus.SHIPPED,
     OrderStatus.CANCELLED,
 }
