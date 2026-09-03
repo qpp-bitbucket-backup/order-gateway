@@ -39,6 +39,20 @@ def _to_oms_shipment(shipment: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _strip_none_keys(obj: Any) -> Any:
+    """Recursively drop dict keys whose value is None (JSON null).
+
+    Same pruning rule as ``app.api.orders._strip_none``: the items echoed to
+    OMS must not carry null-valued keys (OMS treats them as present-but-empty
+    instead of absent).
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_none_keys(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_none_keys(item) for item in obj]
+    return obj
+
+
 class OMSService:
     """Service for interacting with OMS API to retrieve address information."""
 
@@ -185,7 +199,8 @@ class OMSService:
             "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
             # Echo the order's items (from the order table's order_data) so OMS
             # can correlate the status push with the per-item data it expects.
-            "orderItems": (order.order_data or {}).get("items") or [],
+            # Null-valued keys inside each item are pruned before sending.
+            "orderItems": _strip_none_keys((order.order_data or {}).get("items") or []),
             "shipments": [_to_oms_shipment(s) for s in shipments] if shipments else [],
         }
 
@@ -230,11 +245,10 @@ class OMSService:
         if settings.DEBUG:
             logger.info(
                 "[OMS][DEBUG] API-002 request\nURL: %s/api/order/status\n"
-                "params: %s\npayload: %s\nciphertext: %s",
+                "params: %s\npayload: %s",
                 self.base_url,
                 json.dumps(url_params, ensure_ascii=False),
-                json.dumps(payload, ensure_ascii=False, default=str),
-                body_ciphertext,
+                json.dumps(payload, ensure_ascii=False, default=str)
             )
 
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
