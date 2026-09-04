@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     CELERY_BEAT_SYNC_ENABLED: bool = True
     CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES: int = 5  # Sync products every N minutes
 
+    # Celery Beat - Daily Sales Stats Schedule Configuration
+    CELERY_BEAT_SALES_STATS_ENABLED: bool = True
+    # UTC hour to run the daily sales stats aggregation. The Celery app runs in
+    # UTC, so 17 = 01:00 Asia/Hong_Kong (UTC+8, no DST) — i.e. 1 AM HK time daily.
+    CELERY_BEAT_SALES_STATS_HOUR: int = 17
+
     # QPMN API Configuration
     QPMN_API_URL: str = "https://stage.qpmarketnetwork.com/cgp-rest/api"
     QPMN_API_KEY: str = ""

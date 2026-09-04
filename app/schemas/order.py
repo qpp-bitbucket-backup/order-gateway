@@ -252,6 +252,21 @@ class PlatformOrderDetailsResponse(BaseModel):
     order: Optional[PlatformFullOrder] = Field(None, description="Complete order details")
 
 
+class PlatformOrderRepublishResponse(BaseModel):
+    """Schema for platform order republish response."""
+    success: bool = Field(True, description="Request success status")
+    message: str = Field(..., description="Republish result message")
+    orderId: Optional[str] = Field(None, description="Internal order ID")
+    status: Optional[str] = Field(None, description="Order status after the reset")
+
+
+class PlatformOrderDeleteResponse(BaseModel):
+    """Schema for platform order delete (soft delete) response."""
+    success: bool = Field(True, description="Request success status")
+    message: str = Field(..., description="Deletion result message")
+    orderId: Optional[str] = Field(None, description="Internal order ID of the deleted order")
+
+
 class OrdersListResponse(BaseModel):
     """Schema for orders list response."""
     success: bool = Field(..., description="Request success status")
