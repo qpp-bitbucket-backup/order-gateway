@@ -48,6 +48,10 @@ celery_app.conf.update(
         "tasks.products.sync_products_from_qpmn": {"queue": QUEUE_PRODUCT_SYNCING},
         "tasks.products.sync_skus_from_qpmn": {"queue": QUEUE_PRODUCT_SYNCING},
         "tasks.products.sync_all_stores_products": {"queue": QUEUE_PRODUCT_SYNCING},
+        # Daily sales stats aggregation (beat-triggered, lightweight once-a-day
+        # job) rides the product_syncing queue so it never needs a new consumer
+        # — every deployment running workers already consumes that queue.
+        "tasks.stats.aggregate_daily_sales_stats": {"queue": QUEUE_PRODUCT_SYNCING},
     },
     # Celery Beat schedule for periodic tasks
     beat_schedule={
@@ -56,6 +60,12 @@ celery_app.conf.update(
             "task": "tasks.products.sync_all_stores_products",
             "schedule": crontab(minute=f"*/{settings.CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES}"),
         } if settings.CELERY_BEAT_SYNC_ENABLED else {},
+        # Aggregate daily sales stats per client (yesterday + recompute window).
+        # Celery runs in UTC: hour 17 = 01:00 Asia/Hong_Kong (UTC+8, no DST).
+        "daily-sales-stats": {
+            "task": "tasks.stats.aggregate_daily_sales_stats",
+            "schedule": crontab(hour=settings.CELERY_BEAT_SALES_STATS_HOUR, minute=0),
+        } if settings.CELERY_BEAT_SALES_STATS_ENABLED else {},
     },
 )
 
