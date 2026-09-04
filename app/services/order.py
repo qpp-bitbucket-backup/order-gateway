@@ -786,22 +786,6 @@ class OrderService:
         logger.info("[OrderService] Building legacy API payload for order %s", order_id)
         return self._build_legacy_payload(session, order_id)
 
-    @staticmethod
-    def _split_package_quantities(total_quantity: int, max_package_quantity: int) -> List[int]:
-        """
-        Split a line item's quantity into packaging-sized chunks.
-
-        Example: total_quantity=111, max_package_quantity=50 -> [50, 50, 11].
-        Returns ``[total_quantity]`` unchanged when it's already within limit.
-        """
-        if total_quantity <= max_package_quantity:
-            return [total_quantity]
-        full_packages, remainder = divmod(total_quantity, max_package_quantity)
-        package_quantities = [max_package_quantity] * full_packages
-        if remainder:
-            package_quantities.append(remainder)
-        return package_quantities
-
     def _prepare_order_and_skus(
         self,
         session: Session,
@@ -811,11 +795,6 @@ class OrderService:
         Shared helper: load order, iterate items, inject design file URLs
         into both customize structures (legacy ``designs`` pageContentDesigns
         images and Open API ``designData`` effectImages imageUrls).
-
-        Each item is also split into one or more packaging-sized line item
-        contexts when its quantity exceeds ``sku.max_package_quantity`` (see
-        ``_split_package_quantities``) — the split only affects the payload
-        built for QPMN, not the order's persisted ``order_data``.
 
         Returns:
             (order, line_item_contexts, addresses) where line_item_contexts
@@ -899,24 +878,13 @@ class OrderService:
                         for effect_image in d.get("effectImages", []):
                             effect_image["imageUrl"] = file_url
 
-            # Packaging split: QPMN line items cap out at sku.max_package_quantity
-            # per package, so a single VFS line item whose quantity exceeds that
-            # limit becomes multiple QPMN line items — same design/SKU, just a
-            # smaller quantity each (e.g. 111 @ max 50 -> 50 + 50 + 11). This is
-            # push-payload-only: order.order_data keeps the original, unsplit
-            # item as submitted by VFS.
-            max_package_quantity = sku.max_package_quantity or settings.PACKAGE_MAX_QUANTITY_DEFAULT
-            quantity = item.get("quantity", 1)
-            package_quantities = self._split_package_quantities(quantity, max_package_quantity)
-
-            for package_quantity in package_quantities:
-                contexts.append({
-                    "item": {**item, "quantity": package_quantity},
-                    "sku": sku,
-                    "files": files,
-                    "properties": properties,
-                    "customize_project": customize_project,
-                })
+            contexts.append({
+                "item": item,
+                "sku": sku,
+                "files": files,
+                "properties": properties,
+                "customize_project": customize_project,
+            })
 
         # Query addresses for this order
         delivery_address = session.exec(
