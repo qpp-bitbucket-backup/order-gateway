@@ -225,6 +225,25 @@ def is_file_accessible(url: str) -> bool:
         return False
 
 
+def _validation_failed(validations: List[Dict[str, str]]) -> JSONResponse:
+    """Build a SiteFlow-compatible 400 "Validation Failed" rejection."""
+    error_resp = OrderCreationErrorResponse(
+        error={
+            "ofError": True,
+            "statusCode": 400,
+            "code": 208,
+            "message": "Validation Failed",
+            "validations": validations,
+            "mongoErr": True,
+        }
+    )
+    _log_response("POST /order", error_resp.model_dump())
+    return JSONResponse(
+        status_code=400,
+        content=error_resp.model_dump(),
+    )
+
+
 @router.post("/order/validate", response_model=OrderValidationResponse)
 def validate_order(
     request: OrderValidationRequest,
@@ -482,8 +501,17 @@ def submit_order(
     `IVAN-TEST-0004_1_S10098923` — the order is treated as a parallel card:
     `items` and `shipments` in the payload are not validated. Parallel card
     payloads still carry items — the schema-level requirement (at least one
-    item) is unchanged. The base card lookup is not store-scoped (base and
-    parallel card may belong to different stores).
+    item) is unchanged. The base card lookup is store-scoped, so a parallel
+    card must reference a base card order from the same store. If the id
+    matches the parallel-card format but no base card order exists, the
+    request is rejected with HTTP **400** (SiteFlow-compatible validation
+    error).
+
+    **Parallel card version chain:** Submitting version N (N >= 2) requires
+    the previous version (same base card, same shipping number, e.g.
+    `base-1_Sxxxx` when submitting `base-2_Sxxxx`) to already exist and be
+    cancelled. A missing previous version is rejected ("was not submitted"),
+    and an active previous version is rejected ("still being processed").
     """
     _log_request("POST /order", request.model_dump())
     try:
@@ -520,14 +548,16 @@ def submit_order(
         # "CN-TEST20260811-1_S1055552" or "IVAN-TEST-0004_1_S10098923"). When the
         # base-card part matches an existing order in the same store,
         # items/shipments validation is skipped entirely — the payload itself
-        # still carries items (schema-level requirement).
+        # still carries items (schema-level requirement). A sourceOrderId that
+        # follows the pattern but has no matching base card order is rejected.
+        parallel_card_parts = parse_parallel_card_id(request.orderData.sourceOrderId)
         parallel_parent = order_service.find_parallel_card_parent(
             session,
             source_order_id=request.orderData.sourceOrderId,
             store_id=store_id,
         )
         if parallel_parent:
-            _, version, shipping_no = parse_parallel_card_id(request.orderData.sourceOrderId)
+            base_source_order_id, version, shipping_no = parallel_card_parts
             logger.info(
                 "[submit_order] Parallel card order detected: sourceOrderId '%s' "
                 "matches base card order %s ('%s', version %s, shipping %s) — skipping items/shipments validation",
@@ -537,6 +567,75 @@ def submit_order(
                 version,
                 shipping_no,
             )
+            # Version chain rule: submitting version N (N >= 2) requires the
+            # previous version of the same base card AND shipping number to
+            # already exist and be cancelled. Otherwise the submission is
+            # rejected — a missing predecessor will never be cancelled, and a
+            # still-active predecessor is exactly the double-production this
+            # check exists to prevent.
+            if int(version) >= 2:
+                prev_version = int(version) - 1
+                # The version separator may be "-" or "_" — accept either form.
+                prev_ids = {
+                    f"{base_source_order_id}-{prev_version}_S{shipping_no}",
+                    f"{base_source_order_id}_{prev_version}_S{shipping_no}",
+                }
+                prev_query = select(Order).where(
+                    Order.source_order_id.in_(prev_ids),
+                    Order.is_active.is_(True),
+                )
+                if store_id:
+                    prev_query = prev_query.where(Order.store_id == store_id)
+                prev = session.exec(prev_query).first()
+                if not prev:
+                    logger.warning(
+                        "[submit_order] Parallel card '%s' rejected: previous version %s not submitted",
+                        request.orderData.sourceOrderId, prev_version,
+                    )
+                    return _validation_failed([
+                        {
+                            "path": "orderData.sourceOrderId",
+                            "message": (
+                                f"Previous version of this parallel card order was not submitted: "
+                                f"no active order found for version {prev_version} of base card "
+                                f"'{base_source_order_id}' with shipping number '{shipping_no}'"
+                            ),
+                        }
+                    ])
+                if prev.status != OrderStatus.CANCELLED:
+                    logger.warning(
+                        "[submit_order] Parallel card '%s' rejected: previous version '%s' still active (status=%s)",
+                        request.orderData.sourceOrderId, prev.source_order_id, prev.status.value,
+                    )
+                    return _validation_failed([
+                        {
+                            "path": "orderData.sourceOrderId",
+                            "message": (
+                                f"Previous version of this parallel card order is still being processed "
+                                f"('{prev.source_order_id}', status '{prev.status.value}'); "
+                                f"cancel it before submitting version {version}"
+                            ),
+                        }
+                    ])
+        elif parallel_card_parts:
+            # The id looks like a parallel card but its base card does not exist
+            # (in this store) — reject instead of creating an orphan that could
+            # never resolve its parent for barcode/address inheritance.
+            base_source_order_id, version, shipping_no = parallel_card_parts
+            logger.warning(
+                "[submit_order] Parallel card id '%s' has no base card order '%s' — rejecting",
+                request.orderData.sourceOrderId,
+                base_source_order_id,
+            )
+            return _validation_failed([
+                {
+                    "path": "orderData.sourceOrderId",
+                    "message": (
+                        f"Parallel card order references unknown base card order "
+                        f"'{base_source_order_id}' (version {version}, shipping {shipping_no})"
+                    ),
+                }
+            ])
 
         # File accessibility check (same rule as POST /order/validate): every
         # component with fetch=true must point at a reachable URL, otherwise
@@ -553,21 +652,7 @@ def submit_order(
                 if component.fetch and component.path and not is_file_accessible(component.path)
             ]
             if file_errors:
-                error_resp = OrderCreationErrorResponse(
-                    error={
-                        "ofError": True,
-                        "statusCode": 400,
-                        "code": 208,
-                        "message": "Validation Failed",
-                        "validations": file_errors,
-                        "mongoErr": True,
-                    }
-                )
-                _log_response("POST /order", error_resp.model_dump())
-                return JSONResponse(
-                    status_code=400,
-                    content=error_resp.model_dump(),
-                )
+                return _validation_failed(file_errors)
 
         # Create order via service
         order = order_service.create_order(
