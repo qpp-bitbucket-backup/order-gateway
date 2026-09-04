@@ -39,6 +39,20 @@ def _to_oms_shipment(shipment: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _strip_none_keys(obj: Any) -> Any:
+    """Recursively drop dict keys whose value is None (JSON null).
+
+    Same pruning rule as ``app.api.orders._strip_none``: the items echoed to
+    OMS must not carry null-valued keys (OMS treats them as present-but-empty
+    instead of absent).
+    """
+    if isinstance(obj, dict):
+        return {k: _strip_none_keys(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_none_keys(item) for item in obj]
+    return obj
+
+
 class OMSService:
     """Service for interacting with OMS API to retrieve address information."""
 
@@ -163,7 +177,8 @@ class OMSService:
         OMS endpoint and decrypts the response.
 
         Args:
-            order: The order model instance (uses ``order.order_id`` as orderNo).
+            order: The order model instance (uses ``order.order_id`` as orderNo;
+                ``order.order_data["items"]`` is echoed as ``orderItems``).
             event_status: External status code (e.g. ``printed``, ``shipped``).
             status_desc: Human-readable status description (defaults to event_status).
             shipments: Optional list of shipment dicts (trackingNumber/carrierName/shipDate).
@@ -182,6 +197,10 @@ class OMSService:
             "status": event_status,
             "statusDesc": status_desc or event_status,
             "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+            # Echo the order's items (from the order table's order_data) so OMS
+            # can correlate the status push with the per-item data it expects.
+            # Null-valued keys inside each item are pruned before sending.
+            "orderItems": _strip_none_keys((order.order_data or {}).get("items") or []),
             "shipments": [_to_oms_shipment(s) for s in shipments] if shipments else [],
         }
 
@@ -221,12 +240,31 @@ class OMSService:
 
         request_headers = {"Content-Type": "text/plain", **url_params}
 
+        # DEBUG: dump the full request (URL, signed params, plaintext business
+        # payload and the AES ciphertext actually sent) before the call.
+        if settings.DEBUG:
+            logger.info(
+                "[OMS][DEBUG] API-002 request\nURL: %s/api/order/status\n"
+                "params: %s\npayload: %s",
+                self.base_url,
+                json.dumps(url_params, ensure_ascii=False),
+                json.dumps(payload, ensure_ascii=False, default=str)
+            )
+
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = client.post(
                 f"{self.base_url}/api/order/status",
                 params=url_params,
                 content=body_ciphertext,
                 headers={"Content-Type": "text/plain"},
+            )
+
+        # DEBUG: dump the raw response alongside the request above.
+        if settings.DEBUG:
+            logger.info(
+                "[OMS][DEBUG] API-002 response\nstatus_code: %s\nbody: %s",
+                response.status_code,
+                response.text,
             )
 
         # 4xx — business error, do not retry.

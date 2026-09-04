@@ -66,8 +66,26 @@ UPDATABLE_STATUSES = {
 NON_CANCELLABLE_STATUSES = {
     OrderStatus.PRINTREADY,
     OrderStatus.PRINTED,
+    OrderStatus.PRODUCED,
     OrderStatus.SHIPPED,
     OrderStatus.CANCELLED,
+}
+
+# Statuses that allow deletion via the platform API (soft delete): the order
+# died in a terminal state without ever being accepted by QPMN, so it is safe
+# to hide from queries and free its source_order_id for re-submission.
+DELETABLE_STATUSES = {
+    OrderStatus.FAILED,
+    OrderStatus.CANCELLED,
+}
+
+# Statuses that allow a republish via the platform API: the order is either
+# freshly received or has died with a retryable failure, so re-running the
+# pipeline from the start is safe. Anything else is already in flight or in
+# a state that requires a different remedy (cancel / manual fix first).
+REPUBLISHABLE_STATUSES = {
+    OrderStatus.RECEIVED,
+    OrderStatus.FAILED,
 }
 
 
@@ -133,7 +151,9 @@ class OrderService:
         Returns:
             A tuple of (orders, total_count, total_pages).
         """
-        query = select(Order)
+        # Soft-deleted orders (is_active=false, platform delete API) are
+        # hidden from all listings.
+        query = select(Order).where(Order.is_active.is_(True))
         if store_id:
             query = query.where(Order.store_id == store_id)
         if statuses:
@@ -166,10 +186,14 @@ class OrderService:
         """
         Retrieve a single order by its internal order_id.
 
-        Returns the Order if found (and optionally scoped to *store_id*),
-        otherwise ``None``.
+        Soft-deleted orders (``is_active=false``) are treated as gone and
+        never returned. Returns the Order if found (and optionally scoped
+        to *store_id*), otherwise ``None``.
         """
-        query = select(Order).where(Order.order_id == order_id)
+        query = select(Order).where(
+            Order.order_id == order_id,
+            Order.is_active.is_(True),
+        )
         if store_id:
             query = query.where(Order.store_id == store_id)
         return session.exec(query).first()
@@ -191,13 +215,17 @@ class OrderService:
         Orders in ``CANCELLED`` or ``ERRORED`` status are excluded — those
         statuses free up the ``source_order_id`` for reuse (e.g. the
         artwork-update flow cancels an order and immediately re-creates one
-        with the same ``source_order_id``).
+        with the same ``source_order_id``). Soft-deleted orders
+        (``is_active=false``) are excluded for the same reason: once deleted
+        through the platform API the ``source_order_id`` is released for
+        re-submission.
 
         Returns the existing Order if found, otherwise ``None``.
         """
         query = select(Order).where(
             Order.source_order_id == source_order_id,
             Order.status.not_in([OrderStatus.CANCELLED, OrderStatus.ERRORED]),
+            Order.is_active.is_(True),
         )
         if store_id:
             query = query.where(Order.store_id == store_id)
@@ -758,22 +786,6 @@ class OrderService:
         logger.info("[OrderService] Building legacy API payload for order %s", order_id)
         return self._build_legacy_payload(session, order_id)
 
-    @staticmethod
-    def _split_package_quantities(total_quantity: int, max_package_quantity: int) -> List[int]:
-        """
-        Split a line item's quantity into packaging-sized chunks.
-
-        Example: total_quantity=111, max_package_quantity=50 -> [50, 50, 11].
-        Returns ``[total_quantity]`` unchanged when it's already within limit.
-        """
-        if total_quantity <= max_package_quantity:
-            return [total_quantity]
-        full_packages, remainder = divmod(total_quantity, max_package_quantity)
-        package_quantities = [max_package_quantity] * full_packages
-        if remainder:
-            package_quantities.append(remainder)
-        return package_quantities
-
     def _prepare_order_and_skus(
         self,
         session: Session,
@@ -783,11 +795,6 @@ class OrderService:
         Shared helper: load order, iterate items, inject design file URLs
         into both customize structures (legacy ``designs`` pageContentDesigns
         images and Open API ``designData`` effectImages imageUrls).
-
-        Each item is also split into one or more packaging-sized line item
-        contexts when its quantity exceeds ``sku.max_package_quantity`` (see
-        ``_split_package_quantities``) — the split only affects the payload
-        built for QPMN, not the order's persisted ``order_data``.
 
         Returns:
             (order, line_item_contexts, addresses) where line_item_contexts
@@ -871,24 +878,13 @@ class OrderService:
                         for effect_image in d.get("effectImages", []):
                             effect_image["imageUrl"] = file_url
 
-            # Packaging split: QPMN line items cap out at sku.max_package_quantity
-            # per package, so a single VFS line item whose quantity exceeds that
-            # limit becomes multiple QPMN line items — same design/SKU, just a
-            # smaller quantity each (e.g. 111 @ max 50 -> 50 + 50 + 11). This is
-            # push-payload-only: order.order_data keeps the original, unsplit
-            # item as submitted by VFS.
-            max_package_quantity = sku.max_package_quantity or settings.PACKAGE_MAX_QUANTITY_DEFAULT
-            quantity = item.get("quantity", 1)
-            package_quantities = self._split_package_quantities(quantity, max_package_quantity)
-
-            for package_quantity in package_quantities:
-                contexts.append({
-                    "item": {**item, "quantity": package_quantity},
-                    "sku": sku,
-                    "files": files,
-                    "properties": properties,
-                    "customize_project": customize_project,
-                })
+            contexts.append({
+                "item": item,
+                "sku": sku,
+                "files": files,
+                "properties": properties,
+                "customize_project": customize_project,
+            })
 
         # Query addresses for this order
         delivery_address = session.exec(
@@ -1223,6 +1219,60 @@ class OrderService:
             logger.warning("[OrderService] Failed to fetch shipping method for store_id=%s: %s, falling back to 'Standard'", store_id, e)
             _capture_shipping_alert("FETCH_FAILED", store_id=store_id, exc=e)
             return "Standard"
+
+    def verify_store_credentials(self, store_id: str, store_key: str) -> Tuple[bool, str]:
+        """
+        Verify a store_id + store_key pair against the QPMN CGP API.
+
+        Issues the same request fetch_currency_from_qpmn makes
+        (GET /partner/stores/{store_id} with Basic store_key auth) but takes
+        the key from the caller — during client creation the pair is not in
+        the DB yet. Unlike the currency fetch, a failure here is an expected
+        user error (unknown store or bad authorization), so NO Sentry alert
+        is captured (_capture_currency_alert stays untouched); the outcome
+        is simply reported back to the caller.
+
+        Returns:
+            (True, "") when the store exists and the key authorizes,
+            otherwise (False, human-readable reason).
+        """
+        api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.get(api_url, headers=headers)
+        except Exception as e:
+            logger.warning(
+                "[OrderService] Store verification request failed for store_id=%s: %s",
+                store_id, e,
+            )
+            return False, f"QPMN request failed: {e}"
+
+        if response.status_code in (401, 403):
+            return False, f"authorization rejected (HTTP {response.status_code})"
+        if response.status_code == 404:
+            return False, "store not found (HTTP 404)"
+        if response.status_code >= 400:
+            return False, f"unexpected HTTP {response.status_code}"
+
+        body = response.json() if response.content else {}
+        if not isinstance(body, dict):
+            body = {}
+        # QPMN can reject a request with HTTP 200 + success=false (error
+        # details in data.message — same convention as qpmn_webhook.py), so an
+        # invalid store_key must not pass verification in that case either.
+        if not body.get("success", True):
+            error = body.get("data") if isinstance(body.get("data"), dict) else {}
+            reason = error.get("message") or "request rejected by QPMN"
+            return False, f"QPMN rejected the request: {reason}"
+
+        data = body.get("data")
+        if not isinstance(data, dict) or not data:
+            return False, "store details missing in QPMN response"
+        return True, ""
 
     def fetch_currency_from_qpmn(self, store_id: str) -> str:
         """

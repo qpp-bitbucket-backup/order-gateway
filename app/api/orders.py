@@ -34,14 +34,17 @@ from app.schemas.order import (
     PlatformFullOrder,
     MaskedAddress,
     SiteFlowErrorResponse,
+    PlatformOrderRepublishResponse,
+    PlatformOrderDeleteResponse,
 )
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
-from app.core.auth_jwt import get_current_user, resolve_scoped_store_id
+from app.core.auth_jwt import get_current_user, resolve_scoped_store_id, require_editor_or_above
 from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection
-from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, parse_parallel_card_id
+from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, DELETABLE_STATUSES, REPUBLISHABLE_STATUSES, parse_parallel_card_id
 from app.services.oss import oss_service
+from app.tasks.orders import publish_order
 
 router = APIRouter(
     prefix="/api",
@@ -78,6 +81,7 @@ _EXTERNAL_STATUS_MAP: dict = {
     OrderStatus.PROCESSING: "dataready",
     OrderStatus.PRINTREADY: "printready",
     OrderStatus.PRINTED: "printed",
+    OrderStatus.PRODUCED: "produced",
     OrderStatus.SHIPPED: "shipped",
     OrderStatus.ERRORED: "error",
     OrderStatus.CANCELLED: "cancelled",
@@ -465,6 +469,12 @@ def submit_order(
     exists for this store, the API returns HTTP **400** with a SiteFlow-compatible
     error response.
 
+    **File accessibility:** Every item component with `fetch=true` must point
+    to a reachable URL (lightweight HEAD/streamed-GET probe, same rule as
+    POST /order/validate). Unreachable files yield HTTP **400** with a
+    SiteFlow-compatible validation error listing the offending component
+    paths. Skipped for parallel card orders.
+
     **Parallel card orders:** When `sourceOrderId` follows the format
     `aaaaaaa[-_]b_Sccccc` — `aaaaaaa` being the `sourceOrderId` of an existing
     base card order, `b` a version number (separated by `-` or `_`) and
@@ -527,6 +537,37 @@ def submit_order(
                 version,
                 shipping_no,
             )
+
+        # File accessibility check (same rule as POST /order/validate): every
+        # component with fetch=true must point at a reachable URL, otherwise
+        # the downstream design-file download would fail. Parallel card
+        # orders keep their documented items/shipments validation skip.
+        if not parallel_parent:
+            file_errors = [
+                {
+                    "path": f"orderData.items.{idx}.components.{cidx}.path",
+                    "message": f"File not accessible: {component.path}",
+                }
+                for idx, item in enumerate(request.orderData.items)
+                for cidx, component in enumerate(item.components or [])
+                if component.fetch and component.path and not is_file_accessible(component.path)
+            ]
+            if file_errors:
+                error_resp = OrderCreationErrorResponse(
+                    error={
+                        "ofError": True,
+                        "statusCode": 400,
+                        "code": 208,
+                        "message": "Validation Failed",
+                        "validations": file_errors,
+                        "mongoErr": True,
+                    }
+                )
+                _log_response("POST /order", error_resp.model_dump())
+                return JSONResponse(
+                    status_code=400,
+                    content=error_resp.model_dump(),
+                )
 
         # Create order via service
         order = order_service.create_order(
@@ -1350,4 +1391,218 @@ def platform_get_order(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve order: {str(e)}",
+        )
+
+
+@jwt_router.post("/orders/{order_id}/republish", response_model=PlatformOrderRepublishResponse)
+def platform_republish_order(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_editor_or_above),
+):
+    """
+    Republish Order (JWT) - Reset an order and re-enqueue it for publishing.
+
+    Requires JWT Bearer token with editor or admin role. EDITOR users can
+    only republish orders belonging to their own store; ADMIN is unrestricted.
+
+    An order may only be republished when:
+    - its status is ``received`` or ``failed``, and
+    - it has no ``storeOrderId`` yet (never successfully accepted by QPMN), and
+    - no other order in the same store shares its ``sourceOrderId`` (would
+      otherwise create a duplicate push on the QPMN side).
+
+    When both conditions hold, the order status is reset to ``received`` and
+    a new publish task is enqueued to the ``order_publishing`` queue, which
+    re-runs the whole pipeline (received -> pending -> validated -> ...).
+    """
+    # Outside the try block so the 403 for out-of-scope stores is not
+    # swallowed into a 500 by the generic exception handler below.
+    scoped_store_id = resolve_scoped_store_id(current_user)
+    try:
+        order = order_service.get_order_by_id(session, order_id, store_id=scoped_store_id)
+        if not order:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Order with ID '{order_id}' not found",
+            )
+
+        # Condition 1: only received/failed orders may be republished —
+        # anything else is already in flight or needs a different remedy.
+        if order.status not in REPUBLISHABLE_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Order with ID '{order_id}' has status '{order.status.value}' and "
+                    "cannot be republished; only received or failed orders can be republished"
+                ),
+            )
+
+        # Condition 2: only orders that were never accepted by QPMN (no
+        # store_order_id assigned yet) may be republished.
+        if order.store_order_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Order with ID '{order_id}' has already been accepted by QPMN "
+                    f"(storeOrderId='{order.store_order_id}') and cannot be republished"
+                ),
+            )
+
+        # Condition 3: no other order in the same store may share this
+        # source_order_id. SQL ``NULL = NULL`` never matches, so orders
+        # without a store are compared through ``IS NULL`` instead.
+        # Soft-deleted orders (is_active=false) no longer occupy their
+        # source_order_id (mirrors check_duplicate) and are ignored here.
+        duplicate_query = select(Order).where(
+            Order.source_order_id == order.source_order_id,
+            Order.order_id != order.order_id,
+            Order.is_active.is_(True),
+        )
+        if order.store_id:
+            duplicate_query = duplicate_query.where(Order.store_id == order.store_id)
+        else:
+            duplicate_query = duplicate_query.where(Order.store_id.is_(None))  # type: ignore[union-attr]
+        duplicate = session.exec(duplicate_query).first()
+        if duplicate:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Another order with sourceOrderId '{order.source_order_id}' already "
+                    f"exists in the same store (order_id='{duplicate.order_id}'); "
+                    "republish is not allowed"
+                ),
+            )
+
+        # Reset the status back to received; publish_order() validates the
+        # received -> pending transition itself before re-running.
+        order.status = OrderStatus.RECEIVED
+        order.logs = (order.logs or []) + [
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "action": "order_republish_requested",
+                "message": (
+                    f"Republish requested via platform API by user "
+                    f"'{current_user.username}'; status reset to received"
+                ),
+                "worker": "platform_api",
+            },
+        ]
+        session.add(order)
+        session.commit()
+        session.refresh(order)
+
+        # Enqueue the publish task with the same payload shape as create_order()
+        task_payload = {
+            "order_id": order.order_id,
+            "source_order_id": order.source_order_id,
+            "status": order.status.value,
+            "created_at": order.created_at.isoformat() if order.created_at else None,
+        }
+        publish_order.apply_async(args=[task_payload])
+
+        return PlatformOrderRepublishResponse(
+            success=True,
+            message=f"Order '{order_id}' reset to received and queued for publishing",
+            orderId=order.order_id,
+            status=order.status.value,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[API] Republish order failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to republish order: {str(e)}",
+        )
+
+
+@jwt_router.delete("/orders/{order_id}", response_model=PlatformOrderDeleteResponse)
+def platform_delete_order(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_editor_or_above),
+):
+    """
+    Delete Order (JWT) - Soft-delete an order that was never accepted by QPMN.
+
+    Requires JWT Bearer token with editor or admin role. EDITOR users can
+    only delete orders belonging to their own store; ADMIN is unrestricted.
+
+    An order may only be deleted when:
+    - it has no ``storeOrderId`` yet (never successfully accepted by QPMN), and
+    - its status is ``failed`` or ``cancelled``.
+
+    Deletion is soft: ``is_active`` is set to ``false``, which hides the order
+    from queries and frees its ``sourceOrderId`` for re-submission, while the
+    row itself is kept for auditing together with an ``order_deleted`` log
+    entry recording who deleted it.
+    """
+    # Outside the try block so the 403 for out-of-scope stores is not
+    # swallowed into a 500 by the generic exception handler below.
+    scoped_store_id = resolve_scoped_store_id(current_user)
+    try:
+        order = order_service.get_order_by_id(session, order_id, store_id=scoped_store_id)
+        if not order:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Order with ID '{order_id}' not found",
+            )
+
+        # Condition 1: only orders that were never accepted by QPMN (no
+        # store_order_id assigned yet) may be deleted.
+        if order.store_order_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Order with ID '{order_id}' has already been accepted by QPMN "
+                    f"(storeOrderId='{order.store_order_id}') and cannot be deleted"
+                ),
+            )
+
+        # Condition 2: only terminal failed/cancelled orders may be deleted;
+        # anything else is either still in flight or already beyond recall.
+        if order.status not in DELETABLE_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Order with ID '{order_id}' has status '{order.status.value}' and "
+                    "cannot be deleted; only failed or cancelled orders without a "
+                    "storeOrderId can be deleted"
+                ),
+            )
+
+        # Soft delete: keep the row (auditing) but hide it from queries and
+        # release its source_order_id for re-submission.
+        order.is_active = False
+        order.logs = (order.logs or []) + [
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "action": "order_deleted",
+                "message": (
+                    f"Soft-deleted via platform API by user "
+                    f"'{current_user.username}'; is_active set to false"
+                ),
+                "worker": "platform_api",
+            },
+        ]
+        session.add(order)
+        session.commit()
+
+        return PlatformOrderDeleteResponse(
+            success=True,
+            message=f"Order '{order_id}' deleted",
+            orderId=order.order_id,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"[API] Delete order failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete order: {str(e)}",
         )
