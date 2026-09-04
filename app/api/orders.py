@@ -469,6 +469,12 @@ def submit_order(
     exists for this store, the API returns HTTP **400** with a SiteFlow-compatible
     error response.
 
+    **File accessibility:** Every item component with `fetch=true` must point
+    to a reachable URL (lightweight HEAD/streamed-GET probe, same rule as
+    POST /order/validate). Unreachable files yield HTTP **400** with a
+    SiteFlow-compatible validation error listing the offending component
+    paths. Skipped for parallel card orders.
+
     **Parallel card orders:** When `sourceOrderId` follows the format
     `aaaaaaa[-_]b_Sccccc` — `aaaaaaa` being the `sourceOrderId` of an existing
     base card order, `b` a version number (separated by `-` or `_`) and
@@ -531,6 +537,37 @@ def submit_order(
                 version,
                 shipping_no,
             )
+
+        # File accessibility check (same rule as POST /order/validate): every
+        # component with fetch=true must point at a reachable URL, otherwise
+        # the downstream design-file download would fail. Parallel card
+        # orders keep their documented items/shipments validation skip.
+        if not parallel_parent:
+            file_errors = [
+                {
+                    "path": f"orderData.items.{idx}.components.{cidx}.path",
+                    "message": f"File not accessible: {component.path}",
+                }
+                for idx, item in enumerate(request.orderData.items)
+                for cidx, component in enumerate(item.components or [])
+                if component.fetch and component.path and not is_file_accessible(component.path)
+            ]
+            if file_errors:
+                error_resp = OrderCreationErrorResponse(
+                    error={
+                        "ofError": True,
+                        "statusCode": 400,
+                        "code": 208,
+                        "message": "Validation Failed",
+                        "validations": file_errors,
+                        "mongoErr": True,
+                    }
+                )
+                _log_response("POST /order", error_resp.model_dump())
+                return JSONResponse(
+                    status_code=400,
+                    content=error_resp.model_dump(),
+                )
 
         # Create order via service
         order = order_service.create_order(
