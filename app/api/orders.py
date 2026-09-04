@@ -482,10 +482,11 @@ def submit_order(
     `IVAN-TEST-0004_1_S10098923` — the order is treated as a parallel card:
     `items` and `shipments` in the payload are not validated. Parallel card
     payloads still carry items — the schema-level requirement (at least one
-    item) is unchanged. The base card lookup is not store-scoped (base and
-    parallel card may belong to different stores). If the id matches the
-    parallel-card format but no base card order exists, the request is
-    rejected with HTTP **400** (SiteFlow-compatible validation error).
+    item) is unchanged. The base card lookup is store-scoped, so a parallel
+    card must reference a base card order from the same store. If the id
+    matches the parallel-card format but no base card order exists, the
+    request is rejected with HTTP **400** (SiteFlow-compatible validation
+    error).
     """
     _log_request("POST /order", request.model_dump())
     try:
