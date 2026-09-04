@@ -483,7 +483,9 @@ def submit_order(
     `items` and `shipments` in the payload are not validated. Parallel card
     payloads still carry items — the schema-level requirement (at least one
     item) is unchanged. The base card lookup is not store-scoped (base and
-    parallel card may belong to different stores).
+    parallel card may belong to different stores). If the id matches the
+    parallel-card format but no base card order exists, the request is
+    rejected with HTTP **400** (SiteFlow-compatible validation error).
     """
     _log_request("POST /order", request.model_dump())
     try:
@@ -520,14 +522,16 @@ def submit_order(
         # "CN-TEST20260811-1_S1055552" or "IVAN-TEST-0004_1_S10098923"). When the
         # base-card part matches an existing order in the same store,
         # items/shipments validation is skipped entirely — the payload itself
-        # still carries items (schema-level requirement).
+        # still carries items (schema-level requirement). A sourceOrderId that
+        # follows the pattern but has no matching base card order is rejected.
+        parallel_card_parts = parse_parallel_card_id(request.orderData.sourceOrderId)
         parallel_parent = order_service.find_parallel_card_parent(
             session,
             source_order_id=request.orderData.sourceOrderId,
             store_id=store_id,
         )
         if parallel_parent:
-            _, version, shipping_no = parse_parallel_card_id(request.orderData.sourceOrderId)
+            _, version, shipping_no = parallel_card_parts
             logger.info(
                 "[submit_order] Parallel card order detected: sourceOrderId '%s' "
                 "matches base card order %s ('%s', version %s, shipping %s) — skipping items/shipments validation",
@@ -536,6 +540,39 @@ def submit_order(
                 parallel_parent.source_order_id,
                 version,
                 shipping_no,
+            )
+        elif parallel_card_parts:
+            # The id looks like a parallel card but its base card does not exist
+            # (in this store) — reject instead of creating an orphan that could
+            # never resolve its parent for barcode/address inheritance.
+            base_source_order_id, version, shipping_no = parallel_card_parts
+            logger.warning(
+                "[submit_order] Parallel card id '%s' has no base card order '%s' — rejecting",
+                request.orderData.sourceOrderId,
+                base_source_order_id,
+            )
+            error_resp = OrderCreationErrorResponse(
+                error={
+                    "ofError": True,
+                    "statusCode": 400,
+                    "code": 208,
+                    "message": "Validation Failed",
+                    "validations": [
+                        {
+                            "path": "orderData.sourceOrderId",
+                            "message": (
+                                f"Parallel card order references unknown base card order "
+                                f"'{base_source_order_id}' (version {version}, shipping {shipping_no})"
+                            ),
+                        }
+                    ],
+                    "mongoErr": True,
+                }
+            )
+            _log_response("POST /order", error_resp.model_dump())
+            return JSONResponse(
+                status_code=400,
+                content=error_resp.model_dump(),
             )
 
         # File accessibility check (same rule as POST /order/validate): every
