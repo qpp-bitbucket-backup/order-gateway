@@ -38,6 +38,7 @@ alembic/versions/__pycache__/
 
 # 測試覆蓋率
 .coverage
+coverage.xml
 htmlcov/
 .pytest_cache/
 

@@ -6,7 +6,7 @@ Validates requests using signed headers:
 - x-oneflow-date: ISO 8601 timestamp used in signing
 - x-oneflow-algorithm: SHA256
 """
-from datetime import datetime,timezone, timezone
+from datetime import datetime, timezone
 from typing import Optional
 import hashlib
 import hmac
@@ -128,7 +128,7 @@ def _get_client_secret(session: Session, token: str) -> Optional[str]:
     return None
 
 
-async def verify_oneflow_auth(
+def verify_oneflow_auth(
     request: Request,
     session: Session = Depends(get_session),
     x_oneflow_authorization: Optional[str] = Security(oneflow_authorization_header),
@@ -215,7 +215,7 @@ async def verify_oneflow_auth(
     return token
 
 
-async def get_client_store_id(
+def get_client_store_id(
     request: Request,
     session: Session = Depends(get_session),
     x_oneflow_authorization: Optional[str] = Security(oneflow_authorization_header),
@@ -227,7 +227,7 @@ async def get_client_store_id(
     Returns None if using bootstrap credentials.
     """
     # First verify the authentication
-    token = await verify_oneflow_auth(
+    token = verify_oneflow_auth(
         request=request,
         session=session,
         x_oneflow_authorization=x_oneflow_authorization,

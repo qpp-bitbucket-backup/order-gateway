@@ -39,9 +39,14 @@ class TestOrderStatus:
         """Test PENDING -> VALIDATED transition is allowed."""
         assert can_transition(OrderStatus.PENDING, OrderStatus.VALIDATED) is True
 
-    def test_can_transition_validated_to_printready(self):
-        """Test VALIDATED -> PRINTREADY transition is allowed."""
-        assert can_transition(OrderStatus.VALIDATED, OrderStatus.PRINTREADY) is True
+    def test_can_transition_validated_to_processing(self):
+        """Test VALIDATED -> PROCESSING transition is allowed.
+
+        Since the PROCESSING state was introduced, VALIDATED no longer jumps
+        straight to PRINTREADY — it must pass through PROCESSING first.
+        """
+        assert can_transition(OrderStatus.VALIDATED, OrderStatus.PROCESSING) is True
+        assert can_transition(OrderStatus.VALIDATED, OrderStatus.PRINTREADY) is False
 
     def test_can_transition_printready_to_printed(self):
         """Test PRINTREADY -> PRINTED transition is allowed."""
@@ -110,7 +115,7 @@ class TestOrderModel:
         assert order.source_account == "test_account"
         assert order.source_order_id == "src-order-001"
         assert order.status == OrderStatus.PENDING  # default status
-        assert order.version == 0
+        assert order.version == 1  # default version (migration f6a7b8c9d0e1)
 
     def test_order_creation_full(self):
         """Test creating an order with all fields."""

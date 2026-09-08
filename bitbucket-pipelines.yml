@@ -1,12 +1,23 @@
+image: python:3.11
+
 definitions:
   steps:
     - step: &build-step
-        name: SonarQube analysis
+        name: Unit tests & SonarQube analysis
+        caches:
+          - pip
+          - sonar
         script:
+          # Runtime + test dependencies (same base image as the Dockerfile)
+          - pip install -r requirements.txt -r requirements-dev.txt
+          # Unit tests with coverage — coverage.xml feeds the SonarQube scan
+          - pytest tests/ --cov=app --cov-report=xml:coverage.xml --cov-report=term
+          # SonarQube scan; fails the pipeline when the quality gate fails
           - pipe: sonarsource/sonarqube-scan:3.0.2
             variables:
               SONAR_HOST_URL: ${SONAR_HOST_URL}
               SONAR_TOKEN: ${SONAR_TOKEN}
+              EXTRA_ARGS: '-Dsonar.qualitygate.wait=true'
 
   caches:
     sonar: ~/.sonar
