@@ -4,7 +4,7 @@ definitions:
   steps:
     - step: &build-step
         name: Unit tests & SonarQube analysis
-        size: 4x  # 或 4x 根據需要
+        size: 2x  # 或 4x 根據需要
         caches:
           - pip
           - sonar
