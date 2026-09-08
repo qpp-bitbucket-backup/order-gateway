@@ -23,18 +23,6 @@ definitions:
               SONAR_TOKEN: ${SONAR_TOKEN}
               SONAR_SCANNER_OPTS: '-Xmx2g'
               EXTRA_ARGS: '-Dsonar.qualitygate.wait=true'
-        after-script:
-          # When the scan fails, surface the server-side CE task error details
-          # (CE task FAILED gives no reason in the pipeline log on its own).
-          - |
-            if [ "$BITBUCKET_EXIT_CODE" -ne 0 ]; then
-              echo "=== Fetching SonarQube CE task error details ==="
-              LAST=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/ce/component?component=qpmn-topps-order-gateway")
-              TASK_ID=$(echo "${LAST}" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-              echo "Last CE task id: ${TASK_ID}"
-              curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/ce/task?id=${TASK_ID}&additionalFields=error_message,stacktrace"
-              echo
-            fi
 
   caches:
     sonar: ~/.sonar
