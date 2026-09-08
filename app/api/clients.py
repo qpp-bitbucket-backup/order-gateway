@@ -207,7 +207,7 @@ def deactivate_client(
         )
 
     client.is_active = False
-    client.updated_at = datetime.utcnow()
+    client.updated_at = datetime.now(timezone.utc)
     session.add(client)
     session.commit()
     session.refresh(client)
@@ -574,7 +574,7 @@ def platform_update_client(
         new_secret = _generate_secret()
         client.secret = new_secret
 
-    client.updated_at = datetime.utcnow()
+    client.updated_at = datetime.now(timezone.utc)
     session.add(client)
     session.commit()
     session.refresh(client)
@@ -603,7 +603,7 @@ def platform_deactivate_client(
         )
 
     client.is_active = False
-    client.updated_at = datetime.utcnow()
+    client.updated_at = datetime.now(timezone.utc)
     session.add(client)
     session.commit()
     session.refresh(client)

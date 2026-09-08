@@ -77,7 +77,7 @@ def make_fake_http_client(responses):
     queue = iter(responses)
 
     def fake_post(*args, **kwargs):
-        kind, status_code, body = next(queue)
+        _, status_code, body = next(queue)
         resp = MagicMock()
         resp.status_code = status_code
         resp.json.return_value = body
@@ -151,10 +151,8 @@ def main():
     )
     logger.info(f"Scenario A PASS: {ok_a}")
 
-    print()
-
     # Scenario B: 503 x MAX_PUSH_RETRIES (exhausts the cap)
-    result_b, status_b, captured_b = run_scenario(
+    _, status_b, captured_b = run_scenario(
         "B (503 x MAX_PUSH_RETRIES, exhausted)",
         "TEST-PUSH-RETRY-EXHAUST",
         [("code", 503, {}) for _ in range(MAX_PUSH_RETRIES)],

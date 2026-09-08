@@ -81,7 +81,7 @@ def test_celery_delay(order_id: str):
 
     async_result = push_order.delay(order_data)
     logger.info(f"Task sent! ID: {async_result.id}")
-    logger.info(f"Waiting for result...")
+    logger.info("Waiting for result...")
     result = async_result.get(timeout=60)
     logger.info(f"Status: {async_result.status}")
     logger.info(f"Result: {result}")
