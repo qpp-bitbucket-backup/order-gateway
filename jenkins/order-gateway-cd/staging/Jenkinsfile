@@ -1,0 +1,178 @@
+pipeline {
+    agent {
+        label 'docker'
+    }
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        gitParameter(
+            name: 'IMAGE_TAG',
+            type: 'PT_TAG',
+            description: 'Select a tag to build',
+            // sortMode: 'DESCENDING_SMART'
+        )
+    }
+
+    environment {
+        ACR_REGISTRY     = 'prod-plugin-acr-registry.cn-guangzhou.cr.aliyuncs.com'
+        ACR_VPC_REGISTRY = 'prod-plugin-acr-registry-vpc.cn-guangzhou.cr.aliyuncs.com'
+        ACR_NAMESPACE    = 'production'
+        ACR_REPO         = 'order-gateway'
+
+        DEPLOYMENT_FILE1 = 'topps/order-gateway/staging/deployment.yml'
+
+        DEPLOYMENT_FILE2 = 'topps/order-gateway-worker/staging/deployment.yml'
+        DEPLOYMENT_FILE3 = 'topps/order-gateway-beat/staging/deployment.yml'
+        
+    }
+
+    stages {
+        stage('Check Image exists in ACR') {
+            steps {
+                container('docker') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'aliyun-acr-credential',
+                        usernameVariable: 'ACR_USER',
+                        passwordVariable: 'ACR_PASS'
+                    )]) {
+                        sh """
+                            set -e
+                            echo \$ACR_PASS | docker login \\
+                                --username \$ACR_USER \\
+                                --password-stdin ${env.ACR_REGISTRY}
+
+                            docker manifest inspect "${env.ACR_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}" > /dev/null
+                            echo "Image verified in ACR: ${env.ACR_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Checkout Plugin DevOps Helm Chart Repo') {
+            steps {
+                dir('gitops-ack') {
+                    checkout scmGit(
+                        branches: [[name: '*/main']],
+                        extensions: [
+                            localBranch('main')
+                        ],
+                        userRemoteConfigs: [[
+                            url: 'https://bitbucket.org/qpp-team/gitops-ack.git',
+                            credentialsId: 'bitbucket-ci-api-token'
+                        ]]
+                    )
+                }
+            }
+        }
+
+        stage('Update Deployment Image Tag') {
+            steps {
+                dir('gitops-ack') {
+                    sh """
+                        echo "update DEPLOYMENT_FILE1"
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:' ${env.DEPLOYMENT_FILE1}; then
+                            echo "ERROR: Expected image pattern not found in ${env.DEPLOYMENT_FILE1}"
+                            exit 1
+                        fi
+
+                        sed -i 's|\\(image:[[:space:]]*${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:\\)[^[:space:]]*|\\1${env.IMAGE_TAG}|g' ${env.DEPLOYMENT_FILE1}
+                        
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}' ${env.DEPLOYMENT_FILE1}; then
+                            echo "ERROR: Image tag replacement failed! Please check ${env.DEPLOYMENT_FILE1}"
+                            exit 1
+                        fi
+                        
+                        echo "update DEPLOYMENT_FILE2"
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:' ${env.DEPLOYMENT_FILE2}; then
+                            echo "ERROR: Expected image pattern not found in ${env.DEPLOYMENT_FILE2}"
+                            exit 1
+                        fi
+
+                        sed -i 's|\\(image:[[:space:]]*${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:\\)[^[:space:]]*|\\1${env.IMAGE_TAG}|g' ${env.DEPLOYMENT_FILE2}
+                        
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}' ${env.DEPLOYMENT_FILE2}; then
+                            echo "ERROR: Image tag replacement failed! Please check ${env.DEPLOYMENT_FILE2}"
+                            exit 1
+                        fi                        
+
+                        echo "update DEPLOYMENT_FILE3"
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:' ${env.DEPLOYMENT_FILE3}; then
+                            echo "ERROR: Expected image pattern not found in ${env.DEPLOYMENT_FILE3}"
+                            exit 1
+                        fi
+
+                        sed -i 's|\\(image:[[:space:]]*${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:\\)[^[:space:]]*|\\1${env.IMAGE_TAG}|g' ${env.DEPLOYMENT_FILE3}
+                        
+                        if ! grep -q '${env.ACR_VPC_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}' ${env.DEPLOYMENT_FILE3}; then
+                            echo "ERROR: Image tag replacement failed! Please check ${env.DEPLOYMENT_FILE3}"
+                            exit 1
+                        fi
+                        
+
+                        echo "Verified: image tag updated successfully"
+                        grep 'image:' ${env.DEPLOYMENT_FILE1}
+                        grep 'image:' ${env.DEPLOYMENT_FILE2}
+                        grep 'image:' ${env.DEPLOYMENT_FILE3}
+                    """
+                }
+            }
+        }
+
+        stage('Commit and Push Changes') {
+            steps {
+                dir('gitops-ack') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'bitbucket-cd-access-token-gitops-ack',
+                        usernameVariable: 'GIT_USERNAME',
+                        passwordVariable: 'GIT_PASSWORD'
+                    )]) {
+                        sh """
+                            git config user.email "jenkins@qpp.com"
+                            git config user.name "Jenkins CI"
+                            
+                            git add topps/order-gateway/staging/deployment.yml
+                            git add topps/order-gateway-worker/staging/deployment.yml
+                            git add topps/order-gateway-beat/staging/deployment.yml                                
+
+                            if git diff --staged --quiet; then
+                                echo "No changes to commit"
+                            else
+                                git commit -m "Update order-gateway deployment image tag to ${IMAGE_TAG}"
+
+                                git config credential.helper '!f() { echo "username=\$GIT_USERNAME"; echo "password=\$GIT_PASSWORD"; }; f'
+
+                                git push origin main
+
+                                git config --unset credential.helper
+
+                                echo "Successfully pushed changes to gitops-ack repository"
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline completed successfully!"
+            echo "Docker Image Tag: ${env.IMAGE_TAG}"
+            echo "Deployment file updated in gitops-ack repository"
+        }
+        failure {
+            echo "Pipeline failed!"
+            echo "Please check the logs for error details"
+        }
+        always {
+            echo "Cleaning workspace"
+            cleanWs()
+        }
+    }
+}
