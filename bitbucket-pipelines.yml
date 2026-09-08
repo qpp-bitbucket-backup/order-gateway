@@ -13,12 +13,28 @@ definitions:
           - pip install -r requirements.txt -r requirements-dev.txt
           # Unit tests with coverage — coverage.xml feeds the SonarQube scan
           - pytest tests/ --cov=app --cov-report=xml:coverage.xml --cov-report=term
-          # SonarQube scan; fails the pipeline when the quality gate fails
+          # SonarQube scan; fails the pipeline when the quality gate fails.
+          # Cap the scanner JVM heap: uncapped, the Java scanner can eat the
+          # whole step memory limit and get OOM-killed (step "crashed",
+          # after-script never runs).
           - pipe: sonarsource/sonarqube-scan:3.0.2
             variables:
               SONAR_HOST_URL: ${SONAR_HOST_URL}
               SONAR_TOKEN: ${SONAR_TOKEN}
+              SONAR_SCANNER_OPTS: '-Xmx1g'
               EXTRA_ARGS: '-Dsonar.qualitygate.wait=true'
+        after-script:
+          # When the scan fails, surface the server-side CE task error details
+          # (CE task FAILED gives no reason in the pipeline log on its own).
+          - |
+            if [ "$BITBUCKET_EXIT_CODE" -ne 0 ]; then
+              echo "=== Fetching SonarQube CE task error details ==="
+              LAST=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/ce/component?component=qpmn-topps-order-gateway")
+              TASK_ID=$(echo "${LAST}" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+              echo "Last CE task id: ${TASK_ID}"
+              curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/ce/task?id=${TASK_ID}&additionalFields=error_message,stacktrace"
+              echo
+            fi
 
   caches:
     sonar: ~/.sonar
