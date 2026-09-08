@@ -4,7 +4,7 @@ definitions:
   steps:
     - step: &build-step
         name: Unit tests & SonarQube analysis
-        size: 2x  # 或 4x 根據需要
+        size: 4x  # 或 4x 根據需要
         caches:
           - pip
           - sonar
@@ -21,7 +21,7 @@ definitions:
             variables:
               SONAR_HOST_URL: ${SONAR_HOST_URL}
               SONAR_TOKEN: ${SONAR_TOKEN}
-              SONAR_SCANNER_OPTS: '-Xmx1g'
+              SONAR_SCANNER_OPTS: '-Xmx2g'
               EXTRA_ARGS: '-Dsonar.qualitygate.wait=true'
         after-script:
           # When the scan fails, surface the server-side CE task error details
