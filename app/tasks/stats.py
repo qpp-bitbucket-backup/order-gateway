@@ -47,23 +47,27 @@ def aggregate_day(
     day: date,
     client_by_store: Dict[Optional[str], Client],
     currency_cache: Dict[str, Optional[str]],
+    only_store_id: Optional[str] = None,
 ) -> int:
     """Aggregate one UTC day into daily_sales_stats (upsert per client).
 
-    Returns the number of stat rows written/updated.
+    Returns the number of stat rows written/updated. When ``only_store_id``
+    is given, orders from other stores are excluded from the aggregation
+    (used by the manual backfill script to target a single store).
     """
-    # created_at is stored as naive UTC (BaseModel uses datetime.utcnow),
-    # so the window boundaries must be naive too.
+    # created_at is stored as naive UTC (MySQL DATETIME columns read back
+    # naive), so the window boundaries must be naive too.
     day_start = datetime.combine(day, time.min)
     day_end = datetime.combine(day + timedelta(days=1), time.min)
 
-    orders = session.exec(
-        select(Order).where(
-            Order.is_active.is_(True),
-            Order.created_at >= day_start,
-            Order.created_at < day_end,
-        )
-    ).all()
+    order_query = select(Order).where(
+        Order.is_active.is_(True),
+        Order.created_at >= day_start,
+        Order.created_at < day_end,
+    )
+    if only_store_id is not None:
+        order_query = order_query.where(Order.store_id == only_store_id)
+    orders = session.exec(order_query).all()
 
     by_store: Dict[Optional[str], List[Order]] = {}
     for order in orders:
@@ -112,7 +116,7 @@ def aggregate_day(
         stat.line_items_quantity = items_quantity
         stat.total_amount = round(total_amount, 2)
         stat.currency = currency_cache[store_id]
-        stat.updated_at = datetime.utcnow()
+        stat.updated_at = datetime.now(timezone.utc)
         session.add(stat)
         rows_written += 1
 
