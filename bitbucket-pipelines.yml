@@ -24,14 +24,15 @@ definitions:
               SONAR_SCANNER_OPTS: '-Xmx1g'
               EXTRA_ARGS: '-Dsonar.qualitygate.wait=true'
     - step: &sync-to-github
-        name: Sync main branch to GitHub
+        name: Sync branch to GitHub mirror
         image: alpine/git:latest
-        clone:
-          enabled: false
         script:
-          - git clone https://${BITBUCKET_USERNAME}:${BITBUCKET_API_TOKEN}@bitbucket.org/qpp-team/order-gateway.git
+          # The step starts in the full clone made by the global
+          # "clone: depth: full" — no manual re-clone needed. Push the
+          # triggering branch under the same name to the backup mirror.
+          # Use "--all" instead to mirror every branch.
           - git remote add github https://x-token-auth:${GITHUB_TOKEN}@github.com/qpp-bitbucket-backup/order-gateway.git
-          - git push github main
+          - git push github $BITBUCKET_BRANCH
   caches:
     sonar: ~/.sonar
 
@@ -41,5 +42,5 @@ clone:
 pipelines:
   branches:
     '{master}':
-      - step: *build-step
+      # - step: *build-step
       - step: *sync-to-github
