@@ -30,7 +30,6 @@ definitions:
           enabled: false
         script:
           - git clone https://${BITBUCKET_USERNAME}:${BITBUCKET_API_TOKEN}@bitbucket.org/qpp-team/order-gateway.git
-          - cd qpmn-squarespace
           - git remote add github https://x-token-auth:${GITHUB_TOKEN}@github.com/qpp-bitbucket-backup/order-gateway.git
           - git push github main
   caches:
