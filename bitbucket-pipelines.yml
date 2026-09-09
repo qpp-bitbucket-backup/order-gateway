@@ -42,5 +42,5 @@ clone:
 pipelines:
   branches:
     '{master}':
-      # - step: *build-step
+      - step: *build-step
       - step: *sync-to-github
