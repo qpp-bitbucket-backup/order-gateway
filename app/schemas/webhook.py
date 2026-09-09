@@ -33,7 +33,7 @@ class QpmnOrderItemEvent(BaseModel):
 
     id: str = Field(..., description="Store retail order item id")
     orderId: Optional[int] = Field(None, description="Store retail order id — ASSUMED, unconfirmed by QPMN")
-    externalId: Optional[str] = Field(None, description="Our OrderItem.sourceItemId")
+    externalId: Optional[str] = Field(None, description="Echoes the order_data.items[].sku we sent as externalId in the create-order payload")
     unitPrice: Optional[float] = Field(None, description="Unit price")
     storeProductId: Optional[str] = Field(None, description="Store product id")
     quantity: Optional[int] = Field(None, description="Quantity")
