@@ -73,6 +73,10 @@ def _log_response(endpoint: str, response: dict):
         )
 
 
+# Endpoint label for POST /api/order, reused in DEBUG request/response logs
+_POST_ORDER_ENDPOINT = "POST /order"
+
+
 # Mapping from internal OrderStatus to external status exposed via API
 _EXTERNAL_STATUS_MAP: dict = {
     OrderStatus.RECEIVED: "received",
@@ -237,7 +241,7 @@ def _validation_failed(validations: List[Dict[str, str]]) -> JSONResponse:
             "mongoErr": True,
         }
     )
-    _log_response("POST /order", error_resp.model_dump())
+    _log_response(_POST_ORDER_ENDPOINT, error_resp.model_dump())
     return JSONResponse(
         status_code=400,
         content=error_resp.model_dump(),
@@ -513,7 +517,7 @@ def submit_order(
     cancelled. A missing previous version is rejected ("was not submitted"),
     and an active previous version is rejected ("still being processed").
     """
-    _log_request("POST /order", request.model_dump())
+    _log_request(_POST_ORDER_ENDPOINT, request.model_dump())
     try:
         # Check for duplicate (idempotency)
         existing_order = order_service.check_duplicate(
@@ -537,7 +541,7 @@ def submit_order(
                     "mongoErr": True,
                 }
             )
-            _log_response("POST /order", error_resp.model_dump())
+            _log_response(_POST_ORDER_ENDPOINT, error_resp.model_dump())
             return JSONResponse(
                 status_code=400,
                 content=error_resp.model_dump(),
@@ -699,7 +703,7 @@ def submit_order(
             timestamp=timestamp,
             sourceAccountId=source_account_id,
         )
-        _log_response("POST /order", resp.model_dump())
+        _log_response(_POST_ORDER_ENDPOINT, resp.model_dump())
         return resp
 
     except HTTPException:
@@ -1094,7 +1098,6 @@ def update_order(
                 msg = f"Address sync failed: {address_result['error']}"
                 action = "address_update_failed"
             else:
-                # TODO: address unchanged, content may have changed
                 msg = "Address unchanged."
                 action = "address_update_unchanged"
 
@@ -1306,7 +1309,7 @@ def platform_get_orders(
     pagesize: int = Query(10, ge=1, le=100, description="Number of orders per page"),
     status_filter: Optional[List[OrderStatus]] = Query(None, alias="status[]", description="Filter by order status (supports multiple values, e.g. status[]=failed&status[]=errored)"),
     store_id: Optional[str] = Query(None, description="Filter by store ID"),
-    sourceOrderId: Optional[str] = Query(None, description="Fuzzy search by source order ID"),
+    source_order_id: Optional[str] = Query(None, alias="sourceOrderId", description="Fuzzy search by source order ID"),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -1333,7 +1336,7 @@ def platform_get_orders(
             page=page,
             pagesize=pagesize,
             statuses=status_filter,
-            source_order_id=sourceOrderId,
+            source_order_id=source_order_id,
         )
 
         order_summaries = []
