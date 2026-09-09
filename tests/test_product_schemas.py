@@ -68,8 +68,11 @@ class TestSku:
         assert sku.sourceSku is None
 
     def test_source_sku_max_length(self):
+        # 255 accommodates regex patterns; 256 is still rejected
+        ok = Sku(_id="s-3a", code="SKU-Y1", productId="p-1", sourceSku="^" + "a" * 253 + "$")
+        assert len(ok.sourceSku) == 255
         with pytest.raises(ValidationError):
-            Sku(_id="s-3", code="SKU-Y", productId="p-1", sourceSku="x" * 33)
+            Sku(_id="s-3b", code="SKU-Y2", productId="p-1", sourceSku="x" * 256)
 
     def test_unit_price_must_be_non_negative(self):
         with pytest.raises(ValidationError):
@@ -120,7 +123,7 @@ class TestSkuUpdateRequest:
         with pytest.raises(ValidationError):
             SkuUpdateRequest(unitPrice=-5)
         with pytest.raises(ValidationError):
-            SkuUpdateRequest(sourceSku="y" * 33)
+            SkuUpdateRequest(sourceSku="y" * 256)
 
 
 class TestSkuUpdateResponse:

@@ -13,7 +13,7 @@ from app.core.config import settings
 
 from app.core.database import get_session
 from app.models.order import Order, OrderStatus, OrderType
-from app.models.product import Sku, Product
+from app.models.product import Product
 from app.schemas.order import (
     OrderValidationRequest,
     OrderValidationResponse,
@@ -43,6 +43,7 @@ from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection
 from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, DELETABLE_STATUSES, REPUBLISHABLE_STATUSES, parse_parallel_card_id
+from app.services.sku_matching import find_sku_by_ref
 from app.services.oss import oss_service
 from app.tasks.orders import publish_order
 
@@ -329,14 +330,11 @@ def validate_order(
                     _error(item_loc + ["sku"], "SKU is required for all items", "missing")
                 )
             else:
-                # Look up the SKU by its third-party platform code (source_sku),
-                # scoped to the client's store if set
-                sku_query = select(Sku).where(
-                    (Sku.source_sku == item.sku) & Sku.active.is_(True)
+                # Look up the SKU by its third-party platform code (source_sku,
+                # a regex pattern), scoped to the client's store if set
+                existing_sku = find_sku_by_ref(
+                    session, item.sku, active_only=True, store_id=store_id
                 )
-                if store_id:
-                    sku_query = sku_query.where(Sku.store_id == store_id)
-                existing_sku = session.exec(sku_query).first()
 
                 if not existing_sku:
                     validation_errors.append(
@@ -492,6 +490,11 @@ def submit_order(
     exists for this store, the API returns HTTP **400** with a SiteFlow-compatible
     error response.
 
+    **SKU validation:** Every item's `sku` must resolve to an active SKU in the
+    client's store via its `source_sku` pattern (exact or regex match, same
+    rule as POST /order/validate). Unresolvable SKUs yield HTTP **400** with a
+    SiteFlow-compatible validation error. Skipped for parallel card orders.
+
     **File accessibility:** Every item component with `fetch=true` must point
     to a reachable URL (lightweight HEAD/streamed-GET probe, same rule as
     POST /order/validate). Unreachable files yield HTTP **400** with a
@@ -641,11 +644,31 @@ def submit_order(
                 }
             ])
 
-        # File accessibility check (same rule as POST /order/validate): every
-        # component with fetch=true must point at a reachable URL, otherwise
-        # the downstream design-file download would fail. Parallel card
+        # Items validation (same rules as POST /order/validate). Parallel card
         # orders keep their documented items/shipments validation skip.
         if not parallel_parent:
+            # SKU check: every item's sku must resolve to an active SKU in this
+            # store via its source_sku pattern (exact or regex match) —
+            # otherwise the order could never be pushed to QPMN later.
+            sku_errors = []
+            for idx, item in enumerate(request.orderData.items):
+                if not item.sku:
+                    sku_errors.append({
+                        "path": f"orderData.items.{idx}.sku",
+                        "message": "SKU is required for all items",
+                    })
+                    continue
+                if not find_sku_by_ref(session, item.sku, active_only=True, store_id=store_id):
+                    sku_errors.append({
+                        "path": f"orderData.items.{idx}.sku",
+                        "message": "Invalid or inactive SKU",
+                    })
+            if sku_errors:
+                return _validation_failed(sku_errors)
+
+            # File accessibility check: every component with fetch=true must
+            # point at a reachable URL, otherwise the downstream design-file
+            # download would fail.
             file_errors = [
                 {
                     "path": f"orderData.items.{idx}.components.{cidx}.path",
