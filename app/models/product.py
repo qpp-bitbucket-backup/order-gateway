@@ -32,7 +32,7 @@ class Sku(BaseModel, table=True):
 
     sku_id: str = Field(unique=True, index=True, nullable=False, description="Internal SKU ID (_id)")
     code: str = Field(unique=True, index=True, nullable=False, description="SKU code")
-    source_sku: Optional[str] = Field(None, max_length=32, index=True, description="Third-party platform SKU code used for order validation")
+    source_sku: Optional[str] = Field(None, max_length=255, index=True, description="Third-party platform SKU: a regex pattern (re.fullmatch) or literal matched against items[].sku during order validation")
     description: Optional[str] = Field(None, description="SKU description")
     product_id: str = Field(nullable=False, index=True, description="Associated product ID")
     active: bool = Field(default=True, nullable=False, description="Whether SKU is active")
