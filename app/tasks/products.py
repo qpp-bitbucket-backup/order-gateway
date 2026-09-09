@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 _PRODUCT_SYNC_ALERTS = ALERTS["product_sync"]
 
+# Content-Type value reused in QPMN API request headers
+_JSON_CONTENT_TYPE = "application/json"
+
 
 def _capture_qpmn_alert(alert_key: str, **format_args) -> None:
     """Capture a QPMN product/SKU sync failure to Sentry.
@@ -139,7 +142,7 @@ def fetch_products_from_qpmn(store_id: str, store_key: str, page: int =1) -> Lis
     try:
         headers = {
             "Authorization": f"Basic {api_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
         
         params = {
@@ -234,7 +237,7 @@ def sync_products_to_db(
                     existing_product.description = format_html_desc(qpmn_product.get("description",""))
                     existing_product.components = qpmn_product.get("components", [])
                     existing_product.is_active = qpmn_product.get("isActive", True)
-                    existing_product.updated_at = datetime.utcnow()
+                    existing_product.updated_at = datetime.now(timezone.utc)
                     if store_id:
                         existing_product.store_id = store_id
                     logger.debug(f"Updated product: {product_code}")
@@ -334,7 +337,7 @@ def fetch_product_design_data_from_sample(product_id: str, store_key: str) -> Op
     try:
         headers = {
             "Authorization": f"Basic {store_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
         with httpx.Client(timeout=30.0) as client:
             response = client.post(api_url, headers=headers)
@@ -404,7 +407,7 @@ def fetch_product_retail_price(product_id: str, store_key: str) -> Optional[floa
     try:
         headers = {
             "Authorization": f"Basic {store_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
         with httpx.Client(timeout=30.0) as client:
             response = client.get(api_url, headers=headers)
@@ -578,7 +581,7 @@ def sync_skus_from_qpmn(store_id: str = None) -> Dict[str, Any]:
         
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
         
         params = {}

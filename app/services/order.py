@@ -29,6 +29,9 @@ _CANCEL_ALERTS = ALERTS["cancel"]
 _SHIPPING_ALERTS = ALERTS["shipping"]
 _CURRENCY_ALERTS = ALERTS["currency"]
 
+# Content-Type value reused in QPMN API request headers
+_JSON_CONTENT_TYPE = "application/json"
+
 
 def _capture_cancel_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
     """Capture a cancel_qpmn_order failure to Sentry (synchronous, non-Celery)."""
@@ -390,7 +393,7 @@ class OrderService:
         api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/cancel"
         headers = {
             "Authorization": f"Basic {store_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
 
         logger.info(
@@ -644,7 +647,6 @@ class OrderService:
                 )
         else:
             # Address unchanged — content may have changed
-            # TODO: compare and update order content in QPMN
             logger.info("[OrderService] Address unchanged for order %s", order.order_id)
 
         return result
@@ -699,7 +701,7 @@ class OrderService:
         )
         headers = {
             "Authorization": f"Basic {store_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
         # Country is not allowed to update in QPMN platform
         payload = {
@@ -1194,7 +1196,7 @@ class OrderService:
             api_url = f"{settings.QPMN_API_URL}/store/{store_id}/default/shippingMethod"
             headers = {
                 "Authorization": f"Basic {store_key}",
-                "Content-Type": "application/json",
+                "Content-Type": _JSON_CONTENT_TYPE,
             }
 
             with httpx.Client(timeout=15.0) as client:
@@ -1239,7 +1241,7 @@ class OrderService:
         api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
         headers = {
             "Authorization": f"Basic {store_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
         try:
             with httpx.Client(timeout=15.0) as client:
@@ -1297,7 +1299,7 @@ class OrderService:
             api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
             headers = {
                 "Authorization": f"Basic {store_key}",
-                "Content-Type": "application/json",
+                "Content-Type": _JSON_CONTENT_TYPE,
             }
 
             with httpx.Client(timeout=15.0) as client:
