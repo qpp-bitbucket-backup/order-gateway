@@ -4,7 +4,7 @@ definitions:
   steps:
     - step: &build-step
         name: Unit tests & SonarQube analysis
-        size: 2x  # 或 4x 根據需要
+        size: 1x  # 或 4x 根據需要
         caches:
           - pip
           - sonar
@@ -21,9 +21,18 @@ definitions:
             variables:
               SONAR_HOST_URL: ${SONAR_HOST_URL}
               SONAR_TOKEN: ${SONAR_TOKEN}
-              SONAR_SCANNER_OPTS: '-Xmx2g'
+              SONAR_SCANNER_OPTS: '-Xmx1g'
               EXTRA_ARGS: '-Dsonar.qualitygate.wait=true'
-
+    - step: &sync-to-github
+        name: Sync main branch to GitHub
+        image: alpine/git:latest
+        clone:
+          enabled: false
+        script:
+          - git clone https://${BITBUCKET_USERNAME}:${BITBUCKET_API_TOKEN}@bitbucket.org/qpp-team/order-gateway.git
+          - cd qpmn-squarespace
+          - git remote add github https://x-token-auth:${GITHUB_TOKEN}@github.com/qpp-bitbucket-backup/order-gateway.git
+          - git push github main
   caches:
     sonar: ~/.sonar
 
@@ -34,3 +43,4 @@ pipelines:
   branches:
     '{master}':
       - step: *build-step
+      - step: *sync-to-github
