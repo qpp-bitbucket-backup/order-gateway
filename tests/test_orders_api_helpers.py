@@ -24,6 +24,7 @@ class TestExternalStatusMap:
         assert _EXTERNAL_STATUS_MAP[OrderStatus.RECEIVED] == "received"
         assert _EXTERNAL_STATUS_MAP[OrderStatus.PENDING] == "received"
         assert _EXTERNAL_STATUS_MAP[OrderStatus.VALIDATED] == "dataready"
+        assert _EXTERNAL_STATUS_MAP[OrderStatus.COOLING_OFF] == "dataready"
         assert _EXTERNAL_STATUS_MAP[OrderStatus.PROCESSING] == "dataready"
         assert _EXTERNAL_STATUS_MAP[OrderStatus.PRINTREADY] == "printready"
         assert _EXTERNAL_STATUS_MAP[OrderStatus.PRODUCED] == "produced"

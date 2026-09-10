@@ -1,6 +1,6 @@
 """Unit tests for Order model and status transitions."""
 import pytest
-from app.models.order import Order, OrderStatus, can_transition, is_item_event_superseded, ORDER_STATE_TRANSITIONS
+from app.models.order import Order, OrderStatus, can_transition, is_item_event_superseded, ORDER_STATE_TRANSITIONS, OMS_STATUS_MAP, STATUS_EVENT_MAP
 
 
 class TestOrderStatus:
@@ -11,6 +11,8 @@ class TestOrderStatus:
         assert OrderStatus.RECEIVED.value == "received"
         assert OrderStatus.PENDING.value == "pending"
         assert OrderStatus.VALIDATED.value == "validated"
+        assert OrderStatus.COOLING_OFF.value == "cooling_off"
+        assert OrderStatus.PROCESSING.value == "processing"
         assert OrderStatus.PRINTREADY.value == "printready"
         assert OrderStatus.PRINTED.value == "printed"
         assert OrderStatus.PRODUCED.value == "produced"
@@ -47,6 +49,21 @@ class TestOrderStatus:
         """
         assert can_transition(OrderStatus.VALIDATED, OrderStatus.PROCESSING) is True
         assert can_transition(OrderStatus.VALIDATED, OrderStatus.PRINTREADY) is False
+
+    def test_cooling_off_sits_between_validated_and_processing(self):
+        """VALIDATED may enter COOLING_OFF (client cooling-off period), which
+        then flows on to PROCESSING or CANCELLED."""
+        assert can_transition(OrderStatus.VALIDATED, OrderStatus.COOLING_OFF) is True
+        assert can_transition(OrderStatus.COOLING_OFF, OrderStatus.PROCESSING) is True
+        assert can_transition(OrderStatus.COOLING_OFF, OrderStatus.CANCELLED) is True
+        # Cooling-off never skips ahead to the print stages
+        assert can_transition(OrderStatus.COOLING_OFF, OrderStatus.PRINTREADY) is False
+
+    def test_cooling_off_is_internal_only(self):
+        """COOLING_OFF, like PENDING/PROCESSING, is never reported to OMS/VFS
+        — it must be absent from both notification vocabularies."""
+        assert OrderStatus.COOLING_OFF not in OMS_STATUS_MAP
+        assert OrderStatus.COOLING_OFF not in STATUS_EVENT_MAP
 
     def test_can_transition_printready_to_printed(self):
         """Test PRINTREADY -> PRINTED transition is allowed."""
@@ -116,6 +133,19 @@ class TestOrderModel:
         assert order.source_order_id == "src-order-001"
         assert order.status == OrderStatus.PENDING  # default status
         assert order.version == 1  # default version (migration f6a7b8c9d0e1)
+        assert order.cooling_off_seconds is None  # no cooling-off applied yet
+
+    def test_order_cooling_off_seconds_snapshot(self):
+        """The applied cooling-off period is snapshotted on the order when it
+        enters COOLING_OFF (NULL = never cooled off)."""
+        order = Order(
+            order_id="test-order-cool",
+            source_account="test_account",
+            source_order_id="src-order-cool",
+            status=OrderStatus.COOLING_OFF,
+            cooling_off_seconds=3600,
+        )
+        assert order.cooling_off_seconds == 3600
 
     def test_order_creation_full(self):
         """Test creating an order with all fields."""

@@ -485,14 +485,41 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
                 shipments=None,
             )
 
-            # Chain to push_order
+            # Chain to push_order — honoring the client's cooling-off period
+            # when configured: the order waits in COOLING_OFF for that many
+            # seconds before the push. COOLING_OFF is internal-only (like
+            # PENDING/PROCESSING it is never reported to OMS/VFS — the
+            # dataready notification above already covers this stage).
+            cooling_off_seconds = client_service.get_cooling_off_seconds(order.store_id)
+            if cooling_off_seconds > 0:
+                order.status = OrderStatus.COOLING_OFF
+                # Snapshot the applied period on the order — the platform
+                # frontend reads it (plus the order_cooling_off log timestamp
+                # below) to render the countdown; kept after the period ends
+                # as a record of what was actually applied.
+                order.cooling_off_seconds = cooling_off_seconds
+                _append_order_log(
+                    order,
+                    "order_cooling_off",
+                    f"Order holding in cooling-off for {cooling_off_seconds}s before QPMN push",
+                )
+                session.add(order)
+                session.commit()
+                logger.info(
+                    f"[Celery] Order {order_id} status updated to COOLING_OFF "
+                    f"(client cooling-off: {cooling_off_seconds}s)"
+                )
+
             task_payload = {
                 "order_id": order.order_id,
                 "source_order_id": order.source_order_id,
                 "status": order.status.value,
                 "created_at": order.created_at.isoformat() if order.created_at else None,
             }
-            push_order.apply_async(args=[task_payload])
+            push_order.apply_async(
+                args=[task_payload],
+                countdown=cooling_off_seconds if cooling_off_seconds > 0 else None,
+            )
             return True
 
     except Exception as e:

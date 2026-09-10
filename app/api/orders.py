@@ -78,11 +78,14 @@ def _log_response(endpoint: str, response: dict):
 _POST_ORDER_ENDPOINT = "POST /order"
 
 
-# Mapping from internal OrderStatus to external status exposed via API
+# Mapping from internal OrderStatus to external status exposed via API.
+# COOLING_OFF maps to "dataready" like VALIDATED/PROCESSING — it is an
+# internal-only stage (client cooling-off period) never surfaced to OMS/VFS.
 _EXTERNAL_STATUS_MAP: dict = {
     OrderStatus.RECEIVED: "received",
     OrderStatus.PENDING: "received",
     OrderStatus.VALIDATED: "dataready",
+    OrderStatus.COOLING_OFF: "dataready",
     OrderStatus.PROCESSING: "dataready",
     OrderStatus.PRINTREADY: "printready",
     OrderStatus.PRINTED: "printed",
@@ -1378,6 +1381,7 @@ def platform_get_orders(
                 storeId=order.store_id,
                 storeOrderId=order.store_order_id,
                 type=order.type.value,
+                coolingOffSeconds=order.cooling_off_seconds,
                 creationPayload=order.creation_payload,
                 parentSourceOrderId=parent_source_order_id,
                 parentOrderId=parent_order_id,
@@ -1483,6 +1487,7 @@ def platform_get_order(
             storeId=order.store_id,
             storeOrderId=order.store_order_id,
             type=order.type.value,
+            coolingOffSeconds=order.cooling_off_seconds,
             creationPayload=order.creation_payload,
             parentSourceOrderId=parent_source_order_id,
             parentOrderId=parent_order_id,

@@ -182,6 +182,7 @@ class PlatformOrderSummary(BaseModel):
     storeId: Optional[str] = Field(None, description="Store identifier")
     storeOrderId: Optional[str] = Field(None, description="Store order ID")
     type: str = Field("base_card", description="Order type (base_card or parallel_card)")
+    coolingOffSeconds: Optional[int] = Field(None, description="Cooling-off period (seconds) applied to this order; with the order_cooling_off log timestamp the frontend can render the countdown (NULL = no cooling-off)")
     creationPayload: Optional[Dict[str, Any]] = Field(None, description="QPMN create-order payload submitted by the last push attempt")
     parentSourceOrderId: Optional[str] = Field(None, description="Base card order's sourceOrderId (parallel card orders only)")
     parentOrderId: Optional[str] = Field(None, description="Base card order's internal order ID (parallel card orders only)")
@@ -232,6 +233,7 @@ class PlatformFullOrder(BaseModel):
     storeId: Optional[str] = Field(None, description="Store identifier")
     storeOrderId: Optional[str] = Field(None, description="Store order ID")
     type: str = Field("base_card", description="Order type (base_card or parallel_card)")
+    coolingOffSeconds: Optional[int] = Field(None, description="Cooling-off period (seconds) applied to this order; with the order_cooling_off log timestamp the frontend can render the countdown (NULL = no cooling-off)")
     creationPayload: Optional[Dict[str, Any]] = Field(None, description="QPMN create-order payload submitted by the last push attempt")
     parentSourceOrderId: Optional[str] = Field(None, description="Base card order's sourceOrderId (parallel card orders only)")
     parentOrderId: Optional[str] = Field(None, description="Base card order's internal order ID (parallel card orders only)")
@@ -350,7 +352,8 @@ class OrderUpdateRequest(BaseModel):
     """Schema for order update request.
 
     Only fields provided will be updated. The order must be in a cancellable
-    state (received, pending, validated, failed, errored) to allow updates.
+    state (received, pending, validated, cooling_off, processing, failed,
+    errored) to allow updates.
     """
     destination: Optional[Destination] = Field(None, description="Updated destination information")
     orderData: Optional[OrderData] = Field(None, description="Updated order data (replaces existing)")

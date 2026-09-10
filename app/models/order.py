@@ -11,6 +11,7 @@ class OrderStatus(str, Enum):
     RECEIVED = "received"
     PENDING = "pending"
     VALIDATED = "validated"
+    COOLING_OFF = "cooling_off"
     PROCESSING = "processing"
     PRINTREADY = "printready"
     PRINTED = "printed"
@@ -45,10 +46,19 @@ ORDER_STATE_TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
     ],
     # 驗證通過：進入處理階段
     OrderStatus.VALIDATED: [
-        OrderStatus.PROCESSING,   # 進入處理中
+        OrderStatus.COOLING_OFF,  # client 有配置冷靜期時先進入冷靜期
+        OrderStatus.PROCESSING,   # 無冷靜期直接進入處理中
         OrderStatus.CANCELLED,    # 取消訂單
         OrderStatus.FAILED,       # 準備處理失敗
         OrderStatus.ERRORED       # 準備過程異常
+    ],
+    # 冷靜期：按 client 配置的秒數等待後才推送 QPMN（與 PENDING/PROCESSING
+    # 一樣為內部狀態，不會通知 OMS/VFS）
+    OrderStatus.COOLING_OFF: [
+        OrderStatus.PROCESSING,   # 冷靜期結束，進入處理中
+        OrderStatus.CANCELLED,    # 冷靜期內可取消訂單
+        OrderStatus.FAILED,       # 推送準備失敗
+        OrderStatus.ERRORED       # 冷靜期過程異常
     ],
     # 處理中：正在處理訂單（如檔案準備、排版等）
     OrderStatus.PROCESSING: [
@@ -109,8 +119,8 @@ def can_transition(from_status: OrderStatus, to_status: OrderStatus) -> bool:
 
 # Internal status -> external event status code (QPMN's real Site Flow status
 # vocabulary, not the earlier placeholder strings). Statuses not listed here
-# (PENDING, VALIDATED, FAILED) are internal only and never notified — QPMN
-# confirmed it does not send a DataReady event.
+# (PENDING, VALIDATED, COOLING_OFF, PROCESSING, FAILED) are internal only and
+# never notified — QPMN confirmed it does not send a DataReady event.
 # Note: SHIPPED's "package_shipped" is reported by QPMN via a separate
 # shipment feedback event (发货单反馈), not the same order-status feed as the
 # other rows here — confirm how that arrives before wiring it up.
@@ -299,6 +309,14 @@ class Order(BaseModel, table=True):
         ),
     )
     barcode: Optional[str] = Field(None, max_length=32, description="Barcode for the order")
+    cooling_off_seconds: Optional[int] = Field(
+        None,
+        description=(
+            "Cooling-off period (seconds) actually applied to this order when it "
+            "entered COOLING_OFF (snapshot of the client's config; NULL = never "
+            "cooled off). Exposed to the platform frontend for countdown display"
+        ),
+    )
     creation_payload: Optional[Dict[str, Any]] = Field(
         None,
         sa_column=Column(JSON),
