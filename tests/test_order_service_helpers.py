@@ -51,6 +51,7 @@ class TestStatusSets:
             OrderStatus.RECEIVED,
             OrderStatus.PENDING,
             OrderStatus.VALIDATED,
+            OrderStatus.COOLING_OFF,
             OrderStatus.PROCESSING,
             OrderStatus.FAILED,
             OrderStatus.ERRORED,

@@ -37,6 +37,27 @@ class ClientService:
                 logger.warning(f"No client found for store_id: {store_id}")
                 return None
 
+    def get_cooling_off_seconds(self, store_id: Optional[str]) -> int:
+        """
+        Get the order cooling-off period (seconds) configured for a client.
+
+        Args:
+            store_id: The store ID to look up (None/empty is tolerated)
+
+        Returns:
+            Configured cooling-off seconds, or 0 when the client is unknown
+            or has no cooling-off configured (order is pushed immediately).
+        """
+        if not store_id:
+            return 0
+        with Session(engine) as session:
+            client = session.exec(
+                select(Client).where(Client.store_id == store_id)
+            ).first()
+            if client and client.cooling_off_seconds:
+                return client.cooling_off_seconds
+            return 0
+
 
 # Create singleton instance
 client_service = ClientService()
