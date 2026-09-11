@@ -36,6 +36,22 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "your-secret-key-here-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30  # Password reset link validity
+    # Reset link is built from the requesting host: <origin>/admin/reset-password.
+    # PASSWORD_RESET_URL is only the fallback origin for contexts with no HTTP
+    # request (Celery tasks, test scripts); PASSWORD_RESET_PATH is the admin
+    # frontend route that consumes the token (?token=... appended).
+    PASSWORD_RESET_URL: str = "http://localhost:8000"
+    PASSWORD_RESET_PATH: str = "/admin/reset-password"
+
+    # SendGrid Email Configuration
+    SENDGRID_API_KEY: str = ""
+    SENDGRID_FROM_EMAIL: str = "no-reply@order-gateway.com"
+    SENDGRID_FROM_NAME: str = "Order Gateway"
+    # Optional SendGrid Dynamic Transactional Template for the password reset
+    # email (https://app.sendgrid.com/dynamic_templates). Empty = render the
+    # local template in app/services/email_templates.py instead.
+    SENDGRID_RESET_PASSWORD_TEMPLATE_ID: str = ""
     
     # HP Site Flow OneFlow API Authentication (bootstrap default client)
     ONEFLOW_TOKEN: str = "oneflow-token-change-in-production"

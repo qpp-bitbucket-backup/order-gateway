@@ -7,12 +7,29 @@ from sqlmodel import Session, select, col
 from passlib.context import CryptContext
 
 from app.models.user import User, UserRole
-from app.core.security import get_password_hash, verify_password, create_access_token
+from app.core.security import (
+    get_password_hash,
+    verify_password,
+    create_access_token,
+    create_password_reset_token,
+    decode_password_reset_token,
+)
 from app.core.config import settings
+from app.services.email import email_service
+from app.services.email_templates import (
+    password_reset_template_data,
+    render_password_reset_email,
+)
 
 logger = logging.getLogger(__name__)
 
 pwd_context = CryptContext(schemes=["bcrypt"])
+
+
+def build_reset_link(base_url: str, token: str) -> str:
+    """Build the reset link under the given origin (the API request's host
+    in HTTP flows, or the PASSWORD_RESET_URL fallback in script/task flows)."""
+    return f"{base_url.rstrip('/')}{settings.PASSWORD_RESET_PATH}?token={token}"
 
 
 class UserService:
@@ -190,6 +207,86 @@ class UserService:
             logger.info("User '%s' updated fields: %s", user.username, ", ".join(changes))
 
         return user, changes
+
+    def forgot_password(
+        self, session: Session, email: str, base_url: Optional[str] = None
+    ) -> bool:
+        """
+        Generate a password reset token for the user matching ``email`` and
+        send the reset email via SendGrid.
+
+        ``base_url``: scheme+host of the triggering HTTP request — the reset
+        link points at ``<base_url>/admin/reset-password`` so it works on
+        whatever domain the API was reached through. Falls back to
+        settings.PASSWORD_RESET_URL when absent (scripts, background tasks).
+
+        Returns True if the email was sent, False if the user does not exist,
+        is inactive, or SendGrid failed. The endpoint is expected to return
+        the same response either way so the API does not leak which emails
+        are registered.
+        """
+        user = self.get_user_by_email(session, email)
+        if not user or not user.is_active:
+            logger.info("Password reset requested for unknown/inactive email")
+            return False
+
+        token = create_password_reset_token(user.id)
+        reset_link = build_reset_link(
+            base_url or settings.PASSWORD_RESET_URL, token
+        )
+        expire_minutes = settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+        display_name = user.full_name or user.username
+
+        if settings.SENDGRID_RESET_PASSWORD_TEMPLATE_ID:
+            sent = email_service.send_templated_email(
+                to_email=user.email,
+                template_id=settings.SENDGRID_RESET_PASSWORD_TEMPLATE_ID,
+                dynamic_template_data=password_reset_template_data(
+                    display_name=display_name,
+                    reset_link=reset_link,
+                    expire_minutes=expire_minutes,
+                ),
+            )
+        else:
+            subject, text_content, html_content = render_password_reset_email(
+                display_name=display_name,
+                reset_link=reset_link,
+                expire_minutes=expire_minutes,
+            )
+            sent = email_service.send_email(
+                to_email=user.email,
+                subject=subject,
+                html_content=html_content,
+                text_content=text_content,
+            )
+        if sent:
+            logger.info("Password reset email sent to user '%s'", user.username)
+        else:
+            logger.error("Failed to send password reset email to user '%s'", user.username)
+        return sent
+
+    def reset_password(self, session: Session, token: str, new_password: str) -> bool:
+        """
+        Reset a user's password using a valid reset token.
+
+        Returns True on success, False if the token is invalid/expired or
+        the user no longer exists.
+        """
+        user_id = decode_password_reset_token(token)
+        if not user_id:
+            return False
+
+        user = self.get_user_by_id(session, int(user_id))
+        if not user or not user.is_active:
+            return False
+
+        user.hashed_password = get_password_hash(new_password)
+        user.failed_login_count = 0
+        user.updated_at = datetime.now(timezone.utc)
+        session.add(user)
+        session.commit()
+        logger.info("Password reset completed for user '%s'", user.username)
+        return True
 
     def change_password(
         self, session: Session, user: User, old_password: str, new_password: str
