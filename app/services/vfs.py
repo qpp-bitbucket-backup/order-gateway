@@ -35,12 +35,13 @@ class VFSService:
         not the structured code/service/serviceId/alias breakdown VFS's full
         example shows. We map "company" onto ``carrier.code`` (closest
         semantic match — the doc describes ``code`` as e.g. "fedex").
-        ``service`` is hardcoded to ``"Standard"`` — every store we push to
-        QPMN currently defaults to Standard shipping (no per-order signal
-        exists to say otherwise; see ``fetch_shipping_method_from_qpmn``),
-        so this avoids an extra QPMN API call on every shipped postback.
+        ``service`` is read from ``order.creation_payload["shippingMethod"]``
+        — the QPMN create-order payload we actually submitted for this
+        order (persisted per-order by ``push_order()``), which carries the
+        shipping method QPMN itself is responsible for fulfilling — rather
+        than an extra QPMN API call on every shipped postback.
         ``serviceId``/``alias`` stay ``null``, rather than fabricate data
-        neither QPMN nor VFS gives us. Revisit if that ever stops holding.
+        neither QPMN nor VFS gives us.
         """
         shipment = (shipments or [{}])[0] or {}
         ship_date_ms = shipment.get("shipDate")
@@ -59,7 +60,7 @@ class VFSService:
             "status": OrderStatus.SHIPPED.value,
             "carrier": {
                 "code": shipment.get("company"),
-                "service": "Standard",
+                "service": (order.creation_payload or {}).get("shippingMethod"),
                 "serviceId": None,
                 "alias": None,
             },
