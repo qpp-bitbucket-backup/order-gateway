@@ -54,11 +54,14 @@ def _capture_currency_alert(alert_key: str, **format_args) -> None:
     )
 
 
-# Statuses that allow updates (order has not reached print-ready stage)
+# Statuses that allow updates (order has not reached print-ready stage).
+# COOLING_OFF sits between VALIDATED and PROCESSING (client cooling-off
+# period) and is still safely editable — nothing has been pushed to QPMN yet.
 UPDATABLE_STATUSES = {
     OrderStatus.RECEIVED,
     OrderStatus.PENDING,
     OrderStatus.VALIDATED,
+    OrderStatus.COOLING_OFF,
     OrderStatus.PROCESSING,
     OrderStatus.FAILED,
     OrderStatus.ERRORED,
