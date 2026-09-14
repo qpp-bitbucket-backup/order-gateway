@@ -2,7 +2,7 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlmodel import Session
 
 from app.core.database import get_session
@@ -15,8 +15,11 @@ from app.schemas.user import (
     LoginRequest,
     LoginResponse,
     ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
 )
 from app.services.user import user_service
+from app.services.email import email_service
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +100,52 @@ def change_password(
             detail="Current password is incorrect",
         )
     return {"message": "Password changed successfully"}
+
+
+@router.post("/users/forgot-password")
+def forgot_password(
+    request: ForgotPasswordRequest,
+    http_request: Request,
+    session: Session = Depends(get_session),
+):
+    """
+    忘記密碼 - 發送重置密碼郵件（SendGrid）。
+
+    重置鏈接基於當前請求的域名：/<host>/admin/reset-password?token=...。
+    無論郵箱是否存在都返回相同的成功響應，避免洩露已註冊郵箱。
+    """
+    if not email_service.is_configured():
+        logger.error("Forgot password requested but SENDGRID_API_KEY is not configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email service is not configured",
+        )
+
+    # e.g. called via https://api.example.com -> link under that origin.
+    # Behind a reverse proxy, run uvicorn with --proxy-headers so scheme/host
+    # follow X-Forwarded-Proto / X-Forwarded-For.
+    base_url = str(http_request.base_url).rstrip("/")
+    user_service.forgot_password(session, request.email, base_url=base_url)
+    return {
+        "message": "If the email address is registered, a password reset link has been sent"
+    }
+
+
+@router.post("/users/reset-password")
+def reset_password(
+    request: ResetPasswordRequest,
+    session: Session = Depends(get_session),
+):
+    """
+    重置密碼 - 使用重置郵件中的 token 設置新密碼。
+    """
+    success = user_service.reset_password(session, request.token, request.new_password)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired password reset token",
+        )
+    return {"message": "Password has been reset successfully"}
 
 
 # ── User CRUD (admin only) ──────────────────────────────────────
