@@ -11,13 +11,12 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
 from sqlmodel import Session, select
-from sqlalchemy import or_
-from app.models.product import Sku
 
 from app.models.order import Order, OrderStatus, OrderType
 from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
 from app.services.file import file_service
+from app.services.sku_matching import find_sku_by_ref
 from app.services.client import client_service
 from app.services.address_mapping import get_state_code, to_iso_country_code
 from app.core.config import settings
@@ -28,6 +27,9 @@ logger = logging.getLogger(__name__)
 _CANCEL_ALERTS = ALERTS["cancel"]
 _SHIPPING_ALERTS = ALERTS["shipping"]
 _CURRENCY_ALERTS = ALERTS["currency"]
+
+# Content-Type value reused in QPMN API request headers
+_JSON_CONTENT_TYPE = "application/json"
 
 
 def _capture_cancel_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
@@ -52,11 +54,14 @@ def _capture_currency_alert(alert_key: str, **format_args) -> None:
     )
 
 
-# Statuses that allow updates (order has not reached print-ready stage)
+# Statuses that allow updates (order has not reached print-ready stage).
+# COOLING_OFF sits between VALIDATED and PROCESSING (client cooling-off
+# period) and is still safely editable — nothing has been pushed to QPMN yet.
 UPDATABLE_STATUSES = {
     OrderStatus.RECEIVED,
     OrderStatus.PENDING,
     OrderStatus.VALIDATED,
+    OrderStatus.COOLING_OFF,
     OrderStatus.PROCESSING,
     OrderStatus.FAILED,
     OrderStatus.ERRORED,
@@ -390,7 +395,7 @@ class OrderService:
         api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/cancel"
         headers = {
             "Authorization": f"Basic {store_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
 
         logger.info(
@@ -644,7 +649,6 @@ class OrderService:
                 )
         else:
             # Address unchanged — content may have changed
-            # TODO: compare and update order content in QPMN
             logger.info("[OrderService] Address unchanged for order %s", order.order_id)
 
         return result
@@ -699,7 +703,7 @@ class OrderService:
         )
         headers = {
             "Authorization": f"Basic {store_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
         # Country is not allowed to update in QPMN platform
         payload = {
@@ -814,12 +818,16 @@ class OrderService:
             if not sku_ref:
                 continue
 
-            # New orders carry the third-party platform SKU (source_sku) in
-            # items[].sku; legacy orders carry the internal sku_id. Resolve
-            # either way — QPMN payloads always use the resolved sku.sku_id.
-            sku = session.exec(
-                select(Sku).where(or_(Sku.sku_id == sku_ref, Sku.source_sku == sku_ref))
-            ).first()
+            # New orders carry the third-party platform SKU (source_sku,
+            # a regex pattern) in items[].sku; legacy orders carry the
+            # internal sku_id. Resolve either way — QPMN payloads always use
+            # the resolved sku.sku_id. Scoped to the order's store so a
+            # catch-all pattern (e.g. ".*") on another store's SKU can
+            # never capture this order's items.
+            sku = find_sku_by_ref(
+                session, sku_ref, active_only=False, match_internal_id=True,
+                store_id=order.store_id,
+            )
             if not sku:
                 raise ValueError(f"SKU: [{sku_ref}] not found")
             sku_id = sku.sku_id
@@ -1008,7 +1016,10 @@ class OrderService:
             )
 
             line_item = {
-                "externalId": sku.sku_id,
+                # Echoes the third-party SKU reference from the original order
+                # payload (order_data.items[].sku) so QPMN webhooks return the
+                # same value back; storeProductId below keeps the internal id.
+                "externalId": item.get("sku"),
                 "unitPrice": sku.unit_price or 0,
                 "storeProductId": sku.sku_id,
                 "quantity": item.get("quantity", 1),
@@ -1194,7 +1205,7 @@ class OrderService:
             api_url = f"{settings.QPMN_API_URL}/store/{store_id}/default/shippingMethod"
             headers = {
                 "Authorization": f"Basic {store_key}",
-                "Content-Type": "application/json",
+                "Content-Type": _JSON_CONTENT_TYPE,
             }
 
             with httpx.Client(timeout=15.0) as client:
@@ -1239,7 +1250,7 @@ class OrderService:
         api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
         headers = {
             "Authorization": f"Basic {store_key}",
-            "Content-Type": "application/json",
+            "Content-Type": _JSON_CONTENT_TYPE,
         }
         try:
             with httpx.Client(timeout=15.0) as client:
@@ -1297,7 +1308,7 @@ class OrderService:
             api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
             headers = {
                 "Authorization": f"Basic {store_key}",
-                "Content-Type": "application/json",
+                "Content-Type": _JSON_CONTENT_TYPE,
             }
 
             with httpx.Client(timeout=15.0) as client:

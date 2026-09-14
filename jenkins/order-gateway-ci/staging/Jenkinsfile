@@ -1,0 +1,169 @@
+pipeline {
+    agent {
+        label 'docker'
+    }
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        // This stops Jenkins from automatically checking out your code
+        skipDefaultCheckout()
+    }
+
+
+    environment {
+        AWS_REGION     = 'ap-southeast-1'
+        AWS_ACCOUNT_ID = '368264529788'
+        ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        ECR_REPO       = 'order-gateway'
+
+        ACR_REGISTRY     = 'prod-plugin-acr-registry.cn-guangzhou.cr.aliyuncs.com'
+        ACR_VPC_REGISTRY = 'prod-plugin-acr-registry-vpc.cn-guangzhou.cr.aliyuncs.com'
+        ACR_NAMESPACE    = 'production'
+        ACR_REPO         = 'order-gateway'
+    }
+
+    stages {
+
+        stage('Checkout App Code & Get Tag') {
+            steps {
+                script {
+                    def tag = ''
+                    
+                    // 1. Parse BITBUCKET_PAYLOAD (provided by BPPR v3.3.5)
+                    if (env.BITBUCKET_PAYLOAD) {
+                        def payload = new groovy.json.JsonSlurper().parseText(env.BITBUCKET_PAYLOAD)
+                        def changes = payload.push?.changes
+                        if (changes) {
+                            for (change in changes) {
+                                if (change.new?.type == 'tag') {
+                                    tag = change.new.name
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 2. Fallback: Extract from Git CLI if payload parsing fails
+                    if (!tag) {
+                        tag = sh(returnStdout: true, script: 'git tag --points-at HEAD').trim()
+                        if (!tag) {
+                        tag = "fallback-${env.BUILD_NUMBER}"
+                        echo "No tag detected. Using build number fallback."
+                        }
+                    }
+                    
+                    env.IMAGE_TAG = tag
+                    echo "Resolved IMAGE_TAG: ${env.IMAGE_TAG}"
+                }
+                
+                dir('app') {
+                    checkout scmGit(
+                        branches: [[name: "refs/tags/${env.IMAGE_TAG}"]],
+                        userRemoteConfigs: [[
+                            url: 'https://bitbucket.org/qpp-team/order-gateway.git',
+                            credentialsId: 'bitbucket-ci-api-token'
+                        ]]
+                    )
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                container('docker') {
+                    script {
+                        sh """
+                            docker build \\
+                                -t ${env.ACR_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG} \\
+                                -t ${env.ACR_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:latest \\
+                                -f app/Dockerfile \\
+                                app
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Push Image to ACR') {
+            steps {
+                container('docker') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'aliyun-acr-credential',
+                        usernameVariable: 'ACR_USER',
+                        passwordVariable: 'ACR_PASS'
+                    )]) {
+                        sh """
+                            echo \$ACR_PASS | docker login \\
+                                --username \$ACR_USER \\
+                                --password-stdin ${env.ACR_REGISTRY}
+
+                            docker push ${env.ACR_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}
+                            docker push ${env.ACR_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:latest
+                        """
+                        echo "Successfully pushed image: ${env.ACR_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                script {
+                    container('aws') {
+                        sh "aws ecr get-login-password --region ${AWS_REGION} > ecr_password.txt"
+                    }
+                    container('docker') {
+                        sh """
+                            docker tag ${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:${IMAGE_TAG} \\
+                                ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                                
+                            docker tag ${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}:latest \\
+                                ${ECR_REGISTRY}/${ECR_REPO}:latest                                
+
+                            cat ecr_password.txt | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                            rm ecr_password.txt
+
+                            docker push ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}
+                            docker push ${ECR_REGISTRY}/${ECR_REPO}:latest
+                        """
+                        echo "Successfully pushed image: ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG}"
+                    }
+                }
+            }
+        }
+
+        stage('Cleanup Docker Images') {
+            steps {
+                container('docker') {
+                    script {
+                        sh """
+                            docker rmi ${ECR_REGISTRY}/${ECR_REPO}:${IMAGE_TAG} || true
+                            docker rmi ${ECR_REGISTRY}/${ECR_REPO}:latest || true
+                        """
+                    }
+                }
+            }
+        }
+
+    }
+
+    post {
+        success {
+            echo "Pipeline completed successfully!"
+            echo "Docker Image Tag: ${env.IMAGE_TAG}"
+            echo "Image pushed to: ${env.ACR_REGISTRY}/${env.ACR_NAMESPACE}/${env.ACR_REPO}:${env.IMAGE_TAG}"
+            echo "Image pushed to: ${env.ECR_REGISTRY}/${env.ECR_REPO}:${env.IMAGE_TAG}"
+            
+        }
+        failure {
+            echo "Pipeline failed!"
+            echo "Please check the logs for error details"
+        }
+        always {
+            echo "Cleaning workspace"
+            cleanWs()
+        }
+    }
+}

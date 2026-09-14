@@ -13,7 +13,7 @@ from app.core.config import settings
 
 from app.core.database import get_session
 from app.models.order import Order, OrderStatus, OrderType
-from app.models.product import Sku, Product
+from app.models.product import Product
 from app.schemas.order import (
     OrderValidationRequest,
     OrderValidationResponse,
@@ -43,6 +43,7 @@ from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection
 from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, DELETABLE_STATUSES, REPUBLISHABLE_STATUSES, parse_parallel_card_id
+from app.services.sku_matching import find_sku_by_ref
 from app.services.oss import oss_service
 from app.tasks.orders import publish_order
 
@@ -73,11 +74,18 @@ def _log_response(endpoint: str, response: dict):
         )
 
 
-# Mapping from internal OrderStatus to external status exposed via API
+# Endpoint label for POST /api/order, reused in DEBUG request/response logs
+_POST_ORDER_ENDPOINT = "POST /order"
+
+
+# Mapping from internal OrderStatus to external status exposed via API.
+# COOLING_OFF maps to "dataready" like VALIDATED/PROCESSING — it is an
+# internal-only stage (client cooling-off period) never surfaced to OMS/VFS.
 _EXTERNAL_STATUS_MAP: dict = {
     OrderStatus.RECEIVED: "received",
     OrderStatus.PENDING: "received",
     OrderStatus.VALIDATED: "dataready",
+    OrderStatus.COOLING_OFF: "dataready",
     OrderStatus.PROCESSING: "dataready",
     OrderStatus.PRINTREADY: "printready",
     OrderStatus.PRINTED: "printed",
@@ -225,6 +233,25 @@ def is_file_accessible(url: str) -> bool:
         return False
 
 
+def _validation_failed(validations: List[Dict[str, str]]) -> JSONResponse:
+    """Build a SiteFlow-compatible 400 "Validation Failed" rejection."""
+    error_resp = OrderCreationErrorResponse(
+        error={
+            "ofError": True,
+            "statusCode": 400,
+            "code": 208,
+            "message": "Validation Failed",
+            "validations": validations,
+            "mongoErr": True,
+        }
+    )
+    _log_response(_POST_ORDER_ENDPOINT, error_resp.model_dump())
+    return JSONResponse(
+        status_code=400,
+        content=error_resp.model_dump(),
+    )
+
+
 @router.post("/order/validate", response_model=OrderValidationResponse)
 def validate_order(
     request: OrderValidationRequest,
@@ -306,14 +333,11 @@ def validate_order(
                     _error(item_loc + ["sku"], "SKU is required for all items", "missing")
                 )
             else:
-                # Look up the SKU by its third-party platform code (source_sku),
-                # scoped to the client's store if set
-                sku_query = select(Sku).where(
-                    (Sku.source_sku == item.sku) & Sku.active.is_(True)
+                # Look up the SKU by its third-party platform code (source_sku,
+                # a regex pattern), scoped to the client's store if set
+                existing_sku = find_sku_by_ref(
+                    session, item.sku, active_only=True, store_id=store_id
                 )
-                if store_id:
-                    sku_query = sku_query.where(Sku.store_id == store_id)
-                existing_sku = session.exec(sku_query).first()
 
                 if not existing_sku:
                     validation_errors.append(
@@ -469,6 +493,11 @@ def submit_order(
     exists for this store, the API returns HTTP **400** with a SiteFlow-compatible
     error response.
 
+    **SKU validation:** Every item's `sku` must resolve to an active SKU in the
+    client's store via its `source_sku` pattern (exact or regex match, same
+    rule as POST /order/validate). Unresolvable SKUs yield HTTP **400** with a
+    SiteFlow-compatible validation error. Skipped for parallel card orders.
+
     **File accessibility:** Every item component with `fetch=true` must point
     to a reachable URL (lightweight HEAD/streamed-GET probe, same rule as
     POST /order/validate). Unreachable files yield HTTP **400** with a
@@ -482,10 +511,19 @@ def submit_order(
     `IVAN-TEST-0004_1_S10098923` — the order is treated as a parallel card:
     `items` and `shipments` in the payload are not validated. Parallel card
     payloads still carry items — the schema-level requirement (at least one
-    item) is unchanged. The base card lookup is not store-scoped (base and
-    parallel card may belong to different stores).
+    item) is unchanged. The base card lookup is store-scoped, so a parallel
+    card must reference a base card order from the same store. If the id
+    matches the parallel-card format but no base card order exists, the
+    request is rejected with HTTP **400** (SiteFlow-compatible validation
+    error).
+
+    **Parallel card version chain:** Submitting version N (N >= 2) requires
+    the previous version (same base card, same shipping number, e.g.
+    `base-1_Sxxxx` when submitting `base-2_Sxxxx`) to already exist and be
+    cancelled. A missing previous version is rejected ("was not submitted"),
+    and an active previous version is rejected ("still being processed").
     """
-    _log_request("POST /order", request.model_dump())
+    _log_request(_POST_ORDER_ENDPOINT, request.model_dump())
     try:
         # Check for duplicate (idempotency)
         existing_order = order_service.check_duplicate(
@@ -509,7 +547,7 @@ def submit_order(
                     "mongoErr": True,
                 }
             )
-            _log_response("POST /order", error_resp.model_dump())
+            _log_response(_POST_ORDER_ENDPOINT, error_resp.model_dump())
             return JSONResponse(
                 status_code=400,
                 content=error_resp.model_dump(),
@@ -520,14 +558,16 @@ def submit_order(
         # "CN-TEST20260811-1_S1055552" or "IVAN-TEST-0004_1_S10098923"). When the
         # base-card part matches an existing order in the same store,
         # items/shipments validation is skipped entirely — the payload itself
-        # still carries items (schema-level requirement).
+        # still carries items (schema-level requirement). A sourceOrderId that
+        # follows the pattern but has no matching base card order is rejected.
+        parallel_card_parts = parse_parallel_card_id(request.orderData.sourceOrderId)
         parallel_parent = order_service.find_parallel_card_parent(
             session,
             source_order_id=request.orderData.sourceOrderId,
             store_id=store_id,
         )
         if parallel_parent:
-            _, version, shipping_no = parse_parallel_card_id(request.orderData.sourceOrderId)
+            base_source_order_id, version, shipping_no = parallel_card_parts
             logger.info(
                 "[submit_order] Parallel card order detected: sourceOrderId '%s' "
                 "matches base card order %s ('%s', version %s, shipping %s) — skipping items/shipments validation",
@@ -537,12 +577,101 @@ def submit_order(
                 version,
                 shipping_no,
             )
+            # Version chain rule: submitting version N (N >= 2) requires the
+            # previous version of the same base card AND shipping number to
+            # already exist and be cancelled. Otherwise the submission is
+            # rejected — a missing predecessor will never be cancelled, and a
+            # still-active predecessor is exactly the double-production this
+            # check exists to prevent.
+            if int(version) >= 2:
+                prev_version = int(version) - 1
+                # The version separator may be "-" or "_" — accept either form.
+                prev_ids = {
+                    f"{base_source_order_id}-{prev_version}_S{shipping_no}",
+                    f"{base_source_order_id}_{prev_version}_S{shipping_no}",
+                }
+                prev_query = select(Order).where(
+                    Order.source_order_id.in_(prev_ids),
+                    Order.is_active.is_(True),
+                )
+                if store_id:
+                    prev_query = prev_query.where(Order.store_id == store_id)
+                prev = session.exec(prev_query).first()
+                if not prev:
+                    logger.warning(
+                        "[submit_order] Parallel card '%s' rejected: previous version %s not submitted",
+                        request.orderData.sourceOrderId, prev_version,
+                    )
+                    return _validation_failed([
+                        {
+                            "path": "orderData.sourceOrderId",
+                            "message": (
+                                f"Previous version of this parallel card order was not submitted: "
+                                f"no active order found for version {prev_version} of base card "
+                                f"'{base_source_order_id}' with shipping number '{shipping_no}'"
+                            ),
+                        }
+                    ])
+                if prev.status != OrderStatus.CANCELLED:
+                    logger.warning(
+                        "[submit_order] Parallel card '%s' rejected: previous version '%s' still active (status=%s)",
+                        request.orderData.sourceOrderId, prev.source_order_id, prev.status.value,
+                    )
+                    return _validation_failed([
+                        {
+                            "path": "orderData.sourceOrderId",
+                            "message": (
+                                f"Previous version of this parallel card order is still being processed "
+                                f"('{prev.source_order_id}', status '{prev.status.value}'); "
+                                f"cancel it before submitting version {version}"
+                            ),
+                        }
+                    ])
+        elif parallel_card_parts:
+            # The id looks like a parallel card but its base card does not exist
+            # (in this store) — reject instead of creating an orphan that could
+            # never resolve its parent for barcode/address inheritance.
+            base_source_order_id, version, shipping_no = parallel_card_parts
+            logger.warning(
+                "[submit_order] Parallel card id '%s' has no base card order '%s' — rejecting",
+                request.orderData.sourceOrderId,
+                base_source_order_id,
+            )
+            return _validation_failed([
+                {
+                    "path": "orderData.sourceOrderId",
+                    "message": (
+                        f"Parallel card order references unknown base card order "
+                        f"'{base_source_order_id}' (version {version}, shipping {shipping_no})"
+                    ),
+                }
+            ])
 
-        # File accessibility check (same rule as POST /order/validate): every
-        # component with fetch=true must point at a reachable URL, otherwise
-        # the downstream design-file download would fail. Parallel card
+        # Items validation (same rules as POST /order/validate). Parallel card
         # orders keep their documented items/shipments validation skip.
         if not parallel_parent:
+            # SKU check: every item's sku must resolve to an active SKU in this
+            # store via its source_sku pattern (exact or regex match) —
+            # otherwise the order could never be pushed to QPMN later.
+            sku_errors = []
+            for idx, item in enumerate(request.orderData.items):
+                if not item.sku:
+                    sku_errors.append({
+                        "path": f"orderData.items.{idx}.sku",
+                        "message": "SKU is required for all items",
+                    })
+                    continue
+                if not find_sku_by_ref(session, item.sku, active_only=True, store_id=store_id):
+                    sku_errors.append({
+                        "path": f"orderData.items.{idx}.sku",
+                        "message": "Invalid or inactive SKU",
+                    })
+            if sku_errors:
+                return _validation_failed(sku_errors)
+
+            # File accessibility check: every component with fetch=true must
+            # point at a reachable URL, otherwise the downstream design-file
+            # download would fail.
             file_errors = [
                 {
                     "path": f"orderData.items.{idx}.components.{cidx}.path",
@@ -553,21 +682,7 @@ def submit_order(
                 if component.fetch and component.path and not is_file_accessible(component.path)
             ]
             if file_errors:
-                error_resp = OrderCreationErrorResponse(
-                    error={
-                        "ofError": True,
-                        "statusCode": 400,
-                        "code": 208,
-                        "message": "Validation Failed",
-                        "validations": file_errors,
-                        "mongoErr": True,
-                    }
-                )
-                _log_response("POST /order", error_resp.model_dump())
-                return JSONResponse(
-                    status_code=400,
-                    content=error_resp.model_dump(),
-                )
+                return _validation_failed(file_errors)
 
         # Create order via service
         order = order_service.create_order(
@@ -614,7 +729,7 @@ def submit_order(
             timestamp=timestamp,
             sourceAccountId=source_account_id,
         )
-        _log_response("POST /order", resp.model_dump())
+        _log_response(_POST_ORDER_ENDPOINT, resp.model_dump())
         return resp
 
     except HTTPException:
@@ -1009,7 +1124,6 @@ def update_order(
                 msg = f"Address sync failed: {address_result['error']}"
                 action = "address_update_failed"
             else:
-                # TODO: address unchanged, content may have changed
                 msg = "Address unchanged."
                 action = "address_update_unchanged"
 
@@ -1221,7 +1335,7 @@ def platform_get_orders(
     pagesize: int = Query(10, ge=1, le=100, description="Number of orders per page"),
     status_filter: Optional[List[OrderStatus]] = Query(None, alias="status[]", description="Filter by order status (supports multiple values, e.g. status[]=failed&status[]=errored)"),
     store_id: Optional[str] = Query(None, description="Filter by store ID"),
-    sourceOrderId: Optional[str] = Query(None, description="Fuzzy search by source order ID"),
+    source_order_id: Optional[str] = Query(None, alias="sourceOrderId", description="Fuzzy search by source order ID"),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -1248,7 +1362,7 @@ def platform_get_orders(
             page=page,
             pagesize=pagesize,
             statuses=status_filter,
-            source_order_id=sourceOrderId,
+            source_order_id=source_order_id,
         )
 
         order_summaries = []
@@ -1267,6 +1381,7 @@ def platform_get_orders(
                 storeId=order.store_id,
                 storeOrderId=order.store_order_id,
                 type=order.type.value,
+                coolingOffSeconds=order.cooling_off_seconds,
                 creationPayload=order.creation_payload,
                 parentSourceOrderId=parent_source_order_id,
                 parentOrderId=parent_order_id,
@@ -1372,6 +1487,7 @@ def platform_get_order(
             storeId=order.store_id,
             storeOrderId=order.store_order_id,
             type=order.type.value,
+            coolingOffSeconds=order.cooling_off_seconds,
             creationPayload=order.creation_payload,
             parentSourceOrderId=parent_source_order_id,
             parentOrderId=parent_order_id,

@@ -37,7 +37,7 @@ class Sku(BaseModel):
     """SKU schema."""
     id: str = Field(..., alias="_id", description="Internal SKU ID")
     code: str = Field(..., description="SKU code")
-    sourceSku: Optional[str] = Field(None, max_length=32, description="Third-party platform SKU code")
+    sourceSku: Optional[str] = Field(None, max_length=255, description="Third-party platform SKU: regex pattern (re.fullmatch) or literal")
     description: Optional[str] = Field(None, description="SKU description")
     productId: str = Field(..., description="Associated product ID")
     active: bool = Field(True, description="Whether SKU is active")
@@ -66,7 +66,7 @@ class SkusListResponse(BaseModel):
 class SkuUpdateRequest(BaseModel):
     """Schema for SKU update request. Only provided fields will be updated."""
     code: Optional[str] = Field(None, description="SKU code")
-    sourceSku: Optional[str] = Field(None, max_length=32, description="Third-party platform SKU code")
+    sourceSku: Optional[str] = Field(None, max_length=255, description="Third-party platform SKU: regex pattern (re.fullmatch) or literal")
     description: Optional[str] = Field(None, description="SKU description")
     productId: Optional[str] = Field(None, description="Associated product ID")
     active: Optional[bool] = Field(None, description="Whether SKU is active")

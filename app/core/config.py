@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     QPMN_PUSH_RETRY_COUNTDOWN: int = 900   # Base delay in seconds for exponential backoff
     QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
-    QPMN_ORDER_API_VERSION: str = "legacy"   # Order creation API version: "legacy" or "open"
+    QPMN_ORDER_API_VERSION: str = "open"   # Order creation API version: "legacy" or "open"
 
     # PDF Processing Configuration
     MODIFY_PDF_RESOLUTION: bool = False

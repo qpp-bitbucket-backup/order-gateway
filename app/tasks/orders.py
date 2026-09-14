@@ -7,7 +7,6 @@ import sentry_sdk
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 from sqlmodel import Session, select
-from sqlalchemy import or_
 from sqlalchemy.orm import attributes
 from app.core.celery import celery_app
 from app.core.database import engine
@@ -15,10 +14,10 @@ from app.core.config import settings
 from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING
 from app.models.order import Order, OrderStatus, OrderType, can_transition, OMS_STATUS_MAP
 from app.models.address import Address, AddressType
-from app.models.product import Sku
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from app.services.file import file_service
+from app.services.sku_matching import find_sku_by_ref
 from app.services.watermark import watermark_to_png, WATERMARK_TEXT
 from app.services.client import client_service
 from app.services.oms import oms_service, OMSRetryableError
@@ -222,13 +221,16 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                 for product in products:
                     components = product.get("components", [])
                     sku = product.get("sku", None)
-                    # Resolve items[].sku (source_sku or internal id) to the
-                    # internal sku_id so order.files keys always use the
-                    # original QPMN id
+                    # Resolve items[].sku (internal id, literal source_sku,
+                    # or source_sku regex pattern) to the internal sku_id so
+                    # order.files keys always use the original QPMN id.
+                    # Scoped to the order's store so a catch-all pattern on
+                    # another store's SKU can never capture this order.
                     if sku:
-                        sku_row = session.exec(
-                            select(Sku).where(or_(Sku.sku_id == sku, Sku.source_sku == sku))
-                        ).first()
+                        sku_row = find_sku_by_ref(
+                            session, sku, active_only=False,
+                            match_internal_id=True, store_id=store_id,
+                        )
                         if sku_row:
                             sku = sku_row.sku_id
                     for component in components:
@@ -483,14 +485,41 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
                 shipments=None,
             )
 
-            # Chain to push_order
+            # Chain to push_order — honoring the client's cooling-off period
+            # when configured: the order waits in COOLING_OFF for that many
+            # seconds before the push. COOLING_OFF is internal-only (like
+            # PENDING/PROCESSING it is never reported to OMS/VFS — the
+            # dataready notification above already covers this stage).
+            cooling_off_seconds = client_service.get_cooling_off_seconds(order.store_id)
+            if cooling_off_seconds > 0:
+                order.status = OrderStatus.COOLING_OFF
+                # Snapshot the applied period on the order — the platform
+                # frontend reads it (plus the order_cooling_off log timestamp
+                # below) to render the countdown; kept after the period ends
+                # as a record of what was actually applied.
+                order.cooling_off_seconds = cooling_off_seconds
+                _append_order_log(
+                    order,
+                    "order_cooling_off",
+                    f"Order holding in cooling-off for {cooling_off_seconds}s before QPMN push",
+                )
+                session.add(order)
+                session.commit()
+                logger.info(
+                    f"[Celery] Order {order_id} status updated to COOLING_OFF "
+                    f"(client cooling-off: {cooling_off_seconds}s)"
+                )
+
             task_payload = {
                 "order_id": order.order_id,
                 "source_order_id": order.source_order_id,
                 "status": order.status.value,
                 "created_at": order.created_at.isoformat() if order.created_at else None,
             }
-            push_order.apply_async(args=[task_payload])
+            push_order.apply_async(
+                args=[task_payload],
+                countdown=cooling_off_seconds if cooling_off_seconds > 0 else None,
+            )
             return True
 
     except Exception as e:

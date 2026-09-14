@@ -1,0 +1,46 @@
+image: python:3.11
+
+definitions:
+  steps:
+    - step: &build-step
+        name: Unit tests & SonarQube analysis
+        size: 1x  # 或 4x 根據需要
+        caches:
+          - pip
+          - sonar
+        script:
+          # Runtime + test dependencies (same base image as the Dockerfile)
+          - pip install -r requirements.txt -r requirements-dev.txt
+          # Unit tests with coverage — coverage.xml feeds the SonarQube scan
+          - pytest tests/ --cov=app --cov-report=xml:coverage.xml --cov-report=term
+          # SonarQube scan; fails the pipeline when the quality gate fails.
+          # Cap the scanner JVM heap: uncapped, the Java scanner can eat the
+          # whole step memory limit and get OOM-killed (step "crashed",
+          # after-script never runs).
+          - pipe: sonarsource/sonarqube-scan:3.0.2
+            variables:
+              SONAR_HOST_URL: ${SONAR_HOST_URL}
+              SONAR_TOKEN: ${SONAR_TOKEN}
+              SONAR_SCANNER_OPTS: '-Xmx1g'
+              EXTRA_ARGS: '-Dsonar.qualitygate.wait=true'
+    - step: &sync-to-github
+        name: Sync branch to GitHub mirror
+        image: alpine/git:latest
+        script:
+          # The step starts in the full clone made by the global
+          # "clone: depth: full" — no manual re-clone needed. Push the
+          # triggering branch under the same name to the backup mirror.
+          # Use "--all" instead to mirror every branch.
+          - git remote add github https://x-token-auth:${GITHUB_TOKEN}@github.com/qpp-bitbucket-backup/order-gateway.git
+          - git push github $BITBUCKET_BRANCH
+  caches:
+    sonar: ~/.sonar
+
+clone:
+  depth: full
+
+pipelines:
+  branches:
+    '{master}':
+      - step: *build-step
+      - step: *sync-to-github

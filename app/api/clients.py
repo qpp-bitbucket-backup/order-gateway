@@ -53,6 +53,7 @@ def _to_summary(client: Client) -> ClientSummary:
         store_id=client.store_id,
         token=client.token,
         description=client.description,
+        cooling_off_seconds=client.cooling_off_seconds or 0,
         is_active=client.is_active,
         created_at=client.created_at,
         updated_at=client.updated_at,
@@ -92,6 +93,7 @@ def create_client(
         token=token,
         secret=secret,
         description=request.description,
+        cooling_off_seconds=request.cooling_off_seconds or 0,
     )
     session.add(client)
     session.commit()
@@ -171,6 +173,8 @@ def update_client(
         client.store_key = request.store_key
     if request.description is not None:
         client.description = request.description
+    if request.cooling_off_seconds is not None:
+        client.cooling_off_seconds = request.cooling_off_seconds
     if request.is_active is not None:
         client.is_active = request.is_active
 
@@ -207,7 +211,7 @@ def deactivate_client(
         )
 
     client.is_active = False
-    client.updated_at = datetime.utcnow()
+    client.updated_at = datetime.now(timezone.utc)
     session.add(client)
     session.commit()
     session.refresh(client)
@@ -271,6 +275,7 @@ def platform_create_client(
         token=token,
         secret=secret,
         description=request.description,
+        cooling_off_seconds=request.cooling_off_seconds or 0,
     )
     session.add(client)
     session.commit()
@@ -566,6 +571,8 @@ def platform_update_client(
         client.store_key = request.store_key
     if request.description is not None:
         client.description = request.description
+    if request.cooling_off_seconds is not None:
+        client.cooling_off_seconds = request.cooling_off_seconds
     if request.is_active is not None:
         client.is_active = request.is_active
 
@@ -574,7 +581,7 @@ def platform_update_client(
         new_secret = _generate_secret()
         client.secret = new_secret
 
-    client.updated_at = datetime.utcnow()
+    client.updated_at = datetime.now(timezone.utc)
     session.add(client)
     session.commit()
     session.refresh(client)
@@ -603,7 +610,7 @@ def platform_deactivate_client(
         )
 
     client.is_active = False
-    client.updated_at = datetime.utcnow()
+    client.updated_at = datetime.now(timezone.utc)
     session.add(client)
     session.commit()
     session.refresh(client)
