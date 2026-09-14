@@ -96,9 +96,8 @@ class VFSService:
             payload: Dict[str, Any] = {
                 "_id": order.order_id,
                 "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-                "sourceOrderId": order.source_order_id,
+                "orderId": order.source_order_id,
                 "status": event_status,
-                "shipments": shipments or [],
             }
 
         if USE_MOCK:
