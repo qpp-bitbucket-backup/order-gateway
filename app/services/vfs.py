@@ -34,9 +34,13 @@ class VFSService:
         QPMN's ``package_shipped`` event only gives a flat "company" string,
         not the structured code/service/serviceId/alias breakdown VFS's full
         example shows. We map "company" onto ``carrier.code`` (closest
-        semantic match — the doc describes ``code`` as e.g. "fedex") and
-        leave the rest ``null``, rather than fabricate data QPMN doesn't
-        give us. Revisit once QPMN can supply the full breakdown.
+        semantic match — the doc describes ``code`` as e.g. "fedex").
+        ``service`` is hardcoded to ``"Standard"`` — every store we push to
+        QPMN currently defaults to Standard shipping (no per-order signal
+        exists to say otherwise; see ``fetch_shipping_method_from_qpmn``),
+        so this avoids an extra QPMN API call on every shipped postback.
+        ``serviceId``/``alias`` stay ``null``, rather than fabricate data
+        neither QPMN nor VFS gives us. Revisit if that ever stops holding.
         """
         shipment = (shipments or [{}])[0] or {}
         ship_date_ms = shipment.get("shipDate")
@@ -55,7 +59,7 @@ class VFSService:
             "status": OrderStatus.SHIPPED.value,
             "carrier": {
                 "code": shipment.get("company"),
-                "service": None,
+                "service": "Standard",
                 "serviceId": None,
                 "alias": None,
             },
@@ -94,8 +98,6 @@ class VFSService:
             payload = self._build_shipped_payload(order, shipments)
         else:
             payload: Dict[str, Any] = {
-                "_id": order.order_id,
-                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
                 "orderId": order.source_order_id,
                 "status": event_status,
             }
