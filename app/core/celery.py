@@ -23,6 +23,25 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,
 )
 
+# Celery Beat schedule for periodic tasks. Disabled feature flags must
+# OMIT the entry entirely: an empty dict value ({} ) still constructs a
+# ScheduleEntry with schedule=None, and beat crashes at startup with
+# 'NoneType' object has no attribute 'is_due'.
+beat_schedule: dict = {}
+if settings.CELERY_BEAT_SYNC_ENABLED:
+    # Sync products for all stores at configured interval
+    beat_schedule["sync-products-periodic"] = {
+        "task": "tasks.products.sync_all_stores_products",
+        "schedule": crontab(minute=f"*/{settings.CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES}"),
+    }
+if settings.CELERY_BEAT_SALES_STATS_ENABLED:
+    # Aggregate daily sales stats per client (yesterday + recompute window).
+    # Celery runs in UTC: hour 17 = 01:00 Asia/Hong_Kong (UTC+8, no DST).
+    beat_schedule["daily-sales-stats"] = {
+        "task": "tasks.stats.aggregate_daily_sales_stats",
+        "schedule": crontab(hour=settings.CELERY_BEAT_SALES_STATS_HOUR, minute=0),
+    }
+
 # Configure Celery
 celery_app.conf.update(
     task_serializer="json",
@@ -60,20 +79,7 @@ celery_app.conf.update(
         # — every deployment running workers already consumes that queue.
         "tasks.stats.aggregate_daily_sales_stats": {"queue": QUEUE_PRODUCT_SYNCING},
     },
-    # Celery Beat schedule for periodic tasks
-    beat_schedule={
-        # Sync products for all stores at configured interval
-        "sync-products-periodic": {
-            "task": "tasks.products.sync_all_stores_products",
-            "schedule": crontab(minute=f"*/{settings.CELERY_BEAT_SYNC_PRODUCT_INTERVAL_MINUTES}"),
-        } if settings.CELERY_BEAT_SYNC_ENABLED else {},
-        # Aggregate daily sales stats per client (yesterday + recompute window).
-        # Celery runs in UTC: hour 17 = 01:00 Asia/Hong_Kong (UTC+8, no DST).
-        "daily-sales-stats": {
-            "task": "tasks.stats.aggregate_daily_sales_stats",
-            "schedule": crontab(hour=settings.CELERY_BEAT_SALES_STATS_HOUR, minute=0),
-        } if settings.CELERY_BEAT_SALES_STATS_ENABLED else {},
-    },
+    beat_schedule=beat_schedule,
 )
 
 # Auto-discover tasks
