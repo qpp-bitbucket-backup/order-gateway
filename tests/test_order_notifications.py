@@ -272,10 +272,9 @@ class TestEmailMutedStatuses:
             ) is None
         assert not dispatched
 
-    def test_enqueue_creates_row_for_cooling_off(self, monkeypatch):
+    def test_enqueue_creates_row_for_cooling_off(self, monkeypatch, db_engine):
         from sqlmodel import Session
 
-        from app.core.database import engine
         from app.models.notification import NotificationEmailLog
         from app.tasks.notifications import notify_order_status_email
 
@@ -286,7 +285,7 @@ class TestEmailMutedStatuses:
         )
         order = _order(OrderStatus.VALIDATED)
         order.store_id = "notify-test-store"
-        with Session(engine) as session:
+        with Session(db_engine) as session:
             log_id = enqueue_status_change_email(
                 session, order, OrderStatus.VALIDATED, OrderStatus.COOLING_OFF,
                 NotificationLevel.INFO,
@@ -311,10 +310,9 @@ class TestCreateOrderNotification:
     silently produced no notification because the constructor-style status
     assignment was not among the transition call sites)."""
 
-    def test_create_order_seeds_log_and_dispatches_notification(self, monkeypatch):
+    def test_create_order_seeds_log_and_dispatches_notification(self, monkeypatch, db_engine):
         from sqlmodel import Session, select
 
-        from app.core.database import engine
         from app.models.notification import NotificationEmailLog
         from app.services.order import order_service, publish_order
         from app.tasks.notifications import notify_order_status_email
@@ -327,7 +325,7 @@ class TestCreateOrderNotification:
         monkeypatch.setattr(publish_order, "apply_async", lambda *a, **kw: None)
 
         nlog = None
-        with Session(engine) as session:
+        with Session(db_engine) as session:
             order = order_service.create_order(
                 session,
                 source_account="notify-test",
