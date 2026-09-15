@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Dict, Any, Union
 
 
@@ -133,8 +133,7 @@ class FullOrder(BaseModel):
     orderData: Optional[Dict[str, Any]] = Field(None, description="Complete order data")
     version: int = Field(1, alias="__v", description="Document version")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class OrderValidationResponse(BaseModel):
@@ -153,8 +152,7 @@ class OrderSubmissionResponse(BaseModel):
     timestamp: str = Field(..., description="ISO-8601 timestamp of order creation")
     sourceAccountId: Optional[str] = Field(None, description="Base64-encoded store_id of the client")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class OrderSummary(BaseModel):
@@ -164,8 +162,7 @@ class OrderSummary(BaseModel):
     source: Optional[Dict[str, Any]] = Field(None, description="Source information")
     orderData: Optional[Dict[str, Any]] = Field(None, description="Order data summary")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class PlatformOrderSummary(BaseModel):
@@ -190,8 +187,7 @@ class PlatformOrderSummary(BaseModel):
     createdAt: Optional[str] = Field(None, description="Created timestamp")
     updatedAt: Optional[str] = Field(None, description="Updated timestamp")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class PlatformOrdersListResponse(BaseModel):
@@ -244,8 +240,7 @@ class PlatformFullOrder(BaseModel):
     billingAddress: Optional[MaskedAddress] = Field(None, description="Latest billing address with PII masked")
     webhooks: Optional[List[Dict[str, Any]]] = Field(None, description="Webhook log records for this order, sorted by created_at ascending")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class PlatformOrderDetailsResponse(BaseModel):

@@ -80,22 +80,32 @@ def _prepare(session):
 
 
 class TestSourceSelection:
+    # Note: assertions compare content via the returned context, not object
+    # identity — session.commit() expires the ORM objects, so _prepare
+    # re-reads the JSON columns as fresh dicts.
+
     def test_product_design_data_preferred_when_present(self, session):
         pdd, cp = copy.deepcopy(OPEN_PDD), copy.deepcopy(LEGACY_CP)
         _seed(session, product_design_data=pdd, customize_project=cp)
         _, contexts, _ = _prepare(session)
-        assert contexts[0]["customize_project"] is pdd
-        # the Open API image injection replaced the placeholder URL
-        effect = pdd["designData"][0]["views"][0]["designs"][0]["effectImages"][0]
+        chosen = contexts[0]["customize_project"]
+        # the SKU's Open API structure is preferred over the legacy cp ...
+        assert "designData" in chosen
+        assert chosen["designData"][0]["code"] == "mat-1"
+        assert cp["designs"][0]["pageContentDesigns"][0]["image"] is None
+        # ... and the Open API image injection replaced the placeholder URL
+        effect = chosen["designData"][0]["views"][0]["designs"][0]["effectImages"][0]
         assert effect["imageUrl"] == "https://oss/file-0.png"
 
     def test_legacy_customize_project_used_as_fallback(self, session):
         cp = copy.deepcopy(LEGACY_CP)
         _seed(session, product_design_data=None, customize_project=cp)
         _, contexts, _ = _prepare(session)
-        assert contexts[0]["customize_project"] is cp
-        # the legacy image injection replaced the placeholder image
-        pcd = cp["designs"][0]["pageContentDesigns"][0]
+        chosen = contexts[0]["customize_project"]
+        # the legacy structure is used as fallback ...
+        assert chosen["designs"][0]["materialPath"] == "material/front"
+        # ... and the legacy image injection replaced the placeholder image
+        pcd = chosen["designs"][0]["pageContentDesigns"][0]
         assert pcd["image"] == "https://oss/file-0.png"
 
 

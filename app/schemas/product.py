@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -20,8 +20,7 @@ class Product(BaseModel):
     createdAt: Optional[datetime] = Field(None, description="Creation timestamp")
     updatedAt: Optional[datetime] = Field(None, description="Last update timestamp")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class ProductsListResponse(BaseModel):
@@ -50,8 +49,7 @@ class Sku(BaseModel):
     createdAt: Optional[datetime] = Field(None, description="Creation timestamp")
     updatedAt: Optional[datetime] = Field(None, description="Last update timestamp")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SkusListResponse(BaseModel):
