@@ -860,16 +860,20 @@ class OrderService:
             sku_id = sku.sku_id
 
             properties = sku.properties or {}
-            # QPMN_ORDER_API_VERSION=open: the dedicated product_design_data
-            # field replaces customize_project as the Open API design source
-            # (falls back to customize_project for SKUs configured before the
-            # field existed)
-            if settings.QPMN_ORDER_API_VERSION == "open" and sku.product_design_data is not None:
+            # The design source follows the SKU's own data, NOT
+            # QPMN_ORDER_API_VERSION (that config only picks the create-order
+            # payload builder; a store can mix both SKU shapes): prefer the
+            # dedicated Open API product_design_data, falling back to the
+            # legacy customize_project for SKUs configured before the field
+            # existed.
+            if sku.product_design_data is not None:
                 customize_project = sku.product_design_data
-                designs = customize_project.get("designData", [])
             else:
                 customize_project = sku.customize_project or {}
-                designs = customize_project.get("designs", [])
+            # Legacy "designs" injection list — Open API dicts simply have no
+            # "designs" key, so the legacy injection loop below is a no-op
+            # for them.
+            designs = customize_project.get("designs", [])
             
             # order.files keys always use the resolved internal sku_id (the
             # publish task resolves source_sku before writing) so they match
@@ -1098,15 +1102,14 @@ class OrderService:
         """
         Convert legacy ``customizeProject`` to Open API ``productDesignData``.
 
-        Behavior depends on ``QPMN_ORDER_API_VERSION``:
-
-        - ``open``: ``customizeProject`` already stores the Open API
-          structure — pass through ``customizeProject.designData`` directly.
-        - otherwise: legacy conversion, ``customizeProject.designs`` →
-          ``designData``, ``properties`` → ``designAttributeValues``.
+        The path is picked by the INPUT structure, not QPMN_ORDER_API_VERSION
+        (a store can mix both SKU shapes): a dict that already carries the
+        Open API ``designData`` key passes it through unchanged; a legacy
+        ``designs`` dict converts to ``designData`` + ``designAttributeValues``
+        (from ``properties``).
         """
-        if settings.QPMN_ORDER_API_VERSION == "open":
-            # customizeProject already stores the Open API designData list
+        if "designData" in customize_project:
+            # Already the Open API structure — pass through
             return {"designData": customize_project.get("designData", [])}
 
         design_attribute_values: List[Dict[str, Any]] = []
