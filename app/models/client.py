@@ -1,5 +1,6 @@
-from sqlmodel import Field
-from typing import Optional
+from sqlmodel import Field, Column
+from sqlalchemy import JSON
+from typing import Optional, Dict, Any
 
 from app.models.base import BaseModel
 
@@ -21,5 +22,14 @@ class Client(BaseModel, table=True):
         description=(
             "Order cooling-off period in seconds: a validated order waits in "
             "COOLING_OFF for this long before being pushed to QPMN (0 = no cooling-off)"
+        ),
+    )
+    notification_config: Optional[Dict[str, Any]] = Field(
+        None,
+        sa_column=Column(JSON),
+        description=(
+            'Per-level order status email notification settings: '
+            '{"info"|"warning"|"error": {"enabled": bool, "emails": [...]}}; '
+            "NULL = all levels disabled (no status-change emails sent)"
         ),
     )

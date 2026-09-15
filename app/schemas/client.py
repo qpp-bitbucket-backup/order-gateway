@@ -1,7 +1,22 @@
 from datetime import datetime, timezone, date
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
+
+
+class NotificationLevelSetting(BaseModel):
+    """Per-level email notification setting stored on the client."""
+
+    enabled: bool = Field(False, description="Whether status-change emails are enabled for this level")
+    emails: List[EmailStr] = Field(default_factory=list, description="Recipient addresses notified at this level")
+
+
+class NotificationConfig(BaseModel):
+    """Order status change email notification settings, one entry per level."""
+
+    info: NotificationLevelSetting = Field(default_factory=NotificationLevelSetting, description="INFO: normal status flow (received ... shipped)")
+    warning: NotificationLevelSetting = Field(default_factory=NotificationLevelSetting, description="WARNING: order cancelled")
+    error: NotificationLevelSetting = Field(default_factory=NotificationLevelSetting, description="ERROR: order failed/errored")
 
 
 class ClientCreateRequest(BaseModel):
@@ -11,6 +26,7 @@ class ClientCreateRequest(BaseModel):
     store_key: Optional[str] = Field(None, max_length=128, description="Store key for additional identification")
     description: Optional[str] = Field(None, max_length=512, description="Optional description")
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0/omitted = none)")
+    notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (omitted = all disabled)")
 
 
 class PlatformClientCreateRequest(BaseModel):
@@ -23,6 +39,7 @@ class PlatformClientCreateRequest(BaseModel):
     store_key: str = Field(..., min_length=1, max_length=128, description="Store key for additional identification")
     description: str = Field(..., min_length=1, max_length=512, description="Client description")
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0/omitted = none)")
+    notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (omitted = all disabled)")
 
 
 class ClientSecretRevealRequest(BaseModel):
@@ -69,6 +86,7 @@ class ClientUpdateRequest(BaseModel):
     store_key: Optional[str] = Field(None, max_length=128, description="Store key for additional identification")
     description: Optional[str] = Field(None, max_length=512, description="Optional description")
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0 = none)")
+    notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (pass to replace; omit to keep)")
     is_active: Optional[bool] = Field(None, description="Whether the client is active")
     rotate_secret: bool = Field(False, description="Generate a new secret for this client")
 
@@ -81,6 +99,7 @@ class ClientSummary(BaseModel):
     token: str = Field(..., description="OneFlow API token")
     description: Optional[str] = Field(None, description="Optional description")
     cooling_off_seconds: int = Field(0, description="Order cooling-off period in seconds before QPMN push (0 = none)")
+    notification_config: NotificationConfig = Field(default_factory=NotificationConfig, description="Per-level order status email notification settings")
     is_active: bool = Field(..., description="Whether the client is active")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")

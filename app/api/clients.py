@@ -54,6 +54,7 @@ def _to_summary(client: Client) -> ClientSummary:
         token=client.token,
         description=client.description,
         cooling_off_seconds=client.cooling_off_seconds or 0,
+        notification_config=client.notification_config or {},
         is_active=client.is_active,
         created_at=client.created_at,
         updated_at=client.updated_at,
@@ -94,6 +95,7 @@ def create_client(
         secret=secret,
         description=request.description,
         cooling_off_seconds=request.cooling_off_seconds or 0,
+        notification_config=request.notification_config.model_dump() if request.notification_config else None,
     )
     session.add(client)
     session.commit()
@@ -175,6 +177,8 @@ def update_client(
         client.description = request.description
     if request.cooling_off_seconds is not None:
         client.cooling_off_seconds = request.cooling_off_seconds
+    if request.notification_config is not None:
+        client.notification_config = request.notification_config.model_dump()
     if request.is_active is not None:
         client.is_active = request.is_active
 
@@ -276,6 +280,7 @@ def platform_create_client(
         secret=secret,
         description=request.description,
         cooling_off_seconds=request.cooling_off_seconds or 0,
+        notification_config=request.notification_config.model_dump() if request.notification_config else None,
     )
     session.add(client)
     session.commit()
@@ -573,6 +578,8 @@ def platform_update_client(
         client.description = request.description
     if request.cooling_off_seconds is not None:
         client.cooling_off_seconds = request.cooling_off_seconds
+    if request.notification_config is not None:
+        client.notification_config = request.notification_config.model_dump()
     if request.is_active is not None:
         client.is_active = request.is_active
 

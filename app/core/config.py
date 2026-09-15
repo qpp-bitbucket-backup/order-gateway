@@ -127,6 +127,16 @@ class Settings(BaseSettings):
     VFS_NOTIFY_RETRY_COUNT: int = 5         # Max retry attempts when VFS postback returns 503/timeout
     VFS_NOTIFY_RETRY_COUNTDOWN: int = 300    # Base delay in seconds for exponential backoff
     VFS_NOTIFY_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
+    # Order status-change email notifications (SendGrid) — shorter retry
+    # window than OMS/VFS postbacks: a delayed email is low-value, a lost
+    # WARNING/ERROR one is not.
+    EMAIL_NOTIFY_RETRY_COUNT: int = 3        # Max attempts for failed status-change notification emails
+    EMAIL_NOTIFY_RETRY_COUNTDOWN: int = 60   # Base delay in seconds for exponential backoff
+    EMAIL_NOTIFY_RETRY_MAX_COUNTDOWN: int = 900  # Max delay cap in seconds (15 minutes)
+    # Admin panel base URL (no trailing slash). When set, order status
+    # notification emails embed a "View Details" button linking to
+    # {ADMIN_BASE_URL}/admin/orders/show/{order_id}; empty disables the button.
+    ADMIN_BASE_URL: str = ""
 
     # Alibaba Cloud OSS Configuration
     OSS_ACCESS_KEY_ID: str = "your-oss-access-key-id"
