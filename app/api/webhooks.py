@@ -17,6 +17,7 @@ from app.models.order import Order, OrderStatus, can_transition, is_item_event_s
 from app.models.shipment import OrderShipment
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.schemas.webhook import QpmnOrderItemEvent, QpmnPackageShippedEvent, WebhookResponse
+from app.services.order_notifications import enqueue_status_change_email, record_status_change
 from app.tasks.notifications import notify_oms, notify_vfs
 
 logger = logging.getLogger(__name__)
@@ -135,19 +136,14 @@ def _record_produced_item_and_maybe_complete(
         # Already PRODUCED (or moved further, e.g. SHIPPED/CANCELLED) — nothing to do.
         return
 
-    order.status = OrderStatus.PRODUCED
-    if order.logs is None:
-        order.logs = []
-    order.logs.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "action": "qpmn_status_webhook",
-        "message": "All order items produced — status updated to 'produced'",
-        "event_status": "order_item_produced",
-        "worker": "webhook_handler",
-    })
-    flag_modified(order, "logs")
+    produced_msg = "All order items produced — status updated to 'produced'"
+    from_status, level = record_status_change(
+        order, OrderStatus.PRODUCED, "qpmn_status_webhook", produced_msg,
+        worker="webhook_handler", extra={"event_status": "order_item_produced"},
+    )
     session.add(order)
     session.commit()
+    enqueue_status_change_email(session, order, from_status, OrderStatus.PRODUCED, level, produced_msg)
 
     produced_oms_status = OMS_STATUS_MAP[OrderStatus.PRODUCED]
     oms_log = WebhookLog(
@@ -346,19 +342,14 @@ async def receive_order_status(
         return response
 
     # Update order status + append log
-    order.status = new_status
-    if order.logs is None:
-        order.logs = []
-    order.logs.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "action": "qpmn_status_webhook",
-        "message": f"Status updated to {new_status.value} via QPMN webhook",
-        "event_status": effective_status,
-        "worker": "webhook_handler",
-    })
-    flag_modified(order, "logs")
+    webhook_msg = f"Status updated to {new_status.value} via QPMN webhook"
+    from_status, level = record_status_change(
+        order, new_status, "qpmn_status_webhook", webhook_msg,
+        worker="webhook_handler", extra={"event_status": effective_status},
+    )
     session.add(order)
     session.commit()
+    enqueue_status_change_email(session, order, from_status, new_status, level, webhook_msg)
 
     # TI-65: record this (first) produced item too, and complete straight to
     # PRODUCED if the order only ever had one item — the generic notify block

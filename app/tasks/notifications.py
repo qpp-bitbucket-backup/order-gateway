@@ -11,9 +11,14 @@ from app.core.config import settings
 from app.core.database import engine
 from app.core.rabbitmq import QUEUE_ORDER_NOTIFYING
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
-from app.models.order import Order
+from app.models.client import Client
+from app.models.notification import NotificationEmailLog, NotificationLevel
+from app.models.order import Order, OrderStatus
 from app.models.webhook_log import WebhookLog, WebhookProcessStatus
+from app.services.email import email_service
+from app.services.email_templates import render_order_status_email
 from app.services.oms import oms_service
+from app.services.order_notifications import resolve_notification_recipients
 from app.services.vfs import vfs_service
 from app.tasks.orders import _exponential_backoff
 
@@ -301,4 +306,185 @@ def notify_vfs(
                 return False
         except Exception as log_err:
             logger.error("[Celery] Failed to update webhook log: %s", log_err)
+            return False
+
+
+def _retry_or_fail_email(session: Session, nlog: NotificationEmailLog, reason: str) -> bool:
+    """Retry a failed NotificationEmailLog send with exponential backoff, or
+    mark it FAILED once EMAIL_NOTIFY_RETRY_COUNT attempts are exhausted.
+
+    Mirrors the retry bookkeeping of notify_oms/notify_vfs (retry_count on the
+    log row + manual apply_async) — email_service.send_email never raises,
+    so both the send-failure and exception paths funnel through here.
+    """
+    retry_count = nlog.retry_count or 0
+    max_retries = settings.EMAIL_NOTIFY_RETRY_COUNT
+    base_delay = settings.EMAIL_NOTIFY_RETRY_COUNTDOWN
+    max_delay = settings.EMAIL_NOTIFY_RETRY_MAX_COUNTDOWN
+
+    if retry_count < max_retries:
+        countdown = _exponential_backoff(base_delay, retry_count, max_delay)
+        nlog.retry_count = retry_count + 1
+        nlog.details = reason[:512]
+        nlog.updated_at = datetime.now(timezone.utc)
+        session.add(nlog)
+        session.commit()
+        logger.warning(
+            "[Celery] notify_order_status_email failed for log %s (attempt %s/%s), retrying in %ss",
+            nlog.id, retry_count + 1, max_retries, countdown,
+        )
+        notify_order_status_email.apply_async(args=[nlog.id], countdown=countdown)
+        return True
+
+    nlog.process_status = WebhookProcessStatus.FAILED
+    nlog.details = reason[:512]
+    nlog.updated_at = datetime.now(timezone.utc)
+    session.add(nlog)
+    session.commit()
+    logger.error(
+        "[Celery] notify_order_status_email exhausted %s retries for log %s",
+        max_retries, nlog.id,
+    )
+    return False
+
+
+@celery_app.task(
+    name="tasks.notifications.notify_order_status_email",
+    queue=QUEUE_ORDER_NOTIFYING,
+)
+def notify_order_status_email(log_id: int) -> bool:
+    """
+    Send the level-based order status change notification email.
+
+    Resolves recipients from the client's ``notification_config`` for the
+    transition's level and sends one email per address via SendGrid:
+
+    - Level disabled / unconfigured / no addresses -> log ``skipped``.
+    - SENDGRID_API_KEY missing -> ``skipped`` (retrying cannot fix it).
+    - All sends succeed -> ``processed``.
+    - Any send fails -> exponential backoff retry up to
+      ``EMAIL_NOTIFY_RETRY_COUNT`` attempts, then ``failed``. A retried run
+      re-sends to every recipient (email_service has no per-address idempotency)
+      — for WARNING/ERROR alerts a duplicate is preferable to a lost one.
+    """
+    logger.info("[Celery] notify_order_status_email: log_id=%s", log_id)
+
+    try:
+        with Session(engine) as session:
+            nlog = session.exec(
+                select(NotificationEmailLog).where(NotificationEmailLog.id == log_id)
+            ).first()
+            if not nlog:
+                logger.error("[Celery] NotificationEmailLog not found: %s", log_id)
+                return False
+
+            # The order/store data lives on the log row itself; the order is
+            # only read for the store fallback (deleted orders still notify)
+            # and the cooling-off duration snapshot on COOLING_OFF entries.
+            store_id = nlog.store_id
+            order = None
+            need_order = bool(nlog.order_id) and (
+                not store_id or nlog.to_status == OrderStatus.COOLING_OFF.value
+            )
+            if need_order:
+                order = session.exec(
+                    select(Order).where(Order.order_id == nlog.order_id)
+                ).first()
+                if not store_id:
+                    store_id = order.store_id if order else None
+
+            client = None
+            if store_id:
+                client = session.exec(
+                    select(Client).where(Client.store_id == store_id)
+                ).first()
+
+            level = NotificationLevel(nlog.level)
+            recipients = resolve_notification_recipients(
+                client.notification_config if client else None, level,
+            )
+            nlog.recipients = recipients
+
+            if not recipients:
+                nlog.process_status = WebhookProcessStatus.SKIPPED
+                nlog.details = (
+                    f"Level '{nlog.level}' not enabled for store '{store_id}' "
+                    f"(no client config or no recipients)"
+                )
+                nlog.updated_at = datetime.now(timezone.utc)
+                session.add(nlog)
+                session.commit()
+                logger.info(
+                    "[Celery] Status email skipped for log %s (level '%s' disabled for store '%s')",
+                    log_id, nlog.level, store_id,
+                )
+                return True
+
+            if not email_service.is_configured():
+                nlog.process_status = WebhookProcessStatus.SKIPPED
+                nlog.details = "SENDGRID_API_KEY is not configured"
+                nlog.updated_at = datetime.now(timezone.utc)
+                session.add(nlog)
+                session.commit()
+                logger.error("[Celery] SENDGRID_API_KEY not configured; cannot send status email for log %s", log_id)
+                return False
+
+            # "View Details" button target — only when the admin panel base
+            # URL is configured; the path uses the internal order_id the admin
+            # console routes on.
+            view_url = ""
+            if nlog.order_id and settings.ADMIN_BASE_URL:
+                view_url = (
+                    f"{settings.ADMIN_BASE_URL.rstrip('/')}/admin/orders/show/{nlog.order_id}"
+                )
+
+            subject, text_content, html_content = render_order_status_email(
+                order_id=nlog.order_id or "",
+                from_status=nlog.from_status or "",
+                to_status=nlog.to_status,
+                level=nlog.level,
+                message=nlog.message or "",
+                source_order_id=nlog.source_order_id or "",
+                store_name=(client.name if client else "") or (store_id or ""),
+                occurred_at=nlog.created_at.isoformat() if nlog.created_at else "",
+                view_url=view_url,
+                cooling_off_seconds=(
+                    order.cooling_off_seconds
+                    if order and nlog.to_status == OrderStatus.COOLING_OFF.value
+                    else None
+                ),
+            )
+
+            failed = [
+                r for r in recipients
+                if not email_service.send_email(r, subject, html_content, text_content)
+            ]
+            if not failed:
+                nlog.process_status = WebhookProcessStatus.PROCESSED
+                nlog.details = json.dumps({"sent_to": recipients})
+                nlog.updated_at = datetime.now(timezone.utc)
+                session.add(nlog)
+                session.commit()
+                logger.info("[Celery] Status email sent for log %s to %s", log_id, recipients)
+                return True
+
+            return _retry_or_fail_email(
+                session, nlog, f"SendGrid send failed for: {', '.join(failed)}",
+            )
+
+    except Exception as e:
+        logger.error(
+            "[Celery] notify_order_status_email failed for log %s: %s",
+            log_id, e, exc_info=True,
+        )
+        try:
+            with Session(engine) as session:
+                nlog = session.exec(
+                    select(NotificationEmailLog).where(NotificationEmailLog.id == log_id)
+                ).first()
+                if not nlog:
+                    return True
+                return _retry_or_fail_email(session, nlog, str(e))
+        except Exception as log_err:
+            logger.error("[Celery] Failed to update notification email log: %s", log_err)
             return False

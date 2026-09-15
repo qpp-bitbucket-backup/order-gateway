@@ -7,7 +7,6 @@ import sentry_sdk
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 from sqlmodel import Session, select
-from sqlalchemy.orm import attributes
 from app.core.celery import celery_app
 from app.core.database import engine
 from app.core.config import settings
@@ -21,6 +20,8 @@ from app.services.sku_matching import find_sku_by_ref
 from app.services.watermark import watermark_to_png, WATERMARK_TEXT
 from app.services.client import client_service
 from app.services.oms import oms_service, OMSRetryableError
+from app.models.notification import NotificationLevel
+from app.services.order_notifications import enqueue_status_change_email, record_status_change
 
 logger = logging.getLogger(__name__)
 
@@ -196,12 +197,13 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                 )
                 return False
 
-            order.status = OrderStatus.PENDING
-
-            _append_order_log(order, "order_publishing_started", "Order publishing started by celery worker")
-
+            publish_msg = "Order publishing started by celery worker"
+            from_status, level = record_status_change(
+                order, OrderStatus.PENDING, "order_publishing_started", publish_msg,
+            )
             session.add(order)
             session.commit()
+            enqueue_status_change_email(session, order, from_status, OrderStatus.PENDING, level, publish_msg)
             logger.info(f"[Celery] Order {order_id} status updated to PENDING")
 
             uploaded_files: Dict = {}
@@ -424,9 +426,13 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
                 _mark_order_failed(order_id,  "No delivery address returned by OMS")
                 return False
 
-            order.status = OrderStatus.VALIDATED
+            validated_msg = "Order data validated"
+            from_status, level = record_status_change(
+                order, OrderStatus.VALIDATED, "order_validated", validated_msg,
+            )
             session.add(order)
             session.commit()
+            enqueue_status_change_email(session, order, from_status, OrderStatus.VALIDATED, level, validated_msg)
 
             # Notify OMS/VFS of the dataready status ourselves — QPMN never
             # sends an order_item_* event for VALIDATED (confirmed with QPMN),
@@ -492,19 +498,18 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
             # dataready notification above already covers this stage).
             cooling_off_seconds = client_service.get_cooling_off_seconds(order.store_id)
             if cooling_off_seconds > 0:
-                order.status = OrderStatus.COOLING_OFF
                 # Snapshot the applied period on the order — the platform
                 # frontend reads it (plus the order_cooling_off log timestamp
                 # below) to render the countdown; kept after the period ends
                 # as a record of what was actually applied.
                 order.cooling_off_seconds = cooling_off_seconds
-                _append_order_log(
-                    order,
-                    "order_cooling_off",
-                    f"Order holding in cooling-off for {cooling_off_seconds}s before QPMN push",
+                cooling_msg = f"Order holding in cooling-off for {cooling_off_seconds}s before QPMN push"
+                from_status, level = record_status_change(
+                    order, OrderStatus.COOLING_OFF, "order_cooling_off", cooling_msg,
                 )
                 session.add(order)
                 session.commit()
+                enqueue_status_change_email(session, order, from_status, OrderStatus.COOLING_OFF, level, cooling_msg)
                 logger.info(
                     f"[Celery] Order {order_id} status updated to COOLING_OFF "
                     f"(client cooling-off: {cooling_off_seconds}s)"
@@ -661,7 +666,10 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
 
                 if success:
                     # Order pushed successfully - mark as processing
-                    order.status = OrderStatus.PROCESSING
+                    push_msg = "Order pushed to QPMN successfully"
+                    from_status, level = record_status_change(
+                        order, OrderStatus.PROCESSING, "order_push_success", push_msg,
+                    )
                     # Legacy API returns orderId in data; Open API returns id in data
                     data = result.get("data", {})
                     store_order_id = data.get("id") or data.get("externalId") or data.get("orderId")
@@ -672,19 +680,22 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                     # can later tell when every one of them has been produced.
                     item_ids = _extract_store_order_item_ids(data)
                     order.store_order_item_ids = item_ids or None
-                    _append_order_log(order, "order_push_success", "Order pushed to QPMN successfully")
                     session.add(order)
                     session.commit()
+                    enqueue_status_change_email(session, order, from_status, OrderStatus.PROCESSING, level, push_msg)
                     logger.info(f"[Celery] Order {order_id} pushed to QPMN successfully, status -> PROCESSING")
                 else:
                     # Order push failed - mark as FAILED and log message (no retry, so this is final)
                     error_message = result.get("data", {}).get("message", "Unknown error")
                     if not error_message and isinstance(result.get("data"), dict):
                         error_message = result["data"].get("error", "Unknown error")
-                    order.status = OrderStatus.FAILED
-                    _append_order_log(order, "order_push_failed", f"QPMN returned success=false: {error_message}")
+                    push_fail_msg = f"QPMN returned success=false: {error_message}"
+                    from_status, level = record_status_change(
+                        order, OrderStatus.FAILED, "order_push_failed", push_fail_msg,
+                    )
                     session.add(order)
                     session.commit()
+                    enqueue_status_change_email(session, order, from_status, OrderStatus.FAILED, level, push_fail_msg)
                     _capture_push_alert("REJECTED", order_id, error_message=error_message)
                     logger.error(f"[Celery] Order {order_id} push failed: {result}")
                     logger.info(f"[Celery] Order {order_id} payload: {payload}")
@@ -729,17 +740,20 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
         return False
 
 
-def _append_order_log(order: Order, action: str, message: str, worker: str = "celery_order_worker") -> None:
-    """Append a log entry to an order and flag the field as modified."""
-    if order.logs is None:
-        order.logs = []
-    order.logs.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "action": action,
-        "message": message,
-        "worker": worker,
-    })
-    attributes.flag_modified(order, "logs")
+def _append_order_log(
+    order: Order,
+    action: str,
+    message: str,
+    worker: str = "celery_order_worker",
+    level: str = NotificationLevel.INFO.value,
+) -> None:
+    """Thin wrapper over OrderService.append_log — the single order.logs
+    write path (lazy import: services.order imports tasks.orders at module
+    level for publish_order, so this cannot be a top-level import).
+    """
+    from app.services.order import order_service
+
+    order_service.append_log(order, action, message, level=level, worker=worker)
 
 
 def _mark_order_failed(order_id: str, error_message: str):
@@ -750,9 +764,12 @@ def _mark_order_failed(order_id: str, error_message: str):
                 select(Order).where(Order.order_id == order_id)
             ).first()
             if order:
-                order.status = OrderStatus.FAILED
-                _append_order_log(order, "order_processing_failed", f"Processing failed: {error_message}")
+                failed_msg = f"Processing failed: {error_message}"
+                from_status, level = record_status_change(
+                    order, OrderStatus.FAILED, "order_processing_failed", failed_msg,
+                )
                 session.add(order)
                 session.commit()
+                enqueue_status_change_email(session, order, from_status, OrderStatus.FAILED, level, failed_msg)
     except Exception as log_error:
         logger.error(f"[Celery] Failed to update order status to FAILED: {log_error}")

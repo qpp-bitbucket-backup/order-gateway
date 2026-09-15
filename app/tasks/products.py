@@ -263,6 +263,10 @@ def sync_products_to_db(
                         
             except Exception as e:
                 logger.error(f"Error syncing product {qpmn_product.get('productCode')}: {str(e)}")
+                # A failed flush (e.g. unique-constraint violation) leaves the
+                # session unusable; roll back so remaining products in this
+                # run can still be processed instead of failing one by one.
+                session.rollback()
                 continue
         
         # Delete products not in QPMN response (for this store)

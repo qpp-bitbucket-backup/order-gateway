@@ -17,20 +17,37 @@ Two rendering strategies are supported for each email type:
 """
 from datetime import date
 from html import escape
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 # ── Global header / footer, shared by all locally rendered emails ───────────────────────────────
 
 
-EMAIL_HEADER_HTML = (
-    "<tr>"
-    '<td style="background-color:#1a1a2e;padding:20px 32px;">'
-    '<span style="color:#ffffff;font-size:18px;font-weight:bold;'
-    'letter-spacing:0.5px;">QPMN Order Gateway</span>'
-    "</td>"
-    "</tr>"
-)
+# Brand dark navy — the default header background for every email.
+HEADER_BG_DEFAULT = "#1a1a2e"
+
+# Order status notifications tint the "QPMN Order Gateway" header per
+# severity: info keeps the brand navy, warning renders brown, error dark
+# red. Unknown levels fall back to the default.
+LEVEL_HEADER_BG = {
+    "info": "#0842a0",
+    "warning": "#bf8e24",  # brown
+    "error": "#c10d0d",    # dark red
+}
+
+
+def _email_header_html(bg_color: str = HEADER_BG_DEFAULT) -> str:
+    return (
+        "<tr>"
+        f'<td style="background-color:{bg_color};padding:20px 32px;">'
+        '<span style="color:#ffffff;font-size:18px;font-weight:bold;'
+        'letter-spacing:0.5px;">QPMN Order Gateway</span>'
+        "</td>"
+        "</tr>"
+    )
+
+
+EMAIL_HEADER_HTML = _email_header_html()
 
 EMAIL_FOOTER_HTML = (
     "<tr>"
@@ -44,10 +61,12 @@ EMAIL_FOOTER_HTML = (
 )
 
 
-def _render_email_shell(body_html: str) -> str:
+def _render_email_shell(body_html: str, header_bg: str = HEADER_BG_DEFAULT) -> str:
     """
     Wrap an email body in the branded shell: global header + content + footer.
 
+    ``header_bg`` overrides the header background (used by order status
+    notifications to tint it per level; other emails keep the brand navy).
     Uses nested tables with inline styles only — the layout technique every
     mainstream email client (Outlook, Gmail, QQ/Enterprise mail) renders
     reliably; <style> blocks and flexbox are not.
@@ -64,7 +83,7 @@ def _render_email_shell(body_html: str) -> str:
         'border-radius:8px;overflow:hidden;'
         'font-family:Arial,Helvetica,sans-serif;">'
         # ── global header ──
-        f'{EMAIL_HEADER_HTML}'
+        f'{_email_header_html(header_bg)}'
         # ── content ──
         '<tr>'
         '<td style="padding:32px;color:#333333;font-size:14px;line-height:1.6;">'
@@ -138,3 +157,116 @@ def password_reset_template_data(
         "reset_link": reset_link,
         "expire_minutes": expire_minutes,
     }
+
+
+# ── Order status change notification email ───────────────────────
+
+
+def _format_duration(seconds: int) -> str:
+    """Human-friendly duration for the email's cooling-off line.
+
+    e.g. 172800 -> "2 days", 5400 -> "1 hour 30 minutes", 45 -> "45 seconds".
+    """
+    minutes, sec = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts: list = []
+    if days:
+        parts.append(f"{days} day{'s' if days != 1 else ''}")
+    if hours:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if minutes and not days:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    if not parts:
+        parts.append(f"{sec} second{'s' if sec != 1 else ''}")
+    return " ".join(parts)
+
+
+def render_order_status_email(
+    order_id: str,
+    from_status: str,
+    to_status: str,
+    level: str,
+    message: str = "",
+    source_order_id: str = "",
+    store_name: str = "",
+    occurred_at: str = "",
+    subject_prefix: str = "",
+    view_url: str = "",
+    cooling_off_seconds: Optional[int] = None,
+) -> Tuple[str, str, str]:
+    """
+    Render the order status change notification email.
+
+    Returns ``(subject, text_content, html_content)``. The subject follows
+    the "[INFO] Order {source_order_id} Received" style: it shows the
+    external ``source_order_id`` (what store staff recognise, falling back
+    to the internal ``order_id`` when absent) plus the target status
+    title-cased (``cooling_off`` -> ``Cooling Off``). Every caller-supplied
+    value is HTML-escaped before going into the HTML body; ``subject_prefix``
+    lets tests mark the email (e.g. "[TEST] "); ``view_url`` (from
+    ADMIN_BASE_URL, pointing at /admin/orders/show/{order_id}) renders a
+    "View Details" button when non-empty, styled exactly like the password
+    reset button.
+    """
+    level_token = escape((level or "info").upper())
+    # Newly created orders enter their first status with no previous one
+    # (from_status=None/"") — the body's "Status Change" row renders that
+    # as "new" instead of an empty " -> received".
+    from_label = from_status or "new"
+    display_id = source_order_id or order_id
+    to_label = (to_status or "").replace("_", " ").title()
+    subject = f"{subject_prefix}[{level_token}] Order {display_id} {to_label}".rstrip()
+
+    fields = [
+        ("Order ID", order_id),
+        ("Source Order ID", source_order_id),
+        ("Store", store_name),
+        ("Status Change", f"{from_label} -> {to_status}"),
+        (
+            "Cooling-off Period",
+            _format_duration(cooling_off_seconds) if cooling_off_seconds else "",
+        ),
+        ("Level", level_token),
+        ("Message", message),
+        ("Occurred At (UTC)", occurred_at),
+    ]
+
+    text_content = (
+        f"Order status change notification [{level_token}]\n\n"
+        + "\n".join(f"{label}: {value}" for label, value in fields if value)
+        + (f"\nView Details: {view_url}" if view_url else "")
+        + "\n"
+    )
+
+    rows = "".join(
+        f'<tr>'
+        f'<td style="padding:8px 12px;border:1px solid #eeeeee;'
+        f'background-color:#f8f8fa;color:#555555;width:160px;">{escape(label)}</td>'
+        f'<td style="padding:8px 12px;border:1px solid #eeeeee;color:#333333;">'
+        f'{escape(str(value))}</td>'
+        f'</tr>'
+        for label, value in fields
+        if value
+    )
+    # Same button recipe as the password reset email: a padded block-level
+    # <a> (button styling on <button>/<div> is unreliable across Outlook et
+    # al), same indigo background and radius.
+    button_html = ""
+    if view_url:
+        button_html = (
+            f'<p><a href="{escape(view_url)}" '
+            f'style="display:inline-block;padding:10px 24px;'
+            f'background-color:#4f46e5;color:#ffffff;text-decoration:none;'
+            f'border-radius:4px;">View Details</a></p>'
+        )
+    body_html = (
+        f'<p>Order Details:</p>'
+        f'<table role="presentation" cellpadding="0" cellspacing="0" width="100%" '
+        f'style="border-collapse:collapse;font-size:13px;">{rows}</table>'
+        f'{button_html}'
+    )
+    # Header tint follows the notification level (LEVEL_HEADER_BG); other
+    # emails keep the brand navy default.
+    header_bg = LEVEL_HEADER_BG.get((level or "info").lower(), HEADER_BG_DEFAULT)
+    return subject, text_content, _render_email_shell(body_html, header_bg=header_bg)

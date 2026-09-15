@@ -42,6 +42,13 @@ celery_app.conf.update(
         "tasks.orders.push_order": {"queue": QUEUE_ORDER_PUSHING},
         "tasks.notifications.notify_oms": {"queue": QUEUE_ORDER_NOTIFYING},
         "tasks.notifications.notify_vfs": {"queue": QUEUE_ORDER_NOTIFYING},
+        # Level-based order status email notifications. Without this entry
+        # the task publishes to the default "celery" queue, which no worker
+        # consumes and RabbitMQ silently drops (no mandatory flag) — the
+        # notification_email_logs row then stays "received" forever with
+        # NULL recipients. The @task(queue=...) decorator option does NOT
+        # participate in routing; only task_routes does.
+        "tasks.notifications.notify_order_status_email": {"queue": QUEUE_ORDER_NOTIFYING},
         # Product/SKU sync tasks (manual triggers + beat periodic) get
         # their own queue so they never land in the default "celery" queue
         # and can be consumed/scaled independently from order flow.
