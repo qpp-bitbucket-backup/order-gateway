@@ -101,7 +101,7 @@ class OSSService:
         try:
             self.bucket.get_object_to_file(object_key, local_file_path)
             return local_file_path
-        except Exception as e:
+        except Exception:
             logger.warning(f"[OSS] Failed to download file {object_key}")
             return False
 # Create singleton instance
