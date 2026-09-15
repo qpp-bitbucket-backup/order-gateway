@@ -11,7 +11,9 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
 from sqlmodel import Session, select
+from sqlalchemy.orm import attributes
 
+from app.models.notification import NotificationLevel
 from app.models.order import Order, OrderStatus, OrderType
 from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
@@ -19,6 +21,11 @@ from app.services.file import file_service
 from app.services.sku_matching import find_sku_by_ref
 from app.services.client import client_service
 from app.services.address_mapping import get_state_code, to_iso_country_code
+from app.services.order_notifications import (
+    enqueue_status_change_email,
+    record_status_change,
+    status_notification_level,
+)
 from app.core.config import settings
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
 
@@ -207,6 +214,41 @@ class OrderService:
     # Write helpers
     # ------------------------------------------------------------------
 
+    def append_log(
+        self,
+        order: Order,
+        action: str,
+        message: str,
+        *,
+        level: str = NotificationLevel.INFO.value,
+        worker: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Append a level-tagged entry to ``order.logs`` — the single write
+        path for every order log entry.
+
+        Status changes go through ``record_status_change()`` (which resolves
+        the level from the target status) and land here too; plain
+        operational entries default to ``"info"``. ``extra`` merges
+        additional fields into the entry (e.g. ``status_code``, ``fields``).
+        Does NOT commit — callers keep their existing add/commit flow.
+        """
+        if order.logs is None:
+            order.logs = []
+        entry: Dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "action": action,
+            "message": message,
+            "level": level,
+        }
+        if worker:
+            entry["worker"] = worker
+        if extra:
+            entry.update(extra)
+        order.logs.append(entry)
+        attributes.flag_modified(order, "logs")
+
     def check_duplicate(
         self,
         session: Session,
@@ -281,6 +323,14 @@ class OrderService:
         """
         order_id = str(uuid.uuid4())
 
+        # create_order sets the initial RECEIVED on the constructor (not via
+        # record_status_change, which only fits transitions of a persisted
+        # order), so seed the level-tagged order.logs entry here and dispatch
+        # the notification after commit. from_status is None — the order has
+        # no previous status yet (rendered as "new" in the email).
+        received_level = status_notification_level(OrderStatus.RECEIVED)
+        received_msg = f"Order received from {source_account}"
+
         order = Order(
             order_id=order_id,
             source_account=source_account,
@@ -296,10 +346,14 @@ class OrderService:
             store_id=store_id,
             type=order_type,
         )
+        self.append_log(order, "order_created", received_msg, level=received_level.value)
 
         session.add(order)
         session.commit()
         session.refresh(order)
+        enqueue_status_change_email(
+            session, order, None, OrderStatus.RECEIVED, received_level, received_msg
+        )
 
         # Enqueue Celery task
         task_payload = {
@@ -352,12 +406,7 @@ class OrderService:
 
         # Bump version and record log
         order.version += 1
-        log_entry = {
-            "action": "updated",
-            "fields": changes,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        order.logs = (order.logs or []) + [log_entry]
+        self.append_log(order, "updated", f"Updated fields: {', '.join(changes)}", extra={"fields": changes})
 
         session.add(order)
         session.commit()
@@ -474,15 +523,10 @@ class OrderService:
                 if the QPMN cancel API call fails.
         """
         if order.status in NON_CANCELLABLE_STATUSES:
-            order.logs = (order.logs or []) + [
-                {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "action": "cancel_rejected",
-                    "message": (
-                        f"Cannot cancel order with status '{order.status.value}'."
-                    ),
-                },
-            ]
+            self.append_log(
+                order, "cancel_rejected",
+                f"Cannot cancel order with status '{order.status.value}'.",
+            )
             session.add(order)
             session.commit()
             session.refresh(order)
@@ -493,21 +537,16 @@ class OrderService:
         # --- 1. Call QPMN cancel API ---
         qpmn_result = self.cancel_qpmn_order(order)
 
-        now_iso = datetime.now(timezone.utc).isoformat()
-
         if qpmn_result.get("success"):
             # --- QPMN confirmed cancellation ---
-            order.status = OrderStatus.CANCELLED
-            order.logs = (order.logs or []) + [
-                {
-                    "timestamp": now_iso,
-                    "action": "order_cancelled",
-                    "message": "Order status updated to cancelled",
-                },
-            ]
+            cancel_msg = "Order status updated to cancelled"
+            from_status, level = record_status_change(
+                order, OrderStatus.CANCELLED, "order_cancelled", cancel_msg,
+            )
             session.add(order)
             session.commit()
             session.refresh(order)
+            enqueue_status_change_email(session, order, from_status, OrderStatus.CANCELLED, level, cancel_msg)
 
             logger.info("[OrderService] Cancelled order %s", order.order_id)
             return order
@@ -515,19 +554,15 @@ class OrderService:
         # --- QPMN cancellation failed ---
         error_detail = qpmn_result.get("error", "Unknown error")
         qpmn_status_code = qpmn_result.get("status_code")
-        order.logs = (order.logs or []) + [
-            {
-                "timestamp": now_iso,
-                "action": "qpmn_cancel_failed",
-                "message": (
-                    f"QPMN cancel API failed (HTTP {qpmn_status_code}): "
-                    f"{error_detail}."
-                ),
+        self.append_log(
+            order, "qpmn_cancel_failed",
+            f"QPMN cancel API failed (HTTP {qpmn_status_code}): {error_detail}.",
+            extra={
                 "status_code": qpmn_status_code,
                 "error": error_detail,
                 "response": qpmn_result.get("data"),
             },
-        ]
+        )
         session.add(order)
         session.commit()
         session.refresh(order)
@@ -611,34 +646,26 @@ class OrderService:
 
                 if not qpmn_result.get("success"):
                     # Write detailed failure info to order logs
-                    order.logs = (order.logs or []) + [
-                        {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "action": "qpmn_address_update_failed",
-                            "message": (
-                                f"QPMN address update failed (HTTP {qpmn_result.get('status_code')}): "
-                                f"{qpmn_result.get('error')}."
-                            ),
+                    self.append_log(
+                        order, "qpmn_address_update_failed",
+                        f"QPMN address update failed (HTTP {qpmn_result.get('status_code')}): "
+                        f"{qpmn_result.get('error')}.",
+                        extra={
                             "status_code": qpmn_result.get("status_code"),
                             "error": qpmn_result.get("error"),
                         },
-                    ]
+                    )
                     session.add(order)
                     session.commit()
                     session.refresh(order)
                 else:
                     # Write success info to order logs
-                    order.logs = (order.logs or []) + [
-                        {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "action": "qpmn_address_update_succeeded",
-                            "message": (
-                                f"QPMN address update succeeded (HTTP {qpmn_result.get('status_code', 200)}): "
-                                f"store_order_id={order.store_order_id}."
-                            ),
-                            "status_code": qpmn_result.get("status_code", 200),
-                        },
-                    ]
+                    self.append_log(
+                        order, "qpmn_address_update_succeeded",
+                        f"QPMN address update succeeded (HTTP {qpmn_result.get('status_code', 200)}): "
+                        f"store_order_id={order.store_order_id}.",
+                        extra={"status_code": qpmn_result.get("status_code", 200)},
+                    )
                     session.add(order)
                     session.commit()
                     session.refresh(order)

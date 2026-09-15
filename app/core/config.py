@@ -36,6 +36,22 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "your-secret-key-here-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30  # Password reset link validity
+    # Reset link is built from the requesting host: <origin>/admin/reset-password.
+    # PASSWORD_RESET_URL is only the fallback origin for contexts with no HTTP
+    # request (Celery tasks, test scripts); PASSWORD_RESET_PATH is the admin
+    # frontend route that consumes the token (?token=... appended).
+    PASSWORD_RESET_URL: str = "http://localhost:8000"
+    PASSWORD_RESET_PATH: str = "/admin/reset-password"
+
+    # SendGrid Email Configuration
+    SENDGRID_API_KEY: str = ""
+    SENDGRID_FROM_EMAIL: str = "no-reply@order-gateway.com"
+    SENDGRID_FROM_NAME: str = "Order Gateway"
+    # Optional SendGrid Dynamic Transactional Template for the password reset
+    # email (https://app.sendgrid.com/dynamic_templates). Empty = render the
+    # local template in app/services/email_templates.py instead.
+    SENDGRID_RESET_PASSWORD_TEMPLATE_ID: str = ""
     
     # HP Site Flow OneFlow API Authentication (bootstrap default client)
     ONEFLOW_TOKEN: str = "oneflow-token-change-in-production"
@@ -111,6 +127,16 @@ class Settings(BaseSettings):
     VFS_NOTIFY_RETRY_COUNT: int = 5         # Max retry attempts when VFS postback returns 503/timeout
     VFS_NOTIFY_RETRY_COUNTDOWN: int = 300    # Base delay in seconds for exponential backoff
     VFS_NOTIFY_RETRY_MAX_COUNTDOWN: int = 3600  # Max delay cap in seconds (1 hour)
+    # Order status-change email notifications (SendGrid) — shorter retry
+    # window than OMS/VFS postbacks: a delayed email is low-value, a lost
+    # WARNING/ERROR one is not.
+    EMAIL_NOTIFY_RETRY_COUNT: int = 3        # Max attempts for failed status-change notification emails
+    EMAIL_NOTIFY_RETRY_COUNTDOWN: int = 60   # Base delay in seconds for exponential backoff
+    EMAIL_NOTIFY_RETRY_MAX_COUNTDOWN: int = 900  # Max delay cap in seconds (15 minutes)
+    # Admin panel base URL (no trailing slash). When set, order status
+    # notification emails embed a "View Details" button linking to
+    # {ADMIN_BASE_URL}/admin/orders/show/{order_id}; empty disables the button.
+    ADMIN_BASE_URL: str = ""
 
     # Alibaba Cloud OSS Configuration
     OSS_ACCESS_KEY_ID: str = "your-oss-access-key-id"

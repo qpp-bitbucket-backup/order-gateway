@@ -43,6 +43,7 @@ from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection
 from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, DELETABLE_STATUSES, REPUBLISHABLE_STATUSES, parse_parallel_card_id
+from app.services.order_notifications import enqueue_status_change_email, record_status_change
 from app.services.sku_matching import find_sku_by_ref
 from app.services.oss import oss_service
 from app.tasks.orders import publish_order
@@ -698,15 +699,12 @@ def submit_order(
         # Record the parallel-card link on the created order's logs
         if parallel_parent:
             _, version, shipping_no = parse_parallel_card_id(request.orderData.sourceOrderId)
-            order.logs = (order.logs or []) + [{
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "action": "parallel_card_detected",
-                "message": (
-                    f"Parallel card (version {version}, shipping {shipping_no}) of "
-                    f"base card order {parallel_parent.order_id} "
-                    f"(sourceOrderId '{parallel_parent.source_order_id}'); "
-                ),
-            }]
+            order_service.append_log(
+                order, "parallel_card_detected",
+                f"Parallel card (version {version}, shipping {shipping_no}) of "
+                f"base card order {parallel_parent.order_id} "
+                f"(sourceOrderId '{parallel_parent.source_order_id}'); ",
+            )
             session.add(order)
             session.commit()
             session.refresh(order)
@@ -1063,11 +1061,10 @@ def update_order(
             # === Address update path ===
             # 1. Check order status is updatable
             if order.status not in UPDATABLE_STATUSES:
-                order.logs = (order.logs or []) + [{
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "action": "address_update_rejected",
-                    "message": f"Cannot update order with status '{order.status.value}'.",
-                }]
+                order_service.append_log(
+                    order, "address_update_rejected",
+                    f"Cannot update order with status '{order.status.value}'.",
+                )
                 session.add(order)
                 session.commit()
                 raise HTTPException(
@@ -1127,11 +1124,7 @@ def update_order(
                 msg = "Address unchanged."
                 action = "address_update_unchanged"
 
-            order.logs = (order.logs or []) + [{
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "action": action,
-                "message": msg,
-            }]
+            order_service.append_log(order, action, msg)
             session.add(order)
             session.commit()
             session.refresh(order)
@@ -1162,14 +1155,11 @@ def update_order(
             try:
                 order = order_service.cancel_order(session, order)
             except OrderNotCancellableError:
-                order.logs = (order.logs or []) + [{
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "action": "content_update_rejected",
-                    "message": (
-                        f"Cannot update order content: order status "
-                        f"'{order.status.value}' does not allow cancellation."
-                    ),
-                }]
+                order_service.append_log(
+                    order, "content_update_rejected",
+                    f"Cannot update order content: order status "
+                    f"'{order.status.value}' does not allow cancellation.",
+                )
                 session.add(order)
                 session.commit()
                 raise HTTPException(
@@ -1592,21 +1582,18 @@ def platform_republish_order(
 
         # Reset the status back to received; publish_order() validates the
         # received -> pending transition itself before re-running.
-        order.status = OrderStatus.RECEIVED
-        order.logs = (order.logs or []) + [
-            {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "action": "order_republish_requested",
-                "message": (
-                    f"Republish requested via platform API by user "
-                    f"'{current_user.username}'; status reset to received"
-                ),
-                "worker": "platform_api",
-            },
-        ]
+        republish_msg = (
+            f"Republish requested via platform API by user "
+            f"'{current_user.username}'; status reset to received"
+        )
+        from_status, level = record_status_change(
+            order, OrderStatus.RECEIVED, "order_republish_requested", republish_msg,
+            worker="platform_api",
+        )
         session.add(order)
         session.commit()
         session.refresh(order)
+        enqueue_status_change_email(session, order, from_status, OrderStatus.RECEIVED, level, republish_msg)
 
         # Enqueue the publish task with the same payload shape as create_order()
         task_payload = {
@@ -1693,17 +1680,12 @@ def platform_delete_order(
         # Soft delete: keep the row (auditing) but hide it from queries and
         # release its source_order_id for re-submission.
         order.is_active = False
-        order.logs = (order.logs or []) + [
-            {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "action": "order_deleted",
-                "message": (
-                    f"Soft-deleted via platform API by user "
-                    f"'{current_user.username}'; is_active set to false"
-                ),
-                "worker": "platform_api",
-            },
-        ]
+        order_service.append_log(
+            order, "order_deleted",
+            f"Soft-deleted via platform API by user "
+            f"'{current_user.username}'; is_active set to false",
+            worker="platform_api",
+        )
         session.add(order)
         session.commit()
 

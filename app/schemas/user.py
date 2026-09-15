@@ -39,6 +39,17 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=6, max_length=128, description="New password")
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Schema for requesting a password reset email."""
+    email: EmailStr = Field(..., description="User email address")
+
+
+class ResetPasswordRequest(BaseModel):
+    """Schema for resetting password with a token from the reset email."""
+    token: str = Field(..., description="Password reset token received by email")
+    new_password: str = Field(..., min_length=6, max_length=128, description="New password")
+
+
 # ── Response Schemas ─────────────────────────────────────────────
 
 class UserResponse(BaseModel):
