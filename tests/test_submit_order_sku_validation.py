@@ -39,7 +39,11 @@ def client_session_fixture():
         app.dependency_overrides[get_session] = lambda: session
         app.dependency_overrides[verify_oneflow_auth] = lambda: None
         app.dependency_overrides[get_client_store_id] = lambda: None
-        with TestClient(app) as client:
+        # The lifespan's create_db_and_tables() targets the real MySQL
+        # engine (and seeds default rows); the tables already exist on the
+        # in-memory engine above, so stub it out — keeps the whole test
+        # DB-free for CI runners without a MySQL service.
+        with patch("app.main.create_db_and_tables", lambda: None), TestClient(app) as client:
             yield client, session
         app.dependency_overrides.clear()
 
