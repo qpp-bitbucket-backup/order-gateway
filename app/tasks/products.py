@@ -74,7 +74,6 @@ def sync_products_from_qpmn(store_id: str = None) -> Dict[str, Any]:
             }
         current_page = data.get("pageNumber")
         total_pages = data.get("totalPages")
-        total_count = data.get("totalCount")
         qpmn_products = data.get("content")
         
         # Fetch remaining pages if total_pages > current_page
