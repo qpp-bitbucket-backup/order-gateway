@@ -65,7 +65,7 @@ def record_status_change(
 def enqueue_status_change_email(
     session: Session,
     order: Order,
-    from_status: OrderStatus,
+    from_status: Optional[OrderStatus],
     to_status: OrderStatus,
     level: NotificationLevel,
     message: str,
@@ -73,6 +73,9 @@ def enqueue_status_change_email(
     """
     Persist a pending ``NotificationEmailLog`` for the transition and
     dispatch the ``notify_order_status_email`` task.
+
+    ``from_status`` is ``None`` for a newly created order's first transition
+    (rendered as "new" in the email); ``to_status`` is always concrete.
 
     Transitions into ``EMAIL_MUTED_STATUSES`` (PENDING / PROCESSING) return
     ``None`` before any DB write — order.logs keeps the entry, but no email

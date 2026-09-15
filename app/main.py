@@ -43,9 +43,8 @@ async def lifespan(app: FastAPI):
     
     # Create database tables
     create_db_and_tables()
+    # Shutdown: clean up resources here if ever needed
     yield
-    # Shutdown: Clean up resources if needed
-    pass
 
 
 # Create FastAPI application with security documentation
