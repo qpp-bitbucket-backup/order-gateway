@@ -422,6 +422,25 @@ class TestTaskRouting:
         assert not missing, f"tasks without explicit queue route (messages silently dropped): {missing}"
 
 
+class TestBeatSchedule:
+    """Every beat_schedule entry must be a non-empty dict with task/schedule:
+    an empty dict value ({} ) builds a ScheduleEntry with schedule=None and
+    beat crashes at startup with 'NoneType' object has no attribute 'is_due'
+    (disabled feature flags must omit the entry entirely)."""
+
+    def test_every_beat_entry_is_constructible(self):
+        from celery.beat import ScheduleEntry
+
+        from app.core.celery import celery_app
+
+        schedule = celery_app.conf.beat_schedule
+        for name, entry in schedule.items():
+            assert isinstance(entry, dict) and entry, f"beat entry {name!r} is empty"
+            assert "task" in entry and "schedule" in entry, name
+            # Exactly what beat does per tick — must not raise
+            ScheduleEntry(**entry).is_due()
+
+
 class TestAppendOrderLogDefaultLevel:
     """Non-status-change log entries must default to level "info" so every
     order.logs entry carries a level (status-change entries get theirs from
