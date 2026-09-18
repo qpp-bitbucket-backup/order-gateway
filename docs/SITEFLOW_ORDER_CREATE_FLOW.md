@@ -122,7 +122,7 @@ push_order（隊列 order_pushing）
     POST 到 QPMN 建單（Open API /orders 或 legacy /store/orders，Basic store_key）
     ├─ success=true → PROCESSING，記錄 store_order_id 與 store_order_item_ids（TI-65）
     ├─ success=false（業務拒絕）→ FAILED（不重試，Sentry REJECTED）
-    ├─ 503/504 → 見 §2.4 注意事項
+    ├─ 503/504 → 指數退避重試（5 次，基礎 900s，上限 7200s），耗盡 → FAILED
     └─ 逾時 → 指數退避重試（5 次，基礎 900s，上限 7200s），耗盡 → FAILED
 ```
 
@@ -186,11 +186,10 @@ push_order（隊列 order_pushing）
      分配的每個 item id，供後續判斷「全部組件生產完成」）。
    - `success=false`（業務拒絕，如圖片比例不合）：狀態轉 `FAILED`
      （`order_push_failed` 日誌 + ERROR 郵件 + Sentry `REJECTED`），**不重試**。
-   - 503/504：**當前代碼條件為 `if retry_count < 0`，預設 retry_count=0 時
-     恆為假，直接走「重試耗盡」分支標記 FAILED**（日誌訊息會顯示
-     "after 5 retries" 但實際未重試）。此條件疑似應為
-     `retry_count < max_retries`（對照逾時分支的寫法），待確認修復；
-     修復後行為為：指數退避重試 5 次（基礎 900s，上限 7200s），耗盡才 FAILED。
+   - 503/504（服務暫時不可用 / 閘道逾時）：指數退避重試，配置同逾時分支
+     （`QPMN_PUSH_RETRY_COUNT=5`、基礎 900s、上限 7200s），每次重試寫
+     `order_push_retry` 日誌（首次觸發 Sentry `RETRY_503`/`RETRY_504` 告警）；
+     重試耗盡 → FAILED（`RETRY_EXHAUSTED_503`/`RETRY_EXHAUSTED_504` 告警）。
    - 逾時（`httpx.TimeoutException`）：指數退避重試，配置
      `QPMN_PUSH_RETRY_COUNT=5`、基礎 900s、上限 7200s（2 小時），
      每次寫 `order_push_timeout` 日誌；耗盡 → FAILED。
