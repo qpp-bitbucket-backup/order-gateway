@@ -625,7 +625,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                 if response.status_code in (503, 504):
                     retry_alert = "RETRY_503" if response.status_code == 503 else "RETRY_504"
                     exhausted_alert = "RETRY_EXHAUSTED_503" if response.status_code == 503 else "RETRY_EXHAUSTED_504"
-                    if retry_count < 0 :
+                    if retry_count < max_retries :
                         countdown = _exponential_backoff(base_delay, retry_count, max_delay)
                         order_data["_qpmn_retry_count"] = retry_count + 1
                         logger.warning(
