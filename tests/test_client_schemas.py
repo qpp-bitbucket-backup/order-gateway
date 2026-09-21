@@ -58,6 +58,18 @@ class TestClientCreateRequest:
         )
         assert req.store_key == "key-1"
 
+    def test_default_recipient_email_optional(self):
+        req = ClientCreateRequest(name=_NAME, store_id=_STORE)
+        assert req.default_recipient_email is None
+        req = ClientCreateRequest(
+            name=_NAME, store_id=_STORE, default_recipient_email="fallback@example.com"
+        )
+        assert req.default_recipient_email == "fallback@example.com"
+
+    def test_default_recipient_email_must_be_valid(self):
+        with pytest.raises(ValidationError):
+            ClientCreateRequest(name=_NAME, store_id=_STORE, default_recipient_email="not-an-email")
+
     def test_name_must_not_be_empty(self):
         with pytest.raises(ValidationError):
             ClientCreateRequest(name="", store_id=_STORE)
@@ -85,6 +97,15 @@ class TestPlatformClientCreateRequest:
     def test_empty_store_key_rejected(self):
         with pytest.raises(ValidationError):
             PlatformClientCreateRequest(name=_NAME, store_id=_STORE, store_key="", description="d")
+
+    def test_default_recipient_email_optional(self):
+        payload = dict(name=_NAME, store_id=_STORE, store_key="key-1", description="desc")
+        assert PlatformClientCreateRequest(**payload).default_recipient_email is None
+        payload["default_recipient_email"] = "fallback@example.com"
+        assert (
+            PlatformClientCreateRequest(**payload).default_recipient_email
+            == "fallback@example.com"
+        )
 
 
 class TestClientSecretSchemas:
@@ -137,6 +158,13 @@ class TestClientUpdateRequest:
         assert req.is_active is False
         assert req.rotate_secret is True
 
+    def test_default_recipient_email_optional_and_validated(self):
+        assert ClientUpdateRequest().default_recipient_email is None
+        req = ClientUpdateRequest(default_recipient_email="fallback@example.com")
+        assert req.default_recipient_email == "fallback@example.com"
+        with pytest.raises(ValidationError):
+            ClientUpdateRequest(default_recipient_email="not-an-email")
+
 
 class TestClientResponses:
     """Nested response envelopes."""
@@ -144,6 +172,11 @@ class TestClientResponses:
     def test_summary_roundtrip(self):
         summary = _summary(id=7, name="Other Store")
         assert summary.id == 7
+
+    def test_summary_carries_default_recipient_email(self):
+        summary = _summary(default_recipient_email="fallback@example.com")
+        assert summary.default_recipient_email == "fallback@example.com"
+        assert _summary().default_recipient_email is None
 
     def test_created_response_defaults_success(self):
         resp = ClientCreatedResponse(client=_summary(), secret="secret-value")

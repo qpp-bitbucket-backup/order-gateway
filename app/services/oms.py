@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from app.core.config import settings
 from app.core import hub4
 from app.models.address import Address, AddressType
+from app.models.client import Client
 from app.models.order import Order
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class OMSService:
         self,
         order_id: str,
         session: Session,
+        store_id: Optional[str] = None,
     ) -> dict:
         """
         Call OMS API to get delivery and billing addresses for an order,
@@ -71,6 +73,9 @@ class OMSService:
         Args:
             order_id: The order ID to look up in OMS.
             session: Active database session.
+            store_id: Optional store ID used to resolve the client's
+                ``default_recipient_email`` — filled in whenever the OMS
+                delivery/billing address comes back without an email.
 
         Returns:
             A dict with keys ``delivery`` and ``billing``, each containing
@@ -79,6 +84,8 @@ class OMSService:
         if not self.base_url:
             logger.warning("[OMS] OMS_API_URL is not configured – skipping address fetch.")
             return {"delivery": None, "billing": None}
+
+        default_email = self._resolve_default_recipient_email(session, store_id)
 
         payload = {"orderNo": order_id}
 
@@ -144,14 +151,18 @@ class OMSService:
             # Persist delivery address
             delivery_data = data.get("deliveryAddress")
             if delivery_data:
-                delivery_addr = self._map_to_address(delivery_data, order_id, AddressType.DELIVERY)
+                delivery_addr = self._map_to_address(
+                    delivery_data, order_id, AddressType.DELIVERY, default_email=default_email
+                )
                 session.add(delivery_addr)
                 result["delivery"] = delivery_addr
 
             # Persist billing address
             billing_data = data.get("billingAddress")
             if billing_data:
-                billing_addr = self._map_to_address(billing_data, order_id, AddressType.BILLING)
+                billing_addr = self._map_to_address(
+                    billing_data, order_id, AddressType.BILLING, default_email=default_email
+                )
                 session.add(billing_addr)
                 result["billing"] = billing_addr
 
@@ -316,8 +327,34 @@ class OMSService:
         }
 
     @staticmethod
-    def _map_to_address(data: dict, order_id: str, address_type: AddressType) -> Address:
-        """Map an OMS API address dict to an Address model."""
+    def _resolve_default_recipient_email(
+        session: Session, store_id: Optional[str]
+    ) -> Optional[str]:
+        """Look up the client's default recipient email for *store_id*.
+
+        OMS address payloads do not always carry an email; when the client
+        (store) has one configured it is used as the fallback for both
+        delivery and billing addresses.
+        """
+        if not store_id:
+            return None
+        client = session.exec(
+            select(Client).where(Client.store_id == store_id)
+        ).first()
+        return client.default_recipient_email if client else None
+
+    @staticmethod
+    def _map_to_address(
+        data: dict,
+        order_id: str,
+        address_type: AddressType,
+        default_email: Optional[str] = None,
+    ) -> Address:
+        """Map an OMS API address dict to an Address model.
+
+        When the OMS address has no email and a *default_email* fallback is
+        given, it is stored on the Address instead.
+        """
         return Address(
             country=data.get("country"),
             state=data.get("state"),
@@ -329,7 +366,7 @@ class OMSService:
             last_name=data.get("lastName"),
             phone=data.get("phone"),
             mobile=data.get("mobile"),
-            email=data.get("email"),
+            email=data.get("email") or default_email,
             company=data.get("company"),
             order_id=order_id,
             type=address_type,

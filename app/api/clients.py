@@ -53,6 +53,7 @@ def _to_summary(client: Client) -> ClientSummary:
         store_id=client.store_id,
         token=client.token,
         description=client.description,
+        default_recipient_email=client.default_recipient_email,
         cooling_off_seconds=client.cooling_off_seconds or 0,
         notification_config=client.notification_config or {},
         is_active=client.is_active,
@@ -94,6 +95,7 @@ def create_client(
         token=token,
         secret=secret,
         description=request.description,
+        default_recipient_email=request.default_recipient_email,
         cooling_off_seconds=request.cooling_off_seconds or 0,
         notification_config=request.notification_config.model_dump() if request.notification_config else None,
     )
@@ -175,6 +177,8 @@ def update_client(
         client.store_key = request.store_key
     if request.description is not None:
         client.description = request.description
+    if request.default_recipient_email is not None:
+        client.default_recipient_email = request.default_recipient_email
     if request.cooling_off_seconds is not None:
         client.cooling_off_seconds = request.cooling_off_seconds
     if request.notification_config is not None:
@@ -279,6 +283,7 @@ def platform_create_client(
         token=token,
         secret=secret,
         description=request.description,
+        default_recipient_email=request.default_recipient_email,
         cooling_off_seconds=request.cooling_off_seconds or 0,
         notification_config=request.notification_config.model_dump() if request.notification_config else None,
     )
@@ -576,6 +581,8 @@ def platform_update_client(
         client.store_key = request.store_key
     if request.description is not None:
         client.description = request.description
+    if request.default_recipient_email is not None:
+        client.default_recipient_email = request.default_recipient_email
     if request.cooling_off_seconds is not None:
         client.cooling_off_seconds = request.cooling_off_seconds
     if request.notification_config is not None:

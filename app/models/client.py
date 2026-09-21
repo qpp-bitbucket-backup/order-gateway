@@ -16,6 +16,14 @@ class Client(BaseModel, table=True):
     token: str = Field(unique=True, index=True, nullable=False, description="OneFlow API token")
     secret: str = Field(nullable=False, description="OneFlow API secret for HMAC signing")
     description: Optional[str] = Field(default=None, description="Optional client description")
+    default_recipient_email: Optional[str] = Field(
+        None,
+        max_length=255,
+        description=(
+            "Fallback email for delivery/billing addresses: used when the OMS "
+            "address fetch returns no email for the order (NULL = no fallback)"
+        ),
+    )
     cooling_off_seconds: int = Field(
         default=0,
         nullable=False,
