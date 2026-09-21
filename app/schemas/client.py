@@ -25,6 +25,7 @@ class ClientCreateRequest(BaseModel):
     store_id: str = Field(..., min_length=1, max_length=128, description="Associated store ID")
     store_key: Optional[str] = Field(None, max_length=128, description="Store key for additional identification")
     description: Optional[str] = Field(None, max_length=512, description="Optional description")
+    default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email")
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0/omitted = none)")
     notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (omitted = all disabled)")
 
@@ -38,6 +39,7 @@ class PlatformClientCreateRequest(BaseModel):
     store_id: str = Field(..., min_length=1, max_length=128, description="Associated store ID")
     store_key: str = Field(..., min_length=1, max_length=128, description="Store key for additional identification")
     description: str = Field(..., min_length=1, max_length=512, description="Client description")
+    default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email")
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0/omitted = none)")
     notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (omitted = all disabled)")
 
@@ -85,6 +87,7 @@ class ClientUpdateRequest(BaseModel):
     store_id: Optional[str] = Field(None, min_length=1, max_length=128, description="Associated store ID")
     store_key: Optional[str] = Field(None, max_length=128, description="Store key for additional identification")
     description: Optional[str] = Field(None, max_length=512, description="Optional description")
+    default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email (pass to replace; omit to keep)")
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0 = none)")
     notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (pass to replace; omit to keep)")
     is_active: Optional[bool] = Field(None, description="Whether the client is active")
@@ -98,6 +101,7 @@ class ClientSummary(BaseModel):
     store_id: str = Field(..., description="Associated store ID")
     token: str = Field(..., description="OneFlow API token")
     description: Optional[str] = Field(None, description="Optional description")
+    default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email")
     cooling_off_seconds: int = Field(0, description="Order cooling-off period in seconds before QPMN push (0 = none)")
     notification_config: NotificationConfig = Field(default_factory=NotificationConfig, description="Per-level order status email notification settings")
     is_active: bool = Field(..., description="Whether the client is active")

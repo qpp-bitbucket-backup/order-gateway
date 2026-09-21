@@ -614,7 +614,9 @@ class OrderService:
         }
 
         # 1. Fetch latest addresses from OMS (persists to DB as side-effect)
-        oms_result = oms_service.fetch_order_addresses(order.source_order_id, session)
+        oms_result = oms_service.fetch_order_addresses(
+            order.source_order_id, session, store_id=order.store_id
+        )
         new_delivery = oms_result.get("delivery")
 
         # 2. Get the previously stored delivery address (before OMS overwrote it)
