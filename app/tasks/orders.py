@@ -147,7 +147,7 @@ def _resolve_parallel_card_addresses(session: Session, order: Order) -> Dict[str
                     f"address for parallel card {order.order_id}, fetching from "
                     f"OMS with prefix {prefix}"
                 )
-                oms_fetched = oms_service.fetch_order_addresses(prefix, session)
+                oms_fetched = oms_service.fetch_order_addresses(prefix, session, store_id=order.store_id)
                 fetched["billing"] = oms_fetched.get("billing")
             logger.info(
                 f"[Celery] Reusing base-card {parent.source_order_id} addresses "
@@ -161,7 +161,7 @@ def _resolve_parallel_card_addresses(session: Session, order: Order) -> Dict[str
         f"[Celery] No base-card addresses for parallel card {order.order_id}, "
         f"fetching from OMS with prefix {prefix}"
     )
-    fetched = oms_service.fetch_order_addresses(prefix, session)
+    fetched = oms_service.fetch_order_addresses(prefix, session, store_id=order.store_id)
     return _attach_addresses_to_order(session, order, fetched)
 
 
@@ -389,7 +389,9 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
                 if order.type == OrderType.PARALLEL_CARD:
                     addresses = _resolve_parallel_card_addresses(session, order)
                 else:
-                    fetched = oms_service.fetch_order_addresses(order.source_order_id, session)
+                    fetched = oms_service.fetch_order_addresses(
+                        order.source_order_id, session, store_id=order.store_id
+                    )
                     addresses = _attach_addresses_to_order(session, order, fetched)
             except OMSRetryableError as oms_exc:
                 retry_count = order_data.get("_oms_retry_count", 0)
