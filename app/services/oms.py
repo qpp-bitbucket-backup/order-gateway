@@ -335,12 +335,24 @@ class OMSService:
         OMS address payloads do not always carry an email; when the client
         (store) has one configured it is used as the fallback for both
         delivery and billing addresses.
+
+        The fallback is a convenience only — a failed lookup (e.g. schema
+        drift before the migration ran) degrades to ``None`` so the address
+        fetch itself keeps working.
         """
         if not store_id:
             return None
-        client = session.exec(
-            select(Client).where(Client.store_id == store_id)
-        ).first()
+        try:
+            client = session.exec(
+                select(Client).where(Client.store_id == store_id)
+            ).first()
+        except Exception as exc:
+            logger.warning(
+                "[OMS] Failed to resolve default recipient email for store %s: %s",
+                store_id,
+                exc,
+            )
+            return None
         return client.default_recipient_email if client else None
 
     @staticmethod
