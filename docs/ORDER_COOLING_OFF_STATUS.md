@@ -2,7 +2,9 @@
 
 ## 概述
 
-本次變更(TI-70)為訂單新增內部狀態 `COOLING_OFF`(冷靜期)。當 client(店鋪)配置了冷靜期秒數後,訂單通過驗證(`VALIDATED`)不會立即推送 QPMN,而是先進入 `cooling_off` 狀態等待指定秒數,之後才執行推送。此機制給予買家一段反悔窗口(冷靜期內可取消/修改訂單),適用於有法定冷靜期要求或業務需要的店鋪。
+本次變更(TI-70)為訂單新增內部狀態 `COOLING_OFF`(冷靜期)。當 client(店鋪)配置了冷靜期秒數後,訂單通過驗證(`VALIDATED`)不會立即推送 QPMN,而是先進入 `coolingoff` 狀態等待指定秒數,之後才執行推送。此機制給予買家一段反悔窗口(冷靜期內可取消/修改訂單),適用於有法定冷靜期要求或業務需要的店鋪。
+
+> **拼寫更名(2026-09-23)**: 狀態值 `cooling_off` 更名為 `coolingoff`,與 `printready` 等無下劃線風格統一(遷移 `e2f3a4b5c6d7`,含存量數據改寫)。本文檔其餘部分按新值表述。
 
 - **提交**: `27a3451` — `TI-70: add order cooling-off status`(PR #120,feature/TI-70,2026-09-10)
 - **核心原則**: `COOLING_OFF` 與 `PENDING`/`PROCESSING` 一樣為**內部專用狀態**,絕不通知 OMS/VFS,對外仍映射為 `dataready`。
@@ -13,17 +15,17 @@
 
 | 變更 | 表 | 說明 |
 |------|-----|------|
-| ENUM 擴充 | `orders.status` | 新增 `cooling_off` 值,位於 `validated` 與 `processing` 之間(MySQL 需重建 ENUM 欄位) |
+| ENUM 擴充 | `orders.status` | 新增 `coolingoff` 值,位於 `validated` 與 `processing` 之間(MySQL 需重建 ENUM 欄位) |
 | 新增欄位 | `clients.cooling_off_seconds` | `INT NOT NULL DEFAULT 0`,店鋪級冷靜期配置(0 = 無冷靜期) |
 | 新增欄位 | `orders.cooling_off_seconds` | `INT NULL`,訂單進入冷靜期時實際套用秒數的**快照**(NULL = 從未進入冷靜期) |
 
-完整 ENUM 順序:`received → pending → validated → cooling_off → processing → printready → printed → produced → cancelled → failed → errored → shipped`
+完整 ENUM 順序:`received → pending → validated → coolingoff → processing → printready → printed → produced → cancelled → failed → errored → shipped`
 
-> **降級注意**: 執行 downgrade 前應先推送或取消所有仍處於 `cooling_off` 的訂單,否則 ENUM 縮回時該狀態將無法容納。
+> **降級注意**: 執行 downgrade 前應先推送或取消所有仍處於 `coolingoff` 的訂單,否則 ENUM 縮回時該狀態將無法容納。
 
 ## 狀態機變更([app/models/order.py](../app/models/order.py))
 
-- `OrderStatus` 枚舉新增 `COOLING_OFF = "cooling_off"`,插入於 `VALIDATED` 與 `PROCESSING` 之間。
+- `OrderStatus` 枚舉新增 `COOLING_OFF = "coolingoff"`,插入於 `VALIDATED` 與 `PROCESSING` 之間。
 - `ORDER_STATE_TRANSITIONS` 調整:
 
 ```
@@ -40,13 +42,13 @@ VALIDATED ──┬──→ COOLING_OFF(配置了冷靜期時)──┬──�
 
 `validate_order` Celery 任務在驗證通過後、鏈結 `push_order` 之前:
 
-1. 呼叫 `client_service.get_cooling_off_seconds(order.store_id)` 查詢店鋪冷靜期配置。
+1. 平行卡訂單(`order.type == PARALLEL_CARD`)**豁免冷靜期**,直接視為 0 秒(平行卡隨母卡出貨,單獨冷靜期無意義);其餘訂單呼叫 `client_service.get_cooling_off_seconds(order.store_id)` 查詢店鋪冷靜期配置。
 2. 若 `cooling_off_seconds > 0`:
    - 訂單狀態更新為 `COOLING_OFF` 並提交;
    - 將實際套用的秒數**快照**至 `order.cooling_off_seconds`(供平台前端結合 `order_cooling_off` 日誌時間戳渲染倒數計時,並在冷靜期結束後保留作為記錄);
    - 寫入訂單日誌事件 `order_cooling_off`(`Order holding in cooling-off for {N}s before QPMN push`)。
 3. `push_order.apply_async` 以 `countdown=cooling_off_seconds` 延遲排程;冷靜期結束後任務自動觸發,訂單進入 `PROCESSING` 並推送 QPMN。
-4. 若冷靜期為 0(未配置/未知店鋪),行為與原本完全一致,立即推送。
+4. 若冷靜期為 0(未配置/未知店鋪/平行卡訂單),行為與原本完全一致,立即推送。
 
 ## 訂單可編輯性([app/services/order.py](../app/services/order.py))
 
@@ -83,7 +85,7 @@ VALIDATED ──┬──→ COOLING_OFF(配置了冷靜期時)──┬──�
 
 | 測試檔 | 驗證內容 |
 |--------|----------|
-| `tests/test_order_model.py` | `cooling_off` 枚舉值;`VALIDATED → COOLING_OFF → PROCESSING/CANCELLED` 轉換合法且不可跳至 `PRINTREADY`;`COOLING_OFF` 不在 `OMS_STATUS_MAP`/`STATUS_EVENT_MAP`(internal-only);`cooling_off_seconds` 快照欄位(預設 NULL) |
+| `tests/test_order_model.py` | `coolingoff` 枚舉值;`VALIDATED → COOLING_OFF → PROCESSING/CANCELLED` 轉換合法且不可跳至 `PRINTREADY`;`COOLING_OFF` 不在 `OMS_STATUS_MAP`/`STATUS_EVENT_MAP`(internal-only);`cooling_off_seconds` 快照欄位(預設 NULL) |
 | `tests/test_order_service_helpers.py` | `COOLING_OFF` 已加入 `UPDATABLE_STATUSES` |
 | `tests/test_orders_api_helpers.py` | `_EXTERNAL_STATUS_MAP[COOLING_OFF] == "dataready"` |
 
@@ -91,5 +93,5 @@ VALIDATED ──┬──→ COOLING_OFF(配置了冷靜期時)──┬──�
 
 1. **先執行資料庫遷移**再部署新代碼(`alembic upgrade head`),ENUM 擴充與新欄位均為向後相容。
 2. Celery worker 需重啟以載入新任務邏輯;`countdown` 延遲依賴 broker(RabbitMQ)正常運作。
-3. 若降級版本,先處理(推送或取消)所有 `cooling_off` 狀態訂單,再執行 downgrade。
+3. 若降級版本,先處理(推送或取消)所有 `coolingoff` 狀態訂單,再執行 downgrade。
 4. 冷靜期配置即時生效:修改 client 的 `cooling_off_seconds` 只影響之後驗證通過的訂單;已進入冷靜期的訂單以其快照值為準。

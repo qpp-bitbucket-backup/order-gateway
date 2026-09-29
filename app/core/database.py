@@ -1,6 +1,5 @@
 from sqlmodel import SQLModel, create_engine, Session, select
 from app.core.config import settings
-from app.models.client import Client
 from app.models.user import User, UserRole  # noqa: F401 – ensure table creation
 from app.core.security import get_password_hash
 
@@ -27,26 +26,7 @@ else:
 def create_db_and_tables():
     """Create all database tables."""
     SQLModel.metadata.create_all(engine)
-    _ensure_default_client()
     _ensure_default_admin()
-
-
-def _ensure_default_client():
-    """Seed a default client from environment variables when the table is empty."""
-    with Session(engine) as session:
-        existing = session.exec(select(Client)).first()
-        if existing:
-            return
-
-        client = Client(
-            name="default",
-            store_id="default",
-            token=settings.ONEFLOW_TOKEN,
-            secret=settings.ONEFLOW_SECRET,
-            description="Default client bootstrapped from environment variables",
-        )
-        session.add(client)
-        session.commit()
 
 
 def _ensure_default_admin():

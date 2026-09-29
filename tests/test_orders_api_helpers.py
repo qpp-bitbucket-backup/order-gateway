@@ -33,6 +33,14 @@ class TestExternalStatusMap:
         assert _EXTERNAL_STATUS_MAP[OrderStatus.FAILED] == "error"
         assert _EXTERNAL_STATUS_MAP[OrderStatus.ERRORED] == "error"
 
+    def test_return_statuses_hidden_from_vfs(self):
+        """Returns are OMS-initiated; VFS never sees them — a returning /
+        return-completed order surfaces as "shipped" (its pre-return
+        status) in the query API. OMS still gets the real values via
+        API-002 (OMS_STATUS_MAP)."""
+        assert _EXTERNAL_STATUS_MAP[OrderStatus.RETURNING] == "shipped"
+        assert _EXTERNAL_STATUS_MAP[OrderStatus.RETURN_COMPLETED] == "shipped"
+
 
 class TestEnrichOrderDataWithStatus:
     """Test status injection into order_data responses."""

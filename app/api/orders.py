@@ -82,6 +82,11 @@ _POST_ORDER_ENDPOINT = "POST /order"
 # Mapping from internal OrderStatus to external status exposed via API.
 # COOLING_OFF maps to "dataready" like VALIDATED/PROCESSING — it is an
 # internal-only stage (client cooling-off period) never surfaced to OMS/VFS.
+# RETURNING / RETURN_COMPLETED likewise stay internal from VFS's point of
+# view (returns are initiated via the OMS return API, VFS is not part of
+# that flow) — both surface as "shipped", the status the order had before
+# the return started. OMS still receives the real values via API-002
+# (OMS_STATUS_MAP).
 _EXTERNAL_STATUS_MAP: dict = {
     OrderStatus.RECEIVED: "received",
     OrderStatus.PENDING: "received",
@@ -92,6 +97,8 @@ _EXTERNAL_STATUS_MAP: dict = {
     OrderStatus.PRINTED: "printed",
     OrderStatus.PRODUCED: "produced",
     OrderStatus.SHIPPED: "shipped",
+    OrderStatus.RETURNING: "shipped",
+    OrderStatus.RETURN_COMPLETED: "shipped",
     OrderStatus.ERRORED: "error",
     OrderStatus.CANCELLED: "cancelled",
     OrderStatus.FAILED: "error",

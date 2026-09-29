@@ -14,7 +14,7 @@
 
 | 級別 | 含義 | 涵蓋狀態 |
 |------|------|----------|
-| `info` | 正常流轉 | received、pending、validated、cooling_off、processing、printready、printed、produced、shipped |
+| `info` | 正常流轉 | received、pending、validated、coolingoff、processing、printready、printed、produced、shipped |
 | `warning` | 需關注 | cancelled |
 | `error` | 失敗/異常,通常需人工介入 | failed、errored |
 
@@ -91,7 +91,7 @@ PUT /platform/clients/{client_id}
 由 [`render_order_status_email`](../app/services/email_templates.py) 內置渲染(零外部配置),複用既有的品牌郵件外殼(`_render_email_shell`),所有值經 HTML escape:
 
 - **頭部背景色**：郵件頭部「QPMN Order Gateway」的背景色依級別變化：info 藍(#0842a0)、warning 褐(#bf8e24)、error 深紅(#c10d0d)；未知級別回退 info 藍。其他郵件(如密碼重設)不受影響，保持品牌深藍(#1a1a2e)
-- **主題**:`[LEVEL] Order {source_order_id} {Status}` 風格,優先使用外部可辨識的 `source_order_id`(缺省回退內部 `order_id`),目標狀態首字母大寫(`cooling_off` → `Cooling Off`),例如 `[ERROR] Order SHOP-2026-1001 Failed`;新建訂單顯示為 `[INFO] Order SHOP-2026-1001 Received`
+- **主題**:`[LEVEL] Order {source_order_id} {Status}` 風格,優先使用外部可辨識的 `source_order_id`(缺省回退內部 `order_id`),目標狀態首字母大寫(`coolingoff` → `Cooling Off`),例如 `[ERROR] Order SHOP-2026-1001 Failed`;新建訂單顯示為 `[INFO] Order SHOP-2026-1001 Received`
 - **正文**:表格呈現 Order ID、Source Order ID、Store(顯示 client 名稱,查不到時回退 store_id)、狀態變更(`new -> received` 風格)、冷靜期時長(僅 COOLING_OFF 通知且 `order.cooling_off_seconds` 有值時顯示,如「2 days」、「1 hour 30 minutes」)、級別、觸發訊息、發生時間(UTC),同時提供純文字版
 - **查看詳細按鈕**:配置 `ADMIN_BASE_URL` 後,HTML 版附「View Details」按鈕連結至 `{ADMIN_BASE_URL}/admin/orders/show/{order_id}`(內部 order_id,管理後台路由用),樣式與密碼重設郵件按鈕配方一致(靛藍 #4f46e5、圓角 4px 的 inline-block `<a>`);純文字版附對應連結行;未配置則不渲染
 

@@ -182,6 +182,15 @@ def _format_duration(seconds: int) -> str:
     return " ".join(parts)
 
 
+# Status values use the no-underscore ENUM spelling (coolingoff,
+# returncompleted, like printready); these read poorly when title-cased, so
+# they get explicit display names for the email subject.
+_STATUS_DISPLAY_NAMES = {
+    "coolingoff": "Cooling Off",
+    "returncompleted": "Return Completed",
+}
+
+
 def render_order_status_email(
     order_id: str,
     from_status: str,
@@ -202,7 +211,8 @@ def render_order_status_email(
     the "[INFO] Order {source_order_id} Received" style: it shows the
     external ``source_order_id`` (what store staff recognise, falling back
     to the internal ``order_id`` when absent) plus the target status
-    title-cased (``cooling_off`` -> ``Cooling Off``). Every caller-supplied
+    title-cased (``coolingoff`` -> ``Cooling Off`` via _STATUS_DISPLAY_NAMES;
+    any other value falls back to generic title-casing). Every caller-supplied
     value is HTML-escaped before going into the HTML body; ``subject_prefix``
     lets tests mark the email (e.g. "[TEST] "); ``view_url`` (from
     ADMIN_BASE_URL, pointing at /admin/orders/show/{order_id}) renders a
@@ -215,7 +225,7 @@ def render_order_status_email(
     # as "new" instead of an empty " -> received".
     from_label = from_status or "new"
     display_id = source_order_id or order_id
-    to_label = (to_status or "").replace("_", " ").title()
+    to_label = _STATUS_DISPLAY_NAMES.get(to_status or "", (to_status or "").replace("_", " ").title())
     subject = f"{subject_prefix}[{level_token}] Order {display_id} {to_label}".rstrip()
 
     fields = [

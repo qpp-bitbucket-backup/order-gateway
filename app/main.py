@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse, JSONResponse
 from contextlib import asynccontextmanager
@@ -16,7 +17,7 @@ from app.core.auth_oneflow import (
     oneflow_authorization_header,
     oneflow_date_header,
 )
-from app.api import orders, products, files, clients, sync, users, webhooks
+from app.api import orders, products, files, clients, sync, users, webhooks, oms
 
 # Global logging configuration
 # Configure root logger so all modules (including app.api.orders) inherit uvicorn-style console output
@@ -120,6 +121,15 @@ For API support, contact: itdev2@qpp.com
             "name": "Health",
             "description": "Health check and status endpoints (no authentication required)",
         },
+        {
+            "name": "Order",
+            "description": (
+                "OMS operations on an order by sourceOrderId — cancel, or "
+                "return a shipped order (requires OMS signed headers — same "
+                "mechanism as OneFlow, per-client oms_token/oms_secret from "
+                "the clients table)"
+            ),
+        },
     ],
 )
 
@@ -156,6 +166,7 @@ app.include_router(sync.router)
 app.include_router(sync.jwt_router)
 app.include_router(users.router)
 app.include_router(webhooks.router)
+app.include_router(oms.router)
 
 
 # ---------------------------------------------------------------------------
@@ -185,10 +196,13 @@ async def order_creation_validation_handler(request: Request, exc: RequestValida
                 }
             },
         )
-    # Default FastAPI behavior for all other endpoints
+    # Default FastAPI behavior for all other endpoints. jsonable_encoder is
+    # required because exc.errors() may carry non-serializable ctx objects
+    # (e.g. the ValueError raised by a pydantic model_validator), which would
+    # otherwise crash JSON serialization and turn the 422 into a 500.
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors()},
+        content={"detail": jsonable_encoder(exc.errors())},
     )
 
 
@@ -210,6 +224,7 @@ def custom_openapi():
         version=app.version,
         description=app.description,
         routes=app.routes,
+        tags=app.openapi_tags,
     )
 
     openapi_schema["components"]["securitySchemes"] = {
@@ -248,10 +263,16 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 
-def _get_filtered_openapi():
-    """Generate a filtered OpenAPI schema for ReDoc (Orders + File Upload only)."""
+def _get_filtered_openapi(allowed_tags, title=None, description=None, tag_groups=None):
+    """Generate a filtered OpenAPI schema for a ReDoc page.
+
+    Keeps only the operations whose tags intersect ``allowed_tags``; optionally
+    overrides the info title/description so each ReDoc page can carry its own
+    authentication notes. ``tag_groups`` (ReDoc's ``x-tagGroups`` extension)
+    nests the kept tags under parent sections on the page — every kept tag
+    must be listed in exactly one group or ReDoc drops it from the sidebar.
+    """
     schema = copy.deepcopy(custom_openapi())
-    allowed_tags = {"Orders", "File Upload"}
     filtered_paths = {}
     for path, path_item in schema.get("paths", {}).items():
         filtered_ops = {}
@@ -265,13 +286,19 @@ def _get_filtered_openapi():
             filtered_paths[path] = filtered_ops
     schema["paths"] = filtered_paths
     schema["tags"] = [t for t in schema.get("tags", []) if t["name"] in allowed_tags]
+    if title is not None:
+        schema["info"]["title"] = title
+    if description is not None:
+        schema["info"]["description"] = description
+    if tag_groups is not None:
+        schema["x-tagGroups"] = tag_groups
     return schema
 
 
 @app.get("/openapi_redoc.json", include_in_schema=False)
 def openapi_redoc():
     """Filtered OpenAPI schema for ReDoc."""
-    return _get_filtered_openapi()
+    return _get_filtered_openapi({"Orders", "File Upload"})
 
 
 @app.get("/redoc", include_in_schema=False, response_class=HTMLResponse)
@@ -289,6 +316,81 @@ def redoc():
     </head>
     <body>
         <redoc spec-url='/openapi_redoc.json'></redoc>
+        <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+    </body>
+    </html>
+    """
+
+
+OMS_REDOC_DESCRIPTION = """
+OMS Cancel / Return API - cancel or return an order by `sourceOrderId` (no
+`source_account` needed).
+
+## Authentication
+
+Both endpoints use the same signed-header mechanism as VFS, but with
+**per-client OMS credentials** (`oms_token` / `oms_secret` stored on the
+`clients` table — generated at client creation; rotate via the platform
+API `/api/platform/clients/oms_secret`). VFS client tokens are NOT
+accepted here; a client without OMS credentials cannot authenticate.
+
+### Required Headers
+- `x-oneflow-authorization`: `Token:Signature`
+- `x-oneflow-date`: ISO 8601 timestamp used when signing (e.g. `2026-01-01T12:00:00.000Z`)
+- `x-oneflow-algorithm`: `SHA256`
+
+### Signature
+Sign the following string with HMAC-SHA256 using the OMS Secret:
+```
+{HTTP_METHOD} {PATH} {TIMESTAMP}
+```
+Example:
+```
+POST /api/oms/order/ORD-123/cancel 2026-01-01T12:00:00.000Z
+```
+
+The signature must be recomputed for each endpoint (it includes the HTTP
+method and path) and the timestamp must be within ±300 seconds of the server
+clock.
+
+## Status Rules
+- **Cancel**: rejected once the order has entered production (`shipped`); an already-cancelled order is
+  idempotently accepted with 200.
+- **Return**: only `shipped` orders can be returned; an already-returning /
+  return-completed (`returncompleted`) order is idempotently accepted with
+  200. When `isFullReturn` is `false`, `items` (product SKU + quantity, at
+  least one line) is required.
+
+## Support
+For API support, contact: itdev2@qpp.com
+"""
+
+
+@app.get("/openapi_oms.json", include_in_schema=False)
+def openapi_oms():
+    """Filtered OpenAPI schema for the OMS ReDoc page (OMS endpoints only)."""
+    return _get_filtered_openapi(
+        {"Order"},
+        title=f"{settings.APP_NAME} - OMS API",
+        description=OMS_REDOC_DESCRIPTION,
+    )
+
+
+@app.get("/oms-api-doc", include_in_schema=False, response_class=HTMLResponse)
+def oms_redoc():
+    """ReDoc documentation - shows only the OMS cancel / return APIs."""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>{settings.APP_NAME} - OMS API</title>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+        <style>body {{ margin: 0; padding: 0; }}</style>
+    </head>
+    <body>
+        <redoc spec-url='/openapi_oms.json'></redoc>
         <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
     </body>
     </html>

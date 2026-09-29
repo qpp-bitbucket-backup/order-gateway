@@ -70,8 +70,14 @@ class TestStateMachineConsistency:
     """can_transition must reflect ORDER_STATE_TRANSITIONS exactly."""
 
     def test_terminal_states_allow_nothing(self):
-        for terminal in (OrderStatus.CANCELLED, OrderStatus.SHIPPED):
+        # CANCELLED and RETURN_COMPLETED are the true terminals. SHIPPED is
+        # no longer one — it may still flow into the return path (RETURNING).
+        for terminal in (OrderStatus.CANCELLED, OrderStatus.RETURN_COMPLETED):
             assert ORDER_STATE_TRANSITIONS[terminal] == []
+
+    def test_shipped_flows_into_return_path(self):
+        assert ORDER_STATE_TRANSITIONS[OrderStatus.SHIPPED] == [OrderStatus.RETURNING]
+        assert ORDER_STATE_TRANSITIONS[OrderStatus.RETURNING] == [OrderStatus.RETURN_COMPLETED]
 
     def test_can_transition_matches_table(self):
         for from_status, allowed in ORDER_STATE_TRANSITIONS.items():

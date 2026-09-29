@@ -52,10 +52,6 @@ class Settings(BaseSettings):
     # email (https://app.sendgrid.com/dynamic_templates). Empty = render the
     # local template in app/services/email_templates.py instead.
     SENDGRID_RESET_PASSWORD_TEMPLATE_ID: str = ""
-    
-    # HP Site Flow OneFlow API Authentication (bootstrap default client)
-    ONEFLOW_TOKEN: str = "oneflow-token-change-in-production"
-    ONEFLOW_SECRET: str = "oneflow-secret-change-in-production"
 
     # Admin API key for client management endpoints
     ADMIN_API_KEY: str = "admin-api-key-change-in-production"
@@ -101,6 +97,11 @@ class Settings(BaseSettings):
     QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
     QPMN_ORDER_API_VERSION: str = "open"   # Order creation API version: "legacy" or "open"
+    # QPMN return API endpoint path template (relative to QPMN_OPEN_API_URL,
+    # PUT with the same Basic store_token auth as the cancel API). The final
+    # path is pending QPMN confirmation — kept configurable so only the env
+    # changes when it is finalized.
+    QPMN_RETURN_ENDPOINT_PATH: str = "orders/{store_order_id}/return"
 
     # PDF Processing Configuration
     MODIFY_PDF_RESOLUTION: bool = False

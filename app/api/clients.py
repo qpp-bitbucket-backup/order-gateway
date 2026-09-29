@@ -25,6 +25,10 @@ from app.schemas.client import (
     ClientStoreKeyRevealRequest,
     ClientStoreKeyRevealResponse,
     ClientStoreKeyUpdateRequest,
+    ClientOMSCredentialsRevealRequest,
+    ClientOMSCredentialsRevealResponse,
+    ClientOMSCredentialsUpdateRequest,
+    ClientOMSCredentialsUpdateResponse,
     PlatformClientCreateRequest,
     PlatformSalesStatSummary,
     PlatformSalesStatsResponse,
@@ -52,6 +56,7 @@ def _to_summary(client: Client) -> ClientSummary:
         name=client.name,
         store_id=client.store_id,
         token=client.token,
+        oms_token=client.oms_token,
         description=client.description,
         default_recipient_email=client.default_recipient_email,
         cooling_off_seconds=client.cooling_off_seconds or 0,
@@ -77,7 +82,13 @@ def create_client(
     request: ClientCreateRequest,
     session: Session = Depends(get_session),
 ):
-    """Create a new API client with auto-generated token and secret."""
+    """Create a new API client with auto-generated token and secret.
+
+    Both credential pairs are generated server-side: the OneFlow token /
+    secret and the OMS oms_token / oms_secret (so the client can authenticate
+    against the OMS endpoints right away); each secret is shown only once
+    in the response.
+    """
     existing = session.exec(select(Client).where(Client.store_id == request.store_id)).first()
     if existing:
         raise HTTPException(
@@ -87,6 +98,8 @@ def create_client(
 
     token = _generate_token()
     secret = _generate_secret()
+    oms_token = _generate_token()
+    oms_secret = _generate_secret()
 
     client = Client(
         name=request.name,
@@ -94,6 +107,8 @@ def create_client(
         store_key=request.store_key,
         token=token,
         secret=secret,
+        oms_token=oms_token,
+        oms_secret=oms_secret,
         description=request.description,
         default_recipient_email=request.default_recipient_email,
         cooling_off_seconds=request.cooling_off_seconds or 0,
@@ -106,6 +121,7 @@ def create_client(
     return ClientCreatedResponse(
         client=_to_summary(client),
         secret=secret,
+        oms_secret=oms_secret,
     )
 
 
@@ -248,9 +264,9 @@ def platform_create_client(
     All fields (name, store_id, store_key, description) are required. The
     store_id + store_key pair is verified against the QPMN store API before
     anything is persisted — a failed verification means the store does not
-    exist or the authorization is invalid (HTTP 400). The OneFlow token and
-    secret are generated server-side; the secret is shown only once in the
-    response.
+    exist or the authorization is invalid (HTTP 400). Both credential pairs
+    are generated server-side: the OneFlow token / secret and the OMS
+    oms_token / oms_secret; each secret is shown only once in the response.
     """
     existing = session.exec(select(Client).where(Client.store_id == request.store_id)).first()
     if existing:
@@ -275,6 +291,8 @@ def platform_create_client(
 
     token = _generate_token()
     secret = _generate_secret()
+    oms_token = _generate_token()
+    oms_secret = _generate_secret()
 
     client = Client(
         name=request.name,
@@ -282,6 +300,8 @@ def platform_create_client(
         store_key=request.store_key,
         token=token,
         secret=secret,
+        oms_token=oms_token,
+        oms_secret=oms_secret,
         description=request.description,
         default_recipient_email=request.default_recipient_email,
         cooling_off_seconds=request.cooling_off_seconds or 0,
@@ -294,6 +314,7 @@ def platform_create_client(
     return ClientCreatedResponse(
         client=_to_summary(client),
         secret=secret,
+        oms_secret=oms_secret,
     )
 
 
@@ -367,6 +388,83 @@ def platform_update_client_secret(
     session.refresh(client)
 
     return ClientResponse(client=_to_summary(client))
+
+
+@jwt_router.post("/clients/oms_secret", response_model=ClientOMSCredentialsRevealResponse)
+def platform_reveal_client_oms_credentials(
+    request: ClientOMSCredentialsRevealRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+):
+    """Reveal a client's OMS credentials by store_id (JWT admin + password confirmation).
+
+    Mirrors the OneFlow secret reveal: the login password must be re-supplied
+    and verified before the ``oms_secret`` is disclosed — a JWT alone is not
+    enough for this sensitive operation. Password is checked before the store
+    lookup so a wrong password never leaks whether the store exists. A client
+    that never had OMS credentials configured reveals NULL values.
+    """
+    _confirm_password_or_403(current_user, request.password)
+    client = _get_client_by_store_id_or_404(session, request.store_id)
+
+    return ClientOMSCredentialsRevealResponse(
+        success=True,
+        store_id=client.store_id,
+        oms_token=client.oms_token,
+        oms_secret=client.oms_secret,
+    )
+
+
+@jwt_router.put("/clients/oms_secret", response_model=ClientOMSCredentialsUpdateResponse)
+def platform_update_client_oms_credentials(
+    request: ClientOMSCredentialsUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
+):
+    """Update a client's OMS credentials by store_id (JWT admin only).
+
+    Either provide ``oms_token`` and/or ``oms_secret`` explicitly (secret must
+    be ≥32 chars), or set ``rotate=true`` to have a fresh pair generated
+    server-side. Providing explicit values together with ``rotate=true``, or
+    providing neither, is a 422. The response returns the resulting token plus
+    the secret — but only when one was generated or supplied in this request,
+    so an unchanged secret is never echoed back.
+    """
+    client = _get_client_by_store_id_or_404(session, request.store_id)
+
+    if request.rotate and (request.oms_token is not None or request.oms_secret is not None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide explicit oms_token/oms_secret or rotate=true, not both",
+        )
+    if not request.rotate and request.oms_token is None and request.oms_secret is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nothing to update: provide oms_token and/or oms_secret, or set rotate=true",
+        )
+
+    if request.rotate:
+        client.oms_token = _generate_token()
+        client.oms_secret = _generate_secret()
+        returned_secret = client.oms_secret
+    else:
+        if request.oms_token is not None:
+            client.oms_token = request.oms_token
+        if request.oms_secret is not None:
+            client.oms_secret = request.oms_secret
+        returned_secret = request.oms_secret
+
+    client.updated_at = datetime.now(timezone.utc)
+    session.add(client)
+    session.commit()
+    session.refresh(client)
+
+    return ClientOMSCredentialsUpdateResponse(
+        success=True,
+        store_id=client.store_id,
+        oms_token=client.oms_token,
+        oms_secret=returned_secret,
+    )
 
 
 @jwt_router.post("/clients/store_key", response_model=ClientStoreKeyRevealResponse)
