@@ -12,6 +12,7 @@ from app.core.database import engine
 from app.core.config import settings
 from app.core.rabbitmq import QUEUE_ORDER_PUBLISHING, QUEUE_ORDER_VALIDATING, QUEUE_ORDER_PUSHING
 from app.models.order import Order, OrderStatus, OrderType, can_transition, OMS_STATUS_MAP
+from app.models.order_cancel_record import OrderCancelRecord, OrderCancelRecordStatus
 from app.models.address import Address, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
@@ -196,6 +197,43 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                     f"{order.status.value} -> {OrderStatus.PENDING.value}"
                 )
                 return False
+
+            # An OMS cancel request arrived before this order did (404 at the
+            # time) — cancel it locally right away instead of publishing: the
+            # order has not been pushed to QPMN yet, so no QPMN cancel API
+            # call is needed.
+            pending_cancel = session.exec(
+                select(OrderCancelRecord).where(
+                    OrderCancelRecord.source_order_id == order.source_order_id,
+                    OrderCancelRecord.status == OrderCancelRecordStatus.PENDING,
+                )
+            ).first()
+            if pending_cancel:
+                cancel_reason = pending_cancel.reason or "no reason given"
+                cancel_msg = (
+                    "Order cancelled on arrival by pending OMS cancel "
+                    f"request ({cancel_reason})"
+                )
+                from_status, level = record_status_change(
+                    order, OrderStatus.CANCELLED, "order_cancelled", cancel_msg,
+                    worker="order_publishing",
+                    extra={"source": "pending_oms_cancel"},
+                )
+                pending_cancel.status = OrderCancelRecordStatus.PROCESSED
+                pending_cancel.order_id = order.order_id
+                pending_cancel.processed_message = cancel_msg
+                session.add(order)
+                session.add(pending_cancel)
+                session.commit()
+                enqueue_status_change_email(
+                    session, order, from_status, OrderStatus.CANCELLED, level, cancel_msg
+                )
+                logger.info(
+                    "[Celery] Order %s (source_order_id=%s) cancelled by pending "
+                    "OMS cancel record instead of publishing",
+                    order_id, order.source_order_id,
+                )
+                return True
 
             publish_msg = "Order publishing started by celery worker"
             from_status, level = record_status_change(
@@ -498,7 +536,13 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
             # seconds before the push. COOLING_OFF is internal-only (like
             # PENDING/PROCESSING it is never reported to OMS/VFS — the
             # dataready notification above already covers this stage).
-            cooling_off_seconds = client_service.get_cooling_off_seconds(order.store_id)
+            # Parallel-card orders never enter cooling-off: they piggyback on
+            # the base card's shipment, so holding them back only delays a
+            # shipment the base card may already be part of.
+            if order.type == OrderType.PARALLEL_CARD:
+                cooling_off_seconds = 0
+            else:
+                cooling_off_seconds = client_service.get_cooling_off_seconds(order.store_id)
             if cooling_off_seconds > 0:
                 # Snapshot the applied period on the order — the platform
                 # frontend reads it (plus the order_cooling_off log timestamp

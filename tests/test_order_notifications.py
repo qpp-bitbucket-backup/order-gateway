@@ -131,9 +131,10 @@ class TestRenderOrderStatusEmail:
         )
         assert subject == "[ERROR] Order ord-1 Failed"
 
-        # Underscored statuses render with spaces: cooling_off -> Cooling Off
+        # Display names keep the email subject readable even though the
+        # ENUM value lost its underscore: coolingoff -> Cooling Off
         subject, _, _ = render_order_status_email(
-            order_id="ord-1", from_status="received", to_status="cooling_off",
+            order_id="ord-1", from_status="received", to_status="coolingoff",
             level="warning", message="wait",
         )
         assert subject == "[WARNING] Order ord-1 Cooling Off"
@@ -217,7 +218,7 @@ class TestRenderOrderStatusEmail:
 
     def test_cooling_off_period_rendered_when_duration_given(self):
         subject, text, html = render_order_status_email(
-            order_id="ord-1", from_status="validated", to_status="cooling_off",
+            order_id="ord-1", from_status="validated", to_status="coolingoff",
             level="info", message="holding", cooling_off_seconds=172800,
         )
         assert subject == "[INFO] Order ord-1 Cooling Off"
@@ -295,7 +296,7 @@ class TestEmailMutedStatuses:
                 assert log_id is not None
                 nlog = session.get(NotificationEmailLog, log_id)
                 assert nlog is not None
-                assert nlog.to_status == "cooling_off"
+                assert nlog.to_status == "coolingoff"
                 assert dispatched and dispatched[0]["log_id"] == log_id
             finally:
                 nlog = session.get(NotificationEmailLog, log_id)

@@ -32,6 +32,7 @@ from app.core.sentry_alerts import ALERTS, capture_integration_alert
 logger = logging.getLogger(__name__)
 
 _CANCEL_ALERTS = ALERTS["cancel"]
+_RETURN_ALERTS = ALERTS["return"]
 _SHIPPING_ALERTS = ALERTS["shipping"]
 _CURRENCY_ALERTS = ALERTS["currency"]
 
@@ -43,6 +44,14 @@ def _capture_cancel_alert(alert_key: str, order_id: Optional[str] = None, **form
     """Capture a cancel_qpmn_order failure to Sentry (synchronous, non-Celery)."""
     capture_integration_alert(
         _CANCEL_ALERTS[alert_key], order_id=order_id,
+        format_args={"order_id": order_id, **format_args}, component="qpmn_api",
+    )
+
+
+def _capture_return_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
+    """Capture a return_qpmn_order failure to Sentry (synchronous, non-Celery)."""
+    capture_integration_alert(
+        _RETURN_ALERTS[alert_key], order_id=order_id,
         format_args={"order_id": order_id, **format_args}, component="qpmn_api",
     )
 
@@ -108,6 +117,21 @@ class OrderNotCancellableError(ValueError):
 
 class QPMNCancelError(ValueError):
     """Raised when the QPMN cancel API call fails (HTTP 502)."""
+    def __init__(self, message: str, status_code: Optional[int] = None, error: Any = None):
+        super().__init__(message)
+        self.qpmn_status_code = status_code
+        self.qpmn_error = error
+
+
+class OrderNotReturnableError(ValueError):
+    """Raised when the order status does not allow a return (HTTP 409).
+
+    Only SHIPPED orders can initiate a return via the OMS return API."""
+    pass
+
+
+class QPMNReturnError(ValueError):
+    """Raised when the QPMN return API call fails (HTTP 502)."""
     def __init__(self, message: str, status_code: Optional[int] = None, error: Any = None):
         super().__init__(message)
         self.qpmn_status_code = status_code
@@ -569,6 +593,174 @@ class OrderService:
 
         raise QPMNCancelError(
             f"QPMN cancel API failed (HTTP {qpmn_status_code}): {error_detail}.",
+            status_code=qpmn_status_code,
+            error=error_detail,
+        )
+
+    def return_qpmn_order(
+        self,
+        order: Order,
+        return_payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Call the QPMN return API to initiate a return on the QPMN side.
+
+        PUT {QPMN_OPEN_API_URL}{QPMN_RETURN_ENDPOINT_PATH}
+        Authorization: Basic {store_token}
+
+        The endpoint path is pending QPMN confirmation — it lives in
+        ``settings.QPMN_RETURN_ENDPOINT_PATH`` so finalizing it is a config
+        change, not a code change. The return request body (reason /
+        isFullReturn / return tracking info) is forwarded as the JSON body.
+
+        Returns:
+            A dict with keys:
+            - ``success``: True only when QPMN returns HTTP 200 with ``success=true``.
+            - ``status_code``: HTTP status code from QPMN.
+            - ``data``: Response body data (on success).
+            - ``error``: Error message (on failure).
+        """
+        store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
+        if not store_key:
+            logger.warning("[OrderService] No store_key for order %s, cannot call QPMN return API", order.order_id)
+            _capture_return_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
+            return {"success": False, "status_code": None, "error": "No store_key configured"}
+
+        api_url = (
+            f"{settings.QPMN_OPEN_API_URL}"
+            f"{settings.QPMN_RETURN_ENDPOINT_PATH.format(store_order_id=order.store_order_id)}"
+        )
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": _JSON_CONTENT_TYPE,
+        }
+
+        logger.info(
+            "[OrderService] Calling QPMN return API for order %s (store_order_id=%s)",
+            order.order_id,
+            order.store_order_id,
+        )
+
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                response = client.put(api_url, headers=headers, json=return_payload or {})
+        except httpx.TimeoutException:
+            logger.error("[OrderService] QPMN return API timeout for order %s", order.order_id)
+            _capture_return_alert("TIMEOUT", order.order_id)
+            return {"success": False, "status_code": None, "error": "QPMN API timeout"}
+        except Exception as exc:
+            logger.error("[OrderService] QPMN return API request failed for order %s: %s", order.order_id, exc)
+            _capture_return_alert("REQUEST_FAILED", order.order_id, exc=exc)
+            return {"success": False, "status_code": None, "error": str(exc)}
+
+        # Non-200 responses are failures
+        if response.status_code != 200:
+            error_body = None
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            logger.warning(
+                "[OrderService] QPMN return API returned %s for order %s: %s",
+                response.status_code,
+                order.order_id,
+                error_body,
+            )
+            _capture_return_alert("REJECTED_HTTP", order.order_id, status_code=response.status_code, error_body=error_body)
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": error_body,
+            }
+
+        body = response.json()
+        if not body.get("success"):
+            logger.warning(
+                "[OrderService] QPMN return API returned success=false for order %s: %s",
+                order.order_id,
+                body,
+            )
+            _capture_return_alert("REJECTED_SUCCESS_FALSE", order.order_id, body=body)
+            return {
+                "success": False,
+                "status_code": 200,
+                "error": body,
+            }
+
+        logger.info("[OrderService] QPMN return API succeeded for order %s", order.order_id)
+        return {
+            "success": True,
+            "status_code": 200,
+            "data": body.get("data"),
+        }
+
+    def return_order(
+        self,
+        session: Session,
+        order: Order,
+        return_payload: Dict[str, Any],
+    ) -> Order:
+        """
+        Initiate a return on an existing SHIPPED order (OMS return API).
+
+        Calls the QPMN return API first. Only when QPMN returns HTTP 200 with
+        ``success=true`` does the local order status change to RETURNING;
+        otherwise the order stays SHIPPED. All results (request, response,
+        success/failure) are appended to ``order.logs``.
+
+        Raises:
+            OrderNotReturnableError: If the order is not in SHIPPED status
+                (HTTP 409).
+            QPMNReturnError: If the QPMN return API call fails (HTTP 502).
+        """
+        if order.status != OrderStatus.SHIPPED:
+            self.append_log(
+                order, "return_rejected",
+                f"Cannot return order with status '{order.status.value}' (only shipped orders can be returned).",
+            )
+            session.add(order)
+            session.commit()
+            session.refresh(order)
+            raise OrderNotReturnableError(
+                f"Cannot return order with status '{order.status.value}'. Only shipped orders can be returned."
+            )
+
+        # --- 1. Call QPMN return API ---
+        qpmn_result = self.return_qpmn_order(order, return_payload=return_payload)
+
+        if qpmn_result.get("success"):
+            # --- QPMN accepted the return ---
+            return_msg = "Order return requested by OMS"
+            from_status, level = record_status_change(
+                order, OrderStatus.RETURNING, "order_return_requested", return_msg,
+                extra={"return_request": return_payload},
+            )
+            session.add(order)
+            session.commit()
+            session.refresh(order)
+            enqueue_status_change_email(session, order, from_status, OrderStatus.RETURNING, level, return_msg)
+
+            logger.info("[OrderService] Return requested for order %s", order.order_id)
+            return order
+
+        # --- QPMN return failed ---
+        error_detail = qpmn_result.get("error", "Unknown error")
+        qpmn_status_code = qpmn_result.get("status_code")
+        self.append_log(
+            order, "qpmn_return_failed",
+            f"QPMN return API failed (HTTP {qpmn_status_code}): {error_detail}.",
+            extra={
+                "status_code": qpmn_status_code,
+                "error": error_detail,
+                "response": qpmn_result.get("data"),
+            },
+        )
+        session.add(order)
+        session.commit()
+        session.refresh(order)
+
+        raise QPMNReturnError(
+            f"QPMN return API failed (HTTP {qpmn_status_code}): {error_detail}.",
             status_code=qpmn_status_code,
             error=error_detail,
         )

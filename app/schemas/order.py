@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Optional, List, Dict, Any, Union
 
 
@@ -347,7 +347,7 @@ class OrderUpdateRequest(BaseModel):
     """Schema for order update request.
 
     Only fields provided will be updated. The order must be in a cancellable
-    state (received, pending, validated, cooling_off, processing, failed,
+    state (received, pending, validated, coolingoff, processing, failed,
     errored) to allow updates.
     """
     destination: Optional[Destination] = Field(None, description="Updated destination information")
@@ -363,3 +363,80 @@ class OrderUpdateResponse(BaseModel):
         None,
         description="Order ID of the cancelled original order, present only for content updates (cancel + recreate)",
     )
+
+
+# ---------------------------------------------------------------------------
+# OMS cancel / return APIs (/api/oms/*, app/api/oms.py)
+# ---------------------------------------------------------------------------
+
+class OMSOrderCancelRequest(BaseModel):
+    """Request body for POST /api/oms/order/{source_order_id}/cancel."""
+    reason: Optional[str] = Field(None, description="Cancellation reason reported by OMS")
+
+
+class OMSReturnItem(BaseModel):
+    """One product line of a partial return (``isFullReturn=false``)."""
+    sku: str = Field(..., description="Product SKU being returned")
+    quantity: int = Field(..., ge=1, description="Quantity of this SKU being returned")
+
+
+class OMSOrderReturnRequest(BaseModel):
+    """Request body for POST /api/oms/order/{source_order_id}/return.
+
+    Only SHIPPED orders can initiate a return. When ``isFullReturn`` is
+    false, ``items`` must list the returned products (SKU + quantity,
+    multiple lines allowed).
+    """
+    reason: str = Field(..., description="Return reason reported by OMS")
+    isFullReturn: bool = Field(
+        True,
+        description="Whether the whole order is returned (true) or only part of it (false). Defaults to true",
+    )
+    items: Optional[List[OMSReturnItem]] = Field(
+        None,
+        description="Returned products (SKU + quantity, multiple lines allowed); required when isFullReturn is false",
+    )
+    trackingNumber: Optional[str] = Field(None, description="Tracking number of the return shipment")
+    carrierName: Optional[str] = Field(None, description="Carrier handling the return shipment")
+    trackingUrl: Optional[str] = Field(None, description="Tracking URL of the return shipment")
+
+    @model_validator(mode="after")
+    def _require_items_for_partial_return(self) -> "OMSOrderReturnRequest":
+        """A partial return must say what is being returned."""
+        if not self.isFullReturn and not self.items:
+            raise ValueError(
+                "items (product SKU + quantity, at least one line) are required "
+                "when isFullReturn is false"
+            )
+        return self
+
+
+class OMSOrderActionResponse(BaseModel):
+    """Response for the OMS cancel / return APIs."""
+    success: bool = Field(True, description="Operation success status")
+    message: str = Field(..., description="Human-readable result message")
+    order_id: Optional[str] = Field(None, description="Internal order ID of the affected order")
+    source_order_id: Optional[str] = Field(None, description="External sourceOrderId the request addressed")
+    status: Optional[str] = Field(None, description="Order status after the operation")
+
+
+class OMSAmbiguousOrderCandidate(BaseModel):
+    """One active order sharing an ambiguous sourceOrderId."""
+    order_id: str = Field(..., description="Internal order ID")
+    store_id: Optional[str] = Field(None, description="Store the order belongs to")
+    status: str = Field(..., description="Current order status")
+
+
+class OMSAmbiguousErrorDetail(SiteFlowErrorDetail):
+    """SiteFlow error detail extended with candidate orders for a 409
+    ambiguous-sourceOrderId rejection."""
+    candidates: Optional[List[OMSAmbiguousOrderCandidate]] = Field(
+        None,
+        description="Active orders sharing the requested sourceOrderId",
+    )
+
+
+class OMSAmbiguousErrorResponse(BaseModel):
+    """409 response when multiple active orders share a sourceOrderId."""
+    success: bool = Field(False, description="Always false for errors")
+    error: OMSAmbiguousErrorDetail = Field(..., description="Error detail with candidate orders")

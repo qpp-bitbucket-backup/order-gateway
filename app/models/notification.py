@@ -36,6 +36,9 @@ STATUS_NOTIFICATION_LEVEL: Dict[OrderStatus, NotificationLevel] = {
     OrderStatus.CANCELLED: NotificationLevel.WARNING,
     OrderStatus.FAILED: NotificationLevel.ERROR,
     OrderStatus.ERRORED: NotificationLevel.ERROR,
+    # 退貨中需要關注（退貨完成為正常終態，info 即可）
+    OrderStatus.RETURNING: NotificationLevel.WARNING,
+    OrderStatus.RETURN_COMPLETED: NotificationLevel.INFO,
 }
 
 

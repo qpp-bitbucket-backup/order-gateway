@@ -15,6 +15,22 @@ class Client(BaseModel, table=True):
     store_key: Optional[str] = Field(None, index=True, description="Store key for additional identification")
     token: str = Field(unique=True, index=True, nullable=False, description="OneFlow API token")
     secret: str = Field(nullable=False, description="OneFlow API secret for HMAC signing")
+    oms_token: Optional[str] = Field(
+        None,
+        unique=True,
+        index=True,
+        description=(
+            "OMS API token for the OMS cancel/return endpoints "
+            "(NULL = OMS auth not configured for this client)"
+        ),
+    )
+    oms_secret: Optional[str] = Field(
+        None,
+        description=(
+            "OMS API secret for HMAC signing of the OMS cancel/return endpoints "
+            "(NULL = OMS auth not configured for this client)"
+        ),
+    )
     description: Optional[str] = Field(default=None, description="Optional client description")
     default_recipient_email: Optional[str] = Field(
         None,

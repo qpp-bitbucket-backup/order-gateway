@@ -22,17 +22,12 @@ OneFlow 认证 (verify_oneflow_auth)
 返回过滤后的结果
 ```
 
-### 两种认证模式
+### 认证模式
 
-#### 1. **客户端认证（推荐）**
-- 使用在 `clients` 表中注册的 token
+#### 客户端认证（唯一模式）
+- 使用在 `clients` 表中注册的 token（环境变量 bootstrap 凭证已移除）
 - API 会自动根据该客户端的 `store_id` 过滤数据
 - 只返回属于该店铺的产品和 SKU
-
-#### 2. **Bootstrap 认证（开发用）**
-- 使用 `.env` 中的 `ONEFLOW_TOKEN` 和 `ONEFLOW_SECRET`
-- 没有关联的 `store_id`
-- 返回所有店铺的产品和 SKU（不过滤）
 
 ## 🎯 API 端点
 
@@ -226,12 +221,12 @@ if store_id:
 
 ### 场景 3：开发和测试
 
-使用 bootstrap credentials 查看所有产品：
+通过 admin API（`POST /api/client`，需 `x-admin-key`）创建一个专用测试 client，再用它的 token 调用：
 
 ```bash
-# 使用 .env 中的 ONEFLOW_TOKEN
+# 使用测试 client 的 token（经 admin API 创建，存于 clients 表）
 curl -X GET "http://localhost:8000/api/product" \
-  -H "x-oneflow-authorization: oneflow-token-change-in-production:SIGNATURE" \
+  -H "x-oneflow-authorization: YOUR_CLIENT_TOKEN:SIGNATURE" \
   -H "x-oneflow-date: TIMESTAMP" \
   -H "x-oneflow-algorithm: SHA256"
 ```
@@ -308,16 +303,12 @@ SELECT id, name, store_id, token, is_active
 FROM clients;
 ```
 
-### 3. Bootstrap Credentials
+### 3. 凭证管理
 
-`.env` 中的 bootstrap credentials 没有 `store_id`，会返回所有数据：
+入站认证凭证只存于 `clients` 表（环境变量 `ONEFLOW_TOKEN` / `ONEFLOW_SECRET` 及首次启动的 default client seed 已移除）：
 
-```env
-ONEFLOW_TOKEN=oneflow-token-change-in-production
-ONEFLOW_SECRET=oneflow-secret-change-in-production
-```
-
-**建议：** 生产环境中禁用或限制 bootstrap credentials 的使用。
+- 新 client 一律经 admin API（`POST /api/client`）或 platform API 创建
+- 每个 client 必须配置 `store_id`，查询自动按其过滤
 
 ### 4. 性能优化
 
@@ -358,12 +349,12 @@ SELECT store_id FROM clients WHERE token = 'YOUR_TOKEN';
 ### 问题 3：看到其他店铺的产品
 
 **可能原因：**
-- 使用了 bootstrap credentials
 - store_id 过滤未生效
+- 客户端的 store_id 配置错误
 
 **解决方案：**
-- 确认使用的是客户端 token，不是 ONEFLOW_TOKEN
 - 检查日志确认 store_id 被正确提取
+- 核对该 client 在 clients 表中的 store_id
 
 ## 📊 监控和日志
 

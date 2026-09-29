@@ -81,6 +81,40 @@ class ClientStoreKeyUpdateRequest(BaseModel):
     store_key: str = Field(..., min_length=1, max_length=128, description="New store key (verified against QPMN before saving)")
 
 
+class ClientOMSCredentialsRevealRequest(BaseModel):
+    """Request schema for revealing a client's OMS credentials (password confirmation)."""
+    store_id: str = Field(..., min_length=1, max_length=128, description="Associated store ID")
+    password: str = Field(..., min_length=1, description="Current user's login password (sensitive-operation confirmation)")
+
+
+class ClientOMSCredentialsRevealResponse(BaseModel):
+    """Response schema for revealing a client's OMS credentials."""
+    success: bool = Field(True, description="Request success status")
+    store_id: str = Field(..., description="Store ID the credentials belong to")
+    oms_token: Optional[str] = Field(None, description="OMS API token (NULL = OMS auth not configured)")
+    oms_secret: Optional[str] = Field(None, description="OMS API secret, HMAC signing key (sensitive, shown only on demand)")
+
+
+class ClientOMSCredentialsUpdateRequest(BaseModel):
+    """Request schema for updating a client's OMS credentials.
+
+    Provide ``oms_token`` and/or ``oms_secret`` explicitly, or set
+    ``rotate=true`` to have a fresh pair generated server-side.
+    """
+    store_id: str = Field(..., min_length=1, max_length=128, description="Associated store ID")
+    oms_token: Optional[str] = Field(None, min_length=6, max_length=128, description="New OMS API token (omit to keep the current one)")
+    oms_secret: Optional[str] = Field(None, min_length=32, max_length=128, description="New OMS API secret, at least 32 characters (omit to keep the current one)")
+    rotate: bool = Field(False, description="Generate a fresh OMS token + secret pair server-side (overrides any explicitly provided values)")
+
+
+class ClientOMSCredentialsUpdateResponse(BaseModel):
+    """Response schema for updating a client's OMS credentials."""
+    success: bool = Field(True, description="Request success status")
+    store_id: str = Field(..., description="Store ID the credentials belong to")
+    oms_token: Optional[str] = Field(None, description="OMS API token after the update (NULL = not configured)")
+    oms_secret: Optional[str] = Field(None, description="New OMS API secret — returned only when one was generated or provided in this request (shown once)")
+
+
 class ClientUpdateRequest(BaseModel):
     """Request schema for updating an API client."""
     name: Optional[str] = Field(None, min_length=1, max_length=128, description="Client display name")
@@ -100,6 +134,7 @@ class ClientSummary(BaseModel):
     name: str = Field(..., description="Client display name")
     store_id: str = Field(..., description="Associated store ID")
     token: str = Field(..., description="OneFlow API token")
+    oms_token: Optional[str] = Field(None, description="OMS API token (NULL = OMS auth not configured for this client)")
     description: Optional[str] = Field(None, description="Optional description")
     default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email")
     cooling_off_seconds: int = Field(0, description="Order cooling-off period in seconds before QPMN push (0 = none)")
@@ -114,6 +149,14 @@ class ClientCreatedResponse(BaseModel):
     success: bool = Field(True, description="Request success status")
     client: ClientSummary = Field(..., description="Client details")
     secret: str = Field(..., description="Client secret (shown only once)")
+    oms_secret: Optional[str] = Field(
+        None,
+        description=(
+            "OMS secret, generated together with oms_token at client creation "
+            "(shown only once; absent when the request did not generate a new "
+            "OMS secret, e.g. a OneFlow secret rotation)"
+        ),
+    )
 
 
 class ClientResponse(BaseModel):

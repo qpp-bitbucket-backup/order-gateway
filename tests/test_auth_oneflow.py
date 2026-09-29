@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.auth_oneflow import (
     SUPPORTED_ALGORITHM,
@@ -13,9 +15,12 @@ from app.core.auth_oneflow import (
     generate_signature,
     get_client_store_id,
     verify_oneflow_auth,
+    _get_client_by_token,
+    _get_client_secret,
     _parse_iso_timestamp,
     _verify_timestamp,
 )
+from app.models.client import Client
 
 SECRET = "test-secret"
 TOKEN = "test-token"
@@ -241,16 +246,70 @@ class TestGetClientStoreId:
                 x_oneflow_algorithm=SUPPORTED_ALGORITHM,
             ) == "store-001"
 
-    def test_bootstrap_credentials_return_none(self):
+    def test_missing_client_row_rejected_403(self):
+        """No bootstrap credentials anymore: a verified token with no
+        clients-table row (e.g. deactivated between the two lookups) is a
+        403, not a None that would silently drop store scoping."""
         with patch(
             "app.core.auth_oneflow.verify_oneflow_auth", return_value=TOKEN
         ), patch(
             "app.core.auth_oneflow._get_client_by_token", return_value=None
         ):
-            assert get_client_store_id(
-                request=_fake_request(),
-                session=None,
-                x_oneflow_authorization=f"{TOKEN}:sig",
-                x_oneflow_date=_fresh_timestamp(),
-                x_oneflow_algorithm=SUPPORTED_ALGORITHM,
-            ) is None
+            with pytest.raises(HTTPException) as exc:
+                get_client_store_id(
+                    request=_fake_request(),
+                    session=None,
+                    x_oneflow_authorization=f"{TOKEN}:sig",
+                    x_oneflow_date=_fresh_timestamp(),
+                    x_oneflow_algorithm=SUPPORTED_ALGORITHM,
+                )
+        assert exc.value.status_code == 403
+        assert exc.value.headers["X-Error-Code"] == "INVALID_TOKEN"
+
+
+class TestNoEnvironmentVariableFallback:
+    """Credentials live only in the clients table — there is no
+    environment-variable fallback for the former bootstrap token."""
+
+    @pytest.fixture(name="db_session")
+    def db_session_fixture(self):
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            yield session
+
+    def test_empty_table_returns_none_for_any_token(self, db_session):
+        # Even the former bootstrap default value has no special meaning.
+        assert _get_client_by_token(db_session, "oneflow-token-change-in-production") is None
+        assert _get_client_secret(db_session, "oneflow-token-change-in-production") is None
+        assert _get_client_secret(db_session, "anything-else") is None
+
+    def test_lookup_resolves_client_rows_only(self, db_session):
+        db_session.add(Client(
+            name="c1",
+            store_id="store-001",
+            token=TOKEN,
+            secret=SECRET,
+        ))
+        db_session.commit()
+
+        client = _get_client_by_token(db_session, TOKEN)
+        assert client is not None and client.store_id == "store-001"
+        assert _get_client_secret(db_session, TOKEN) == SECRET
+
+    def test_inactive_client_not_resolved(self, db_session):
+        db_session.add(Client(
+            name="c1",
+            store_id="store-001",
+            token=TOKEN,
+            secret=SECRET,
+            is_active=False,
+        ))
+        db_session.commit()
+
+        assert _get_client_by_token(db_session, TOKEN) is None
+        assert _get_client_secret(db_session, TOKEN) is None

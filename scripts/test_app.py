@@ -8,14 +8,19 @@ import requests
 import json
 
 from app.core.auth_oneflow import build_auth_headers
-from app.core.config import settings
 
 
 def auth_headers(method: str, path: str) -> dict[str, str]:
-    """Build OneFlow auth headers for test requests."""
+    """Build OneFlow auth headers for test requests.
+
+    Credentials come from the TEST_ONEFLOW_TOKEN / TEST_ONEFLOW_SECRET
+    environment variables — bootstrap env credentials were removed, so a
+    clients-table row (created via the admin API /api/client) with these
+    credentials must exist first.
+    """
     return build_auth_headers(
-        settings.ONEFLOW_TOKEN,
-        settings.ONEFLOW_SECRET,
+        os.environ["TEST_ONEFLOW_TOKEN"],
+        os.environ["TEST_ONEFLOW_SECRET"],
         method,
         path,
     )
