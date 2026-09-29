@@ -97,11 +97,6 @@ class Settings(BaseSettings):
     QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
     QPMN_ORDER_API_VERSION: str = "open"   # Order creation API version: "legacy" or "open"
-    # QPMN return API endpoint path template (relative to QPMN_OPEN_API_URL,
-    # PUT with the same Basic store_token auth as the cancel API). The final
-    # path is pending QPMN confirmation — kept configurable so only the env
-    # changes when it is finalized.
-    QPMN_RETURN_ENDPOINT_PATH: str = "orders/{store_order_id}/return"
 
     # PDF Processing Configuration
     MODIFY_PDF_RESOLUTION: bool = False

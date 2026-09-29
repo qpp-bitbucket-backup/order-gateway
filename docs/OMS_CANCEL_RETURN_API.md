@@ -210,7 +210,7 @@ OMS 的取消請求可能先於 VFS 的建單請求到達（顧客在 OMS 下單
 
 1. **僅 `shipped` 狀態可發起退貨**，其他狀態 → 409 Conflict（響應附當前狀態）
 2. 已是 `returning` / `returncompleted` → **冪等返回 200**（`message: "Order return already requested"`）
-3. 調用 QPMN return API（`PUT {QPMN_OPEN_API_URL}{QPMN_RETURN_ENDPOINT_PATH}`，Basic store_token 認證；**endpoint 待 QPMN 確認**，網關側經 `QPMN_RETURN_ENDPOINT_PATH` 配置，默認 `orders/{store_order_id}/return`），OMS 請求體原樣轉發
+3. 調用 QPMN return API（`PUT {QPMN_OPEN_API_URL}/orders/{store_order_id}/return`，Basic store_token 認證；**endpoint 待 QPMN 確認**），OMS 請求體原樣轉發
 4. QPMN 成功 → 訂單轉 `returning`，記錄 `order_return_requested` 日誌（含完整退貨 payload）併發 warning 級通知郵件
 5. QPMN 失敗 → 訂單保持 `shipped`，記錄 `qpmn_return_failed` 日誌，向 OMS 返回 502 BadGateway
 
@@ -261,5 +261,5 @@ OMS 狀態回推（API-002）詞彙同步新增 `returning` / `returncompleted`�
 
 ## 6. 待辦（依賴 QPMN）
 
-- [ ] QPMN return API endpoint 最終確認後更新 `QPMN_RETURN_ENDPOINT_PATH`（僅配置變更）
+- [ ] QPMN return API endpoint 最終確認後更新 `return_qpmn_order()` 中的 hard-coded 路徑（`app/services/order.py`）
 - [ ] QPMN 退貨反饋事件定義後接入 `returncompleted` 觸發（webhook 處理器 + `EVENT_STATUS_MAP`）

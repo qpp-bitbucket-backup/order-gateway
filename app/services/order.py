@@ -605,13 +605,11 @@ class OrderService:
         """
         Call the QPMN return API to initiate a return on the QPMN side.
 
-        PUT {QPMN_OPEN_API_URL}{QPMN_RETURN_ENDPOINT_PATH}
+        PUT {QPMN_OPEN_API_URL}/orders/{store_order_id}/return
         Authorization: Basic {store_token}
 
-        The endpoint path is pending QPMN confirmation — it lives in
-        ``settings.QPMN_RETURN_ENDPOINT_PATH`` so finalizing it is a config
-        change, not a code change. The return request body (reason /
-        isFullReturn / return tracking info) is forwarded as the JSON body.
+        The return request body (reason / isFullReturn / return tracking
+        info) is forwarded as the JSON body.
 
         Returns:
             A dict with keys:
@@ -626,10 +624,7 @@ class OrderService:
             _capture_return_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
 
-        api_url = (
-            f"{settings.QPMN_OPEN_API_URL}"
-            f"{settings.QPMN_RETURN_ENDPOINT_PATH.format(store_order_id=order.store_order_id)}"
-        )
+        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/return"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
