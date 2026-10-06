@@ -211,6 +211,11 @@ ALERTS: Dict[str, Dict[str, Dict[str, str]]] = {
             "failure_type": "qpmn_webhook_invalid_transition",
             "message": "receive_order_status: invalid transition for order {order_id}: {from_status} -> {to_status}",
         },
+        "UNKNOWN_ITEM_ID": {
+            "level": SENTRY_LEVEL_WARNING,
+            "failure_type": "qpmn_webhook_unknown_item_id",
+            "message": "receive_order_status: item id '{item_id}' does not belong to order {order_id} (event='{event_type}')",
+        },
     },
     "oms": {
         "ORDER_NOT_FOUND": {

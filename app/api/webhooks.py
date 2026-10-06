@@ -304,6 +304,25 @@ async def receive_order_status(
     inbound_log.order_id = order.order_id
     inbound_log.source_order_id = order.source_order_id
 
+    # An order_item_* event's `id` must belong to this order; only enforced
+    # when we know the order's real item ids (order.store_order_item_ids).
+    known_item_ids = order.store_order_item_ids
+    if not is_shipped_event and known_item_ids and event.id not in known_item_ids:
+        response = WebhookResponse(
+            success=False,
+            message=f"Item id '{event.id}' does not belong to order {order.order_id}",
+        )
+        inbound_log.process_status = WebhookProcessStatus.FAILED
+        inbound_log.details = json.dumps(response.model_dump())
+        inbound_log.updated_at = datetime.now(timezone.utc)
+        session.add(inbound_log)
+        session.commit()
+        _capture_qpmn_alert(
+            "UNKNOWN_ITEM_ID", order.order_id,
+            item_id=event.id, event_type=effective_status,
+        )
+        return response
+
     if not can_transition(order.status, new_status):
         if not is_shipped_event and is_item_event_superseded(order.status, new_status):
             # TI-65: a superseded order_item_produced still represents a real
