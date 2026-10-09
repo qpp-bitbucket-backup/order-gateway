@@ -29,6 +29,7 @@ from app.core.auth_oneflow import (
     oneflow_date_header,
 )
 from app.core.database import get_session
+from app.core.rate_limit import enforce_client_rate_limit
 from app.models.client import Client
 
 
@@ -48,6 +49,10 @@ def verify_oms_auth(
     token or signature) so OMS sees the same failure vocabulary as VFS.
     A presented token that matches no active client with a configured
     ``oms_secret`` is rejected as INVALID_TOKEN.
+
+    The client's per-second rate limit is enforced after the signature has
+    been verified, in a separate ``oms`` namespace so OMS traffic does not
+    consume the client's VFS-facing (OneFlow) budget.
     """
     if not x_oneflow_authorization:
         raise HTTPException(
@@ -122,4 +127,5 @@ def verify_oms_auth(
             headers={"X-Error-Code": "INVALID_SIGNATURE"},
         )
 
+    enforce_client_rate_limit(client, scope="oms", token=token)
     return client

@@ -48,6 +48,14 @@ class Client(BaseModel, table=True):
             "COOLING_OFF for this long before being pushed to QPMN (0 = no cooling-off)"
         ),
     )
+    rate_limit_rps: Optional[int] = Field(
+        None,
+        description=(
+            "Per-client API rate limit in requests/second, enforced after "
+            "successful authentication on the signed inbound endpoints "
+            "(NULL = global default CLIENT_RATE_LIMIT_RPS, 0 = unlimited)"
+        ),
+    )
     notification_config: Optional[Dict[str, Any]] = Field(
         None,
         sa_column=Column(JSON),

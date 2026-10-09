@@ -16,6 +16,7 @@ from fastapi.security import APIKeyHeader
 from sqlmodel import Session, select
 
 from app.core.database import get_session
+from app.core.rate_limit import enforce_client_rate_limit
 from app.models.client import Client
 
 SUPPORTED_ALGORITHM = "SHA256"
@@ -120,6 +121,11 @@ def verify_oneflow_auth(
 ) -> str:
     """
     Verify OneFlow signed request headers.
+
+    Also enforces the client's per-second rate limit after the signature
+    has been verified — only authenticated traffic consumes the budget
+    (see app/core/rate_limit.py).
+
     Returns the authenticated token on success.
     """
     if not x_oneflow_authorization:
@@ -165,8 +171,8 @@ def verify_oneflow_auth(
             headers={"X-Error-Code": "INVALID_AUTHORIZATION_FORMAT"},
         )
 
-    client_secret = _get_client_secret(session, token)
-    if client_secret is None:
+    client = _get_client_by_token(session, token)
+    if client is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid token",
@@ -180,7 +186,7 @@ def verify_oneflow_auth(
             headers={"X-Error-Code": "EXPIRED_TIMESTAMP"},
         )
     expected_signature = generate_signature(
-        client_secret,
+        client.secret,
         request.method,
         request.url.path,
         x_oneflow_date,
@@ -192,34 +198,31 @@ def verify_oneflow_auth(
             headers={"X-Error-Code": "INVALID_SIGNATURE"},
         )
 
+    enforce_client_rate_limit(client, scope="oneflow", token=token)
     return token
 
 
 def get_client_store_id(
-    request: Request,
     session: Session = Depends(get_session),
-    x_oneflow_authorization: Optional[str] = Security(oneflow_authorization_header),
-    x_oneflow_date: Optional[str] = Security(oneflow_date_header),
-    x_oneflow_algorithm: Optional[str] = Security(oneflow_algorithm_header),
+    token: str = Depends(verify_oneflow_auth),
 ) -> str:
     """
     Verify OneFlow auth and return the client's store_id.
+
+    Authentication reuses the router-level ``verify_oneflow_auth``
+    dependency through FastAPI's per-request dependency cache, so each
+    request passes verification — and the per-client rate limiter inside
+    it — exactly ONCE. Calling ``verify_oneflow_auth`` directly here (the
+    previous shape) ran the limiter twice per request with DB work between
+    the two checks; under overload, interleaved requests orphaned each
+    other's quota slots and admitted throughput collapsed to ~0 instead of
+    throttling to the configured rate.
 
     Every accepted token maps to a clients-table row (no bootstrap
     credentials anymore), so a token that passes verification but has no
     client row — e.g. the client was deactivated between the two lookups —
     is rejected with 403 instead of silently losing store scoping.
     """
-    # First verify the authentication
-    token = verify_oneflow_auth(
-        request=request,
-        session=session,
-        x_oneflow_authorization=x_oneflow_authorization,
-        x_oneflow_date=x_oneflow_date,
-        x_oneflow_algorithm=x_oneflow_algorithm,
-    )
-
-    # Get client by token
     client = _get_client_by_token(session, token)
 
     if client is None:

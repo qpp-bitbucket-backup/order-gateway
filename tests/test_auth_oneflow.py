@@ -48,6 +48,13 @@ def _valid_headers(ts: str = TS) -> dict:
     }
 
 
+def _fake_client(secret: str = SECRET):
+    """Minimal clients-table row stand-in for verify_oneflow_auth (which
+    now resolves the whole row instead of just the secret, so it can also
+    enforce the per-client rate limit after authentication)."""
+    return SimpleNamespace(secret=secret, rate_limit_rps=None, store_id="store-001")
+
+
 class TestStringToSign:
     """Test build_string_to_sign."""
 
@@ -184,14 +191,14 @@ class TestVerifyOneflowAuth:
 
     def test_unknown_token_rejected_403(self):
         headers = _valid_headers(ts=_fresh_timestamp())
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=None):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=None):
             with pytest.raises(HTTPException) as exc:
                 self._call(headers)
         assert exc.value.status_code == 403
 
     def test_expired_timestamp_rejected_401(self):
         headers = _valid_headers(ts=_fresh_timestamp(offset_seconds=-600))
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=SECRET):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=_fake_client()):
             with pytest.raises(HTTPException) as exc:
                 self._call(headers)
         assert exc.value.status_code == 401
@@ -203,14 +210,14 @@ class TestVerifyOneflowAuth:
             "x_oneflow_date": ts,
             "x_oneflow_algorithm": SUPPORTED_ALGORITHM,
         }
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=SECRET):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=_fake_client()):
             with pytest.raises(HTTPException) as exc:
                 self._call(headers)
         assert exc.value.status_code == 403
 
     def test_valid_signature_returns_token(self):
         headers = _valid_headers(ts=_fresh_timestamp())
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=SECRET):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=_fake_client()):
             assert self._call(headers) == TOKEN
 
     def test_signature_is_path_sensitive(self):
@@ -222,47 +229,35 @@ class TestVerifyOneflowAuth:
             "x_oneflow_date": ts,
             "x_oneflow_algorithm": SUPPORTED_ALGORITHM,
         }
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=SECRET):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=_fake_client()):
             with pytest.raises(HTTPException) as exc:
                 self._call(headers, request=_fake_request(path="/api/order/other"))
         assert exc.value.status_code == 403
 
 
 class TestGetClientStoreId:
-    """Test the store-scoping wrapper around verify_oneflow_auth."""
+    """Test the store-scoping wrapper around verify_oneflow_auth.
+
+    Authentication is declared as Depends(verify_oneflow_auth) (cached per
+    request), so the wrapper only maps a verified token to its client row.
+    """
 
     def test_returns_client_store_id(self):
         with patch(
-            "app.core.auth_oneflow.verify_oneflow_auth", return_value=TOKEN
-        ), patch(
             "app.core.auth_oneflow._get_client_by_token",
             return_value=SimpleNamespace(store_id="store-001"),
         ):
-            assert get_client_store_id(
-                request=_fake_request(),
-                session=None,
-                x_oneflow_authorization=f"{TOKEN}:sig",
-                x_oneflow_date=_fresh_timestamp(),
-                x_oneflow_algorithm=SUPPORTED_ALGORITHM,
-            ) == "store-001"
+            assert get_client_store_id(session=None, token=TOKEN) == "store-001"
 
     def test_missing_client_row_rejected_403(self):
         """No bootstrap credentials anymore: a verified token with no
         clients-table row (e.g. deactivated between the two lookups) is a
         403, not a None that would silently drop store scoping."""
         with patch(
-            "app.core.auth_oneflow.verify_oneflow_auth", return_value=TOKEN
-        ), patch(
             "app.core.auth_oneflow._get_client_by_token", return_value=None
         ):
             with pytest.raises(HTTPException) as exc:
-                get_client_store_id(
-                    request=_fake_request(),
-                    session=None,
-                    x_oneflow_authorization=f"{TOKEN}:sig",
-                    x_oneflow_date=_fresh_timestamp(),
-                    x_oneflow_algorithm=SUPPORTED_ALGORITHM,
-                )
+                get_client_store_id(session=None, token=TOKEN)
         assert exc.value.status_code == 403
         assert exc.value.headers["X-Error-Code"] == "INVALID_TOKEN"
 

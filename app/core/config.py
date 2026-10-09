@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # Admin API key for client management endpoints
     ADMIN_API_KEY: str = "admin-api-key-change-in-production"
 
+    # Per-client API rate limiting (enforced after successful authentication
+    # on the OneFlow- and OMS-signed inbound endpoints; see app/core/rate_limit.py)
+    CLIENT_RATE_LIMIT_ENABLED: bool = True
+    CLIENT_RATE_LIMIT_RPS: int = 20  # Default req/s when clients.rate_limit_rps is NULL (0 = unlimited per client)
+
     # Default Admin User (seeded on first startup)
     DEFAULT_ADMIN_USERNAME: str = "admin"
     DEFAULT_ADMIN_EMAIL: str = "admin@order-gateway.com"
