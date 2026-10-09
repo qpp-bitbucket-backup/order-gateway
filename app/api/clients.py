@@ -60,6 +60,7 @@ def _to_summary(client: Client) -> ClientSummary:
         description=client.description,
         default_recipient_email=client.default_recipient_email,
         cooling_off_seconds=client.cooling_off_seconds or 0,
+        rate_limit_rps=client.rate_limit_rps,
         notification_config=client.notification_config or {},
         is_active=client.is_active,
         created_at=client.created_at,
@@ -112,6 +113,7 @@ def create_client(
         description=request.description,
         default_recipient_email=request.default_recipient_email,
         cooling_off_seconds=request.cooling_off_seconds or 0,
+        rate_limit_rps=request.rate_limit_rps,
         notification_config=request.notification_config.model_dump() if request.notification_config else None,
     )
     session.add(client)
@@ -197,6 +199,8 @@ def update_client(
         client.default_recipient_email = request.default_recipient_email
     if request.cooling_off_seconds is not None:
         client.cooling_off_seconds = request.cooling_off_seconds
+    if request.rate_limit_rps is not None:
+        client.rate_limit_rps = request.rate_limit_rps
     if request.notification_config is not None:
         client.notification_config = request.notification_config.model_dump()
     if request.is_active is not None:
@@ -305,6 +309,7 @@ def platform_create_client(
         description=request.description,
         default_recipient_email=request.default_recipient_email,
         cooling_off_seconds=request.cooling_off_seconds or 0,
+        rate_limit_rps=request.rate_limit_rps,
         notification_config=request.notification_config.model_dump() if request.notification_config else None,
     )
     session.add(client)
@@ -683,6 +688,8 @@ def platform_update_client(
         client.default_recipient_email = request.default_recipient_email
     if request.cooling_off_seconds is not None:
         client.cooling_off_seconds = request.cooling_off_seconds
+    if request.rate_limit_rps is not None:
+        client.rate_limit_rps = request.rate_limit_rps
     if request.notification_config is not None:
         client.notification_config = request.notification_config.model_dump()
     if request.is_active is not None:

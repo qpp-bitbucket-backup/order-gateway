@@ -27,6 +27,7 @@ class ClientCreateRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=512, description="Optional description")
     default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email")
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0/omitted = none)")
+    rate_limit_rps: Optional[int] = Field(None, ge=0, description="Per-client API rate limit in requests/second after authentication (omitted = global default; 0 = unlimited)")
     notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (omitted = all disabled)")
 
 
@@ -41,6 +42,7 @@ class PlatformClientCreateRequest(BaseModel):
     description: str = Field(..., min_length=1, max_length=512, description="Client description")
     default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email")
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0/omitted = none)")
+    rate_limit_rps: Optional[int] = Field(None, ge=0, description="Per-client API rate limit in requests/second after authentication (omitted = global default; 0 = unlimited)")
     notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (omitted = all disabled)")
 
 
@@ -122,7 +124,8 @@ class ClientUpdateRequest(BaseModel):
     store_key: Optional[str] = Field(None, max_length=128, description="Store key for additional identification")
     description: Optional[str] = Field(None, max_length=512, description="Optional description")
     default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email (pass to replace; omit to keep)")
-    cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0 = none)")
+    cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0 = none; pass to replace, omit to keep)")
+    rate_limit_rps: Optional[int] = Field(None, ge=0, description="Per-client API rate limit in requests/second (pass to replace; omit to keep current value)")
     notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (pass to replace; omit to keep)")
     is_active: Optional[bool] = Field(None, description="Whether the client is active")
     rotate_secret: bool = Field(False, description="Generate a new secret for this client")
@@ -138,6 +141,7 @@ class ClientSummary(BaseModel):
     description: Optional[str] = Field(None, description="Optional description")
     default_recipient_email: Optional[EmailStr] = Field(None, description="Fallback email used when OMS returns no address email")
     cooling_off_seconds: int = Field(0, description="Order cooling-off period in seconds before QPMN push (0 = none)")
+    rate_limit_rps: Optional[int] = Field(None, description="Per-client API rate limit in requests/second after authentication (NULL = global default; 0 = unlimited)")
     notification_config: NotificationConfig = Field(default_factory=NotificationConfig, description="Per-level order status email notification settings")
     is_active: bool = Field(..., description="Whether the client is active")
     created_at: datetime = Field(..., description="Creation timestamp")

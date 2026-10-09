@@ -83,7 +83,9 @@ Contact QPMN support to obtain your Token and Secret.
 3. Recompute `x-oneflow-authorization` for each endpoint because the signature includes HTTP method and path.
 
 ## Rate Limiting
-- 100 requests per minute for standard accounts
+- Per-client, enforced after successful authentication on the signed endpoints (OneFlow and OMS)
+- Default: 20 requests/second; each client can override it (`rate_limit_rps`, 0 = unlimited)
+- Exceeding the limit returns HTTP 429 with a `Retry-After` header
 
 ## Support
 For API support, contact: itdev2@qpp.com
@@ -140,8 +142,8 @@ async def siteflow_shaped_exception_handler(request: Request, exc: HTTPException
     ``_siteflow_error()`` in app/api/orders.py — ``{"success": ..., "error": {...}}``),
     return it as-is instead of double-wrapping it."""
     if isinstance(exc.detail, dict) and "success" in exc.detail:
-        return JSONResponse(status_code=exc.status_code, content=exc.detail)
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return JSONResponse(status_code=exc.status_code, content=exc.detail, headers=exc.headers)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
 
 
 # Configure CORS
