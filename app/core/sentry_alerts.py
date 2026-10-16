@@ -83,6 +83,33 @@ ALERTS: Dict[str, Dict[str, Dict[str, str]]] = {
             "message": "cancel_qpmn_order: QPMN returned success=false for order {order_id}: {body}",
         },
     },
+"return": {
+        "NO_STORE_KEY": {
+            "level": SENTRY_LEVEL_WARNING,
+            "failure_type": "qpmn_return_no_store_key",
+            "message": "return_qpmn_order: no store_key configured for store_id={store_id} (order {order_id})",
+        },
+        "TIMEOUT": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_return_timeout",
+            "message": "return_qpmn_order: QPMN API timeout for order {order_id}",
+        },
+        "REQUEST_FAILED": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_return_request_failed",
+            "message": "return_qpmn_order: request failed for order {order_id}: {exc}",
+        },
+        "REJECTED_HTTP": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_return_rejected",
+            "message": "return_qpmn_order: QPMN returned HTTP {status_code} for order {order_id}: {error_body}",
+        },
+        "REJECTED_SUCCESS_FALSE": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_return_rejected",
+            "message": "return_qpmn_order: QPMN returned success=false for order {order_id}: {body}",
+        },
+    },
     "shipping": {
         "NO_STORE_KEY": {
             "level": SENTRY_LEVEL_WARNING,
@@ -183,6 +210,11 @@ ALERTS: Dict[str, Dict[str, Dict[str, str]]] = {
             "level": SENTRY_LEVEL_WARNING,
             "failure_type": "qpmn_webhook_invalid_transition",
             "message": "receive_order_status: invalid transition for order {order_id}: {from_status} -> {to_status}",
+        },
+        "UNKNOWN_ITEM_ID": {
+            "level": SENTRY_LEVEL_WARNING,
+            "failure_type": "qpmn_webhook_unknown_item_id",
+            "message": "receive_order_status: item id '{item_id}' does not belong to order {order_id} (event='{event_type}')",
         },
     },
     "oms": {

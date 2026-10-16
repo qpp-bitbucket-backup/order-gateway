@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.auth_oneflow import (
     SUPPORTED_ALGORITHM,
@@ -13,9 +15,12 @@ from app.core.auth_oneflow import (
     generate_signature,
     get_client_store_id,
     verify_oneflow_auth,
+    _get_client_by_token,
+    _get_client_secret,
     _parse_iso_timestamp,
     _verify_timestamp,
 )
+from app.models.client import Client
 
 SECRET = "test-secret"
 TOKEN = "test-token"
@@ -41,6 +46,13 @@ def _valid_headers(ts: str = TS) -> dict:
         "x_oneflow_date": ts,
         "x_oneflow_algorithm": SUPPORTED_ALGORITHM,
     }
+
+
+def _fake_client(secret: str = SECRET):
+    """Minimal clients-table row stand-in for verify_oneflow_auth (which
+    now resolves the whole row instead of just the secret, so it can also
+    enforce the per-client rate limit after authentication)."""
+    return SimpleNamespace(secret=secret, rate_limit_rps=None, store_id="store-001")
 
 
 class TestStringToSign:
@@ -179,14 +191,14 @@ class TestVerifyOneflowAuth:
 
     def test_unknown_token_rejected_403(self):
         headers = _valid_headers(ts=_fresh_timestamp())
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=None):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=None):
             with pytest.raises(HTTPException) as exc:
                 self._call(headers)
         assert exc.value.status_code == 403
 
     def test_expired_timestamp_rejected_401(self):
         headers = _valid_headers(ts=_fresh_timestamp(offset_seconds=-600))
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=SECRET):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=_fake_client()):
             with pytest.raises(HTTPException) as exc:
                 self._call(headers)
         assert exc.value.status_code == 401
@@ -198,14 +210,14 @@ class TestVerifyOneflowAuth:
             "x_oneflow_date": ts,
             "x_oneflow_algorithm": SUPPORTED_ALGORITHM,
         }
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=SECRET):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=_fake_client()):
             with pytest.raises(HTTPException) as exc:
                 self._call(headers)
         assert exc.value.status_code == 403
 
     def test_valid_signature_returns_token(self):
         headers = _valid_headers(ts=_fresh_timestamp())
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=SECRET):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=_fake_client()):
             assert self._call(headers) == TOKEN
 
     def test_signature_is_path_sensitive(self):
@@ -217,40 +229,82 @@ class TestVerifyOneflowAuth:
             "x_oneflow_date": ts,
             "x_oneflow_algorithm": SUPPORTED_ALGORITHM,
         }
-        with patch("app.core.auth_oneflow._get_client_secret", return_value=SECRET):
+        with patch("app.core.auth_oneflow._get_client_by_token", return_value=_fake_client()):
             with pytest.raises(HTTPException) as exc:
                 self._call(headers, request=_fake_request(path="/api/order/other"))
         assert exc.value.status_code == 403
 
 
 class TestGetClientStoreId:
-    """Test the store-scoping wrapper around verify_oneflow_auth."""
+    """Test the store-scoping wrapper around verify_oneflow_auth.
+
+    Authentication is declared as Depends(verify_oneflow_auth) (cached per
+    request), so the wrapper only maps a verified token to its client row.
+    """
 
     def test_returns_client_store_id(self):
         with patch(
-            "app.core.auth_oneflow.verify_oneflow_auth", return_value=TOKEN
-        ), patch(
             "app.core.auth_oneflow._get_client_by_token",
             return_value=SimpleNamespace(store_id="store-001"),
         ):
-            assert get_client_store_id(
-                request=_fake_request(),
-                session=None,
-                x_oneflow_authorization=f"{TOKEN}:sig",
-                x_oneflow_date=_fresh_timestamp(),
-                x_oneflow_algorithm=SUPPORTED_ALGORITHM,
-            ) == "store-001"
+            assert get_client_store_id(session=None, token=TOKEN) == "store-001"
 
-    def test_bootstrap_credentials_return_none(self):
+    def test_missing_client_row_rejected_403(self):
+        """No bootstrap credentials anymore: a verified token with no
+        clients-table row (e.g. deactivated between the two lookups) is a
+        403, not a None that would silently drop store scoping."""
         with patch(
-            "app.core.auth_oneflow.verify_oneflow_auth", return_value=TOKEN
-        ), patch(
             "app.core.auth_oneflow._get_client_by_token", return_value=None
         ):
-            assert get_client_store_id(
-                request=_fake_request(),
-                session=None,
-                x_oneflow_authorization=f"{TOKEN}:sig",
-                x_oneflow_date=_fresh_timestamp(),
-                x_oneflow_algorithm=SUPPORTED_ALGORITHM,
-            ) is None
+            with pytest.raises(HTTPException) as exc:
+                get_client_store_id(session=None, token=TOKEN)
+        assert exc.value.status_code == 403
+        assert exc.value.headers["X-Error-Code"] == "INVALID_TOKEN"
+
+
+class TestNoEnvironmentVariableFallback:
+    """Credentials live only in the clients table — there is no
+    environment-variable fallback for the former bootstrap token."""
+
+    @pytest.fixture(name="db_session")
+    def db_session_fixture(self):
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            yield session
+
+    def test_empty_table_returns_none_for_any_token(self, db_session):
+        # Even the former bootstrap default value has no special meaning.
+        assert _get_client_by_token(db_session, "oneflow-token-change-in-production") is None
+        assert _get_client_secret(db_session, "oneflow-token-change-in-production") is None
+        assert _get_client_secret(db_session, "anything-else") is None
+
+    def test_lookup_resolves_client_rows_only(self, db_session):
+        db_session.add(Client(
+            name="c1",
+            store_id="store-001",
+            token=TOKEN,
+            secret=SECRET,
+        ))
+        db_session.commit()
+
+        client = _get_client_by_token(db_session, TOKEN)
+        assert client is not None and client.store_id == "store-001"
+        assert _get_client_secret(db_session, TOKEN) == SECRET
+
+    def test_inactive_client_not_resolved(self, db_session):
+        db_session.add(Client(
+            name="c1",
+            store_id="store-001",
+            token=TOKEN,
+            secret=SECRET,
+            is_active=False,
+        ))
+        db_session.commit()
+
+        assert _get_client_by_token(db_session, TOKEN) is None
+        assert _get_client_secret(db_session, TOKEN) is None

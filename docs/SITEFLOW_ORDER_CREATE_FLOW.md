@@ -113,8 +113,8 @@ validate_order（隊列 order_validating）
     ├─ OMS 503/逾時 → 指數退避重試（5 次，基礎 300s，上限 3600s），耗盡 → FAILED
     ├─ 無收貨地址 → FAILED
     ├─ VALIDATED 後立即通知 OMS/VFS dataready（QPMN 不會發此事件，需自行通知）
-    └─ 冷靜期：client 配置 cooling_off_seconds > 0 時 → COOLING_OFF，
-       push_order 以 countdown 延遲排程；否則立即派發
+    └─ 冷靜期：平行卡一律豁免；其餘訂單在 client 配置 cooling_off_seconds > 0
+       時 → COOLING_OFF，push_order 以 countdown 延遲排程；否則立即派發
         │
         ▼ 鏈式派發（可帶 countdown）
 push_order（隊列 order_pushing）
@@ -159,6 +159,8 @@ push_order（隊列 order_pushing）
    `order_item_*` 事件，因此由本任務直接建立 OMS/VFS 出站日誌並派發
    `notify_oms` / `notify_vfs`（詳見 §4.2）。
 5. 冷靜期（COOLING_OFF，詳見 `docs/ORDER_COOLING_OFF_STATUS.md`）：
+   - **平行卡訂單一律豁免冷靜期**（隨母卡出貨，無單獨反悔窗口），
+     驗證後立即派發 `push_order`。
    - `client.cooling_off_seconds > 0` 時：狀態轉 `COOLING_OFF`，秒數快照到
      `order.cooling_off_seconds`，寫 `order_cooling_off` 日誌並發 INFO 郵件
      （郵件正文附冷靜期時長）；`push_order.apply_async(countdown=秒數)`。
@@ -311,7 +313,7 @@ QPMN POST /api/webhook/qpmn/order-status
 [異步]  PENDING（檔案下載/拆頁/轉檔/浮水印/上傳 QPMN）
             │ 派發 validate_order
         VALIDATED（OMS 地址抓取成功；通知 OMS/VFS dataready）
-            │ 有冷靜期配置？
+            │ 有冷靜期配置？（平行卡一律否）
             ├─ 是 → COOLING_OFF（countdown 等待，可取消）
             └─ 否 ↓ 派發 push_order
         PROCESSING（QPMN 建單成功，記錄 store_order_id / item_ids）

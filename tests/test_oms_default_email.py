@@ -104,6 +104,13 @@ class TestResolveDefaultRecipientEmail:
         )
         assert result is None
 
+    def test_lookup_failure_degrades_to_none(self):
+        # The fallback lookup must never break the address fetch itself —
+        # e.g. OperationalError 1054 when the migration has not run yet.
+        session = mock.Mock()
+        session.exec.side_effect = RuntimeError("Unknown column 'clients.default_recipient_email'")
+        assert OMSService._resolve_default_recipient_email(session, "store-1") is None
+
     def test_missing_store_id_skips_lookup(self):
         session = mock.Mock()
         assert OMSService._resolve_default_recipient_email(session, None) is None

@@ -11,7 +11,7 @@ class TestOrderStatus:
         assert OrderStatus.RECEIVED.value == "received"
         assert OrderStatus.PENDING.value == "pending"
         assert OrderStatus.VALIDATED.value == "validated"
-        assert OrderStatus.COOLING_OFF.value == "cooling_off"
+        assert OrderStatus.COOLING_OFF.value == "coolingoff"
         assert OrderStatus.PROCESSING.value == "processing"
         assert OrderStatus.PRINTREADY.value == "printready"
         assert OrderStatus.PRINTED.value == "printed"
@@ -20,6 +20,15 @@ class TestOrderStatus:
         assert OrderStatus.FAILED.value == "failed"
         assert OrderStatus.ERRORED.value == "errored"
         assert OrderStatus.SHIPPED.value == "shipped"
+        assert OrderStatus.RETURNING.value == "returning"
+        assert OrderStatus.RETURN_COMPLETED.value == "returncompleted"
+
+    def test_status_values_use_unified_no_underscore_spelling(self):
+        """Status values follow the no-underscore style of ``printready``
+        (coolingoff, returncompleted, ...); keep new statuses consistent."""
+        for status in OrderStatus:
+            assert "_" not in status.value, f"{status.name} reintroduced an underscore"
+            assert status.value == status.value.lower()
 
     def test_can_transition_received_to_pending(self):
         """Test RECEIVED -> PENDING transition is allowed."""

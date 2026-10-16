@@ -52,13 +52,14 @@ class Settings(BaseSettings):
     # email (https://app.sendgrid.com/dynamic_templates). Empty = render the
     # local template in app/services/email_templates.py instead.
     SENDGRID_RESET_PASSWORD_TEMPLATE_ID: str = ""
-    
-    # HP Site Flow OneFlow API Authentication (bootstrap default client)
-    ONEFLOW_TOKEN: str = "oneflow-token-change-in-production"
-    ONEFLOW_SECRET: str = "oneflow-secret-change-in-production"
 
     # Admin API key for client management endpoints
     ADMIN_API_KEY: str = "admin-api-key-change-in-production"
+
+    # Per-client API rate limiting (enforced after successful authentication
+    # on the OneFlow- and OMS-signed inbound endpoints; see app/core/rate_limit.py)
+    CLIENT_RATE_LIMIT_ENABLED: bool = True
+    CLIENT_RATE_LIMIT_RPS: int = 20  # Default req/s when clients.rate_limit_rps is NULL (0 = unlimited per client)
 
     # Default Admin User (seeded on first startup)
     DEFAULT_ADMIN_USERNAME: str = "admin"

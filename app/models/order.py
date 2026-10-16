@@ -11,7 +11,7 @@ class OrderStatus(str, Enum):
     RECEIVED = "received"
     PENDING = "pending"
     VALIDATED = "validated"
-    COOLING_OFF = "cooling_off"
+    COOLING_OFF = "coolingoff"
     PROCESSING = "processing"
     PRINTREADY = "printready"
     PRINTED = "printed"
@@ -20,6 +20,8 @@ class OrderStatus(str, Enum):
     FAILED = "failed"
     ERRORED = "errored"
     SHIPPED = "shipped"
+    RETURNING = "returning"
+    RETURN_COMPLETED = "returncompleted"
 
 
 class OrderType(str, Enum):
@@ -96,9 +98,17 @@ ORDER_STATE_TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
         OrderStatus.PENDING,      # 人工修復後重試
         OrderStatus.CANCELLED,    # 人工決定取消
     ],
+    # 已出貨：可發起退貨（OMS 退貨 API），否則為終端狀態
+    OrderStatus.SHIPPED: [
+        OrderStatus.RETURNING,    # 已出貨訂單退貨中
+    ],
+    # 退貨中：等待退貨完成（完成信號待 QPMN 定義反饋事件後接入）
+    OrderStatus.RETURNING: [
+        OrderStatus.RETURN_COMPLETED,  # 退貨完成
+    ],
     # 終端狀態：不可再轉移
     OrderStatus.CANCELLED: [],    # 已取消（終端）
-    OrderStatus.SHIPPED: [],      # 已出貨（終端）try from failed
+    OrderStatus.RETURN_COMPLETED: [],  # 退貨完成（終端）
 }
 
 
@@ -157,10 +167,18 @@ def is_item_event_superseded(order_status: OrderStatus, new_status: OrderStatus)
     to the normal invalid-transition handling since those are worth surfacing
     even if another item has moved ahead.
     """
-    if order_status in (OrderStatus.PRODUCED, OrderStatus.CANCELLED, OrderStatus.SHIPPED, OrderStatus.ERRORED):
+    if order_status in (
+        OrderStatus.PRODUCED,
+        OrderStatus.CANCELLED,
+        OrderStatus.SHIPPED,
+        OrderStatus.RETURNING,
+        OrderStatus.RETURN_COMPLETED,
+        OrderStatus.ERRORED,
+    ):
         # PRODUCED means every item already reported produced (TI-65) — any
         # order_item_* event arriving after that is a straggler, same as the
-        # other terminal/near-terminal statuses below.
+        # other terminal/near-terminal statuses below (RETURNING and
+        # RETURN_COMPLETED included: a returned order has long shipped).
         return new_status in ITEM_EVENT_STATUS_ORDER
     if order_status == OrderStatus.PROCESSING and new_status == OrderStatus.RECEIVED:
         # QPMN's order_item_received webhook always arrives after push_order()
@@ -185,6 +203,8 @@ OMS_STATUS_MAP: Dict[OrderStatus, str] = {
     OrderStatus.SHIPPED: "shipped",
     OrderStatus.CANCELLED: "cancelled",
     OrderStatus.ERRORED: "error",
+    OrderStatus.RETURNING: "returning",
+    OrderStatus.RETURN_COMPLETED: "returncompleted",
 }
 
 
