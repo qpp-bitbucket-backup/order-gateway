@@ -1236,13 +1236,22 @@ class OrderService:
             )
 
             line_item = {
-                # Echoes the third-party SKU reference from the original order
-                # payload (order_data.items[].sku) so QPMN webhooks return the
-                # same value back; storeProductId below keeps the internal id.
-                "externalId": item.get("sku"),
+                # Echoes the third-party item id from the original order
+                # payload (order_data.items[].sourceItemId, falling back to
+                # items[].sku) so QPMN webhooks return the same value back;
+                # storeProductId below keeps the internal id.
+                "externalId": item.get("sourceItemId") or item.get("sku"),
                 "unitPrice": sku.unit_price or 0,
                 "storeProductId": sku.sku_id,
                 "quantity": item.get("quantity", 1),
+                # JSON metafield on the line item: sku prefers the item
+                # description (order_data.items[].description) and falls back
+                # to the item sku; productName comes from the item's
+                # extraData (empty string when missing).
+                "metaData": {
+                    "sku": item.get("description") or item.get("sku") or "",
+                    "productName": self._extract_product_name(item),
+                },
                 "productDesignData": product_design_data,
             }
             # Parallel-card orders carry the generated barcode as the stock
@@ -1282,6 +1291,20 @@ class OrderService:
         }
         logger.info("[OrderService] Built Open API payload for order %s", order_id)
         return payload
+
+    @staticmethod
+    def _extract_product_name(item: Dict[str, Any]) -> str:
+        """
+        Extract ``productName`` from an order item's ``extraData`` list.
+
+        ``extraData`` is a list of arbitrary entries; the first dict entry
+        carrying a ``productName`` key wins. Returns an empty string when
+        the key is missing from every entry.
+        """
+        for entry in item.get("extraData") or []:
+            if isinstance(entry, dict) and entry.get("productName") is not None:
+                return str(entry["productName"])
+        return ""
 
     def _convert_customize_to_product_design_data(
         self,

@@ -1,9 +1,9 @@
 """Unit tests for the Open API create-order payload (order_service._build_open_api_payload).
 
-Locks the items[].externalId contract: it must carry the third-party SKU
-reference from the original order payload (order_data.items[].sku), NOT the
-internal sku_id — storeProductId keeps the internal id, and the top-level
-externalId stays the gateway order id.
+Locks the items[].externalId contract: it must carry the third-party item id
+from the original order payload (order_data.items[].sourceItemId, falling
+back to items[].sku), NOT the internal sku_id — storeProductId keeps the
+internal id, and the top-level externalId stays the gateway order id.
 """
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -41,10 +41,24 @@ def _build(order=None, contexts=None):
         return order_service._build_open_api_payload(None, "ord-1")
 
 
-def test_item_external_id_is_order_item_sku():
+def test_item_external_id_prefers_source_item_id():
+    contexts = [{
+        "item": {"sku": "PC-123", "sourceItemId": 1905904, "quantity": 2},
+        "sku": SimpleNamespace(sku_id="sku-internal-1", unit_price=9.5),
+        "properties": {}, "customize_project": {},
+    }]
+    payload = _build(contexts=contexts)
+    item = payload["items"][0]
+    # externalId echoes the original order_data.items[].sourceItemId
+    assert item["externalId"] == 1905904
+    # storeProductId keeps the internal sku_id
+    assert item["storeProductId"] == "sku-internal-1"
+
+
+def test_item_external_id_falls_back_to_sku():
     payload = _build()
     item = payload["items"][0]
-    # externalId echoes the original order_data.items[].sku reference
+    # No sourceItemId on the item — externalId falls back to items[].sku
     assert item["externalId"] == "PC-123"
     # storeProductId keeps the internal sku_id
     assert item["storeProductId"] == "sku-internal-1"
@@ -72,3 +86,35 @@ def test_parallel_card_supplier_stock_no_unchanged():
     payload = _build(order=order, contexts=contexts)
     assert [li["supplierStockNo"] for li in payload["items"]] == ["BC01", "BC02"]
     assert [li["externalId"] for li in payload["items"]] == ["PC-1", "PC-2"]
+
+
+def test_item_meta_data_prefers_description_and_extra_data_product_name():
+    contexts = [{
+        "item": {
+            "sku": "PC-123",
+            "quantity": 1,
+            "description": "MALL-SKU-1",
+            "extraData": [{"productName": "Greeting Card"}],
+        },
+        "sku": SimpleNamespace(sku_id="sku-internal-1", unit_price=9.5),
+        "properties": {}, "customize_project": {},
+    }]
+    payload = _build(contexts=contexts)
+    assert payload["items"][0]["metaData"] == {
+        "sku": "MALL-SKU-1",
+        "productName": "Greeting Card",
+    }
+
+
+def test_item_meta_data_falls_back_to_sku_and_empty_product_name():
+    contexts = [{
+        # No description and no extraData productName
+        "item": {"sku": "PC-123", "quantity": 1, "extraData": []},
+        "sku": SimpleNamespace(sku_id="sku-internal-1", unit_price=9.5),
+        "properties": {}, "customize_project": {},
+    }]
+    payload = _build(contexts=contexts)
+    assert payload["items"][0]["metaData"] == {
+        "sku": "PC-123",
+        "productName": "",
+    }
