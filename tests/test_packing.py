@@ -12,9 +12,6 @@ from app.services.packing import (
     packing_slip_filename,
 )
 
-# 0xFF0000 in PyMuPDF's sRGB integer color
-_RED = 0xFF0000
-
 
 def _render(tmp_path, **kwargs):
     dest = str(tmp_path / "label.pdf")
@@ -57,16 +54,17 @@ def test_label_contains_variables_and_fixed_lines(tmp_path):
     assert "地址：中国（上海）自由贸易试验区张杨路707号二层西区205室" in joined
 
 
-def test_variable_values_rendered_in_red(tmp_path):
+def test_all_label_text_renders_in_black(tmp_path):
     _, _, spans = _render(
         tmp_path,
         product_name="2026 Topps Chrome Baseball - Mega",
         sku="FGC006630",
     )
     colors = {text: color for text, color, _ in spans}
-    assert colors.get("FGC006630") == _RED
-    assert colors.get("2026 Topps Chrome Baseball - Mega") == _RED
-    # fixed line stays black (mixed line renders as two runs)
+    # variable values render in black, same as the fixed text
+    assert colors.get("FGC006630") == 0
+    assert colors.get("2026 Topps Chrome Baseball - Mega") == 0
+    # fixed line (mixed line renders as two runs)
     assert colors.get("品牌：") == 0
     assert colors.get("Topps") == 0
 

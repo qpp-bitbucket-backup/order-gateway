@@ -528,9 +528,10 @@ def platform_update_client_store_key(
 
 @jwt_router.get("/sales-stats", response_model=PlatformSalesStatsResponse)
 def platform_get_sales_stats(
-    start_date: Optional[date] = Query(None, description="Range start (YYYY-MM-DD, inclusive); defaults to 29 days before end_date"),
-    end_date: Optional[date] = Query(None, description="Range end (YYYY-MM-DD, inclusive); defaults to today"),
+    start_date: Optional[date] = Query(None, alias="startDate", description="Range start (YYYY-MM-DD, inclusive); defaults to 29 days before end_date"),
+    end_date: Optional[date] = Query(None, alias="endDate", description="Range end (YYYY-MM-DD, inclusive); defaults to today"),
     store_id: Optional[str] = Query(None, description="Filter by store (meaningful for ADMIN; scoped users are always limited to their own store)"),
+    storeId_alias: Optional[str] = Query(None, alias="storeId", include_in_schema=False, description="(alias of store_id)"),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -544,7 +545,8 @@ def platform_get_sales_stats(
     """
     # Outside the try block so the 403 for out-of-scope stores is not
     # swallowed into a 500 by the generic exception handler below.
-    scoped_store_id = resolve_scoped_store_id(current_user, store_id)
+    effective_store_id = store_id or storeId_alias
+    scoped_store_id = resolve_scoped_store_id(current_user, effective_store_id)
     try:
         end = end_date or datetime.now(timezone.utc).date()
         start = start_date or (end - timedelta(days=29))

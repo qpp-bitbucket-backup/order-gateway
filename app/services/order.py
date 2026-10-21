@@ -168,6 +168,19 @@ class OrderService:
     # Read helpers
     # ------------------------------------------------------------------
 
+    # Whitelist of Order columns the caller may sort by. Anything else is
+    # silently ignored so we never hand the caller a raw `order_by` field
+    # string — that would be a SQL-injection vector.
+    _ALLOWED_SORT = {
+        "createdAt": Order.created_at,
+        "created_at": Order.created_at,
+        "updatedAt": Order.updated_at,
+        "updated_at": Order.updated_at,
+        "sourceOrderId": Order.source_order_id,
+        "source_order_id": Order.source_order_id,
+        "status": Order.status,
+    }
+
     def get_all_orders(
         self,
         session: Session,
@@ -176,6 +189,10 @@ class OrderService:
         pagesize: int = 10,
         statuses: Optional[List[OrderStatus]] = None,
         source_order_id: Optional[str] = None,
+        created_at_gte: Optional[datetime] = None,
+        created_at_lte: Optional[datetime] = None,
+        sort_by: Optional[str] = None,
+        sort_order: str = "desc",
     ) -> Tuple[List[Order], int, int]:
         """
         Retrieve a paginated list of orders.
@@ -183,6 +200,14 @@ class OrderService:
         Args:
             statuses: Optional list of order statuses to filter by (IN clause).
             source_order_id: Optional fuzzy match on source_order_id (LIKE %text%).
+            created_at_gte: Optional inclusive lower bound on created_at.
+            created_at_lte: Optional inclusive upper bound on created_at. Both
+                bounds are interpreted as UTC — naive values get tzinfo
+                attached automatically to satisfy the timezone-aware column.
+            sort_by: Column to sort by (``createdAt`` / ``updatedAt`` /
+                ``sourceOrderId`` / ``status``). Any unknown value falls back
+                to ``createdAt``.
+            sort_order: ``asc`` or ``desc`` (default ``desc``).
 
         Returns:
             A tuple of (orders, total_count, total_pages).
@@ -196,6 +221,12 @@ class OrderService:
             query = query.where(Order.status.in_(statuses))
         if source_order_id:
             query = query.where(Order.source_order_id.like(f"%{source_order_id}%"))
+        if created_at_gte is not None:
+            gte = created_at_gte if created_at_gte.tzinfo else created_at_gte.replace(tzinfo=timezone.utc)
+            query = query.where(Order.created_at >= gte)
+        if created_at_lte is not None:
+            lte = created_at_lte if created_at_lte.tzinfo else created_at_lte.replace(tzinfo=timezone.utc)
+            query = query.where(Order.created_at <= lte)
 
         # Total count
         total_count = len(session.exec(query).all())
@@ -203,11 +234,15 @@ class OrderService:
 
         # Paginated results
         offset = (page - 1) * pagesize
+        sort_col = self._ALLOWED_SORT.get(sort_by) if sort_by else None
+        if sort_col is None:
+            sort_col = Order.created_at
+        direction = sort_col.desc() if (sort_order or "desc").lower() != "asc" else sort_col.asc()
         statement = (
             query
             .offset(offset)
             .limit(pagesize)
-            .order_by(Order.created_at.desc())
+            .order_by(direction, Order.id.desc())
         )
         orders = session.exec(statement).all()
 

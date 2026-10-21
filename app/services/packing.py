@@ -8,8 +8,7 @@ during order validation (``tasks.orders.validate_order``):
    marketing body plus two variable values from the line item —
    产品货号 (SKU: item description, falling back to the item sku) and
    品名 (productName: item extraData productName, empty when missing) —
-   matching the QPMN line-item ``metaData`` conventions, rendered in red
-   like the original label artwork.
+   matching the QPMN line-item ``metaData`` conventions.
 
 2. Packing slip — one A4 packing list per order (PACKING LIST header,
    date / order number / shipping method, ship-from + ship-to address
@@ -158,8 +157,6 @@ def _insert_text(page: "fitz.Page", x: float, y: float, text: str, fontsize: flo
 # Packing label (Topps product label, one per line item)
 # ---------------------------------------------------------------------------
 
-_FIXED_COLOR = (0, 0, 0)
-_VALUE_COLOR = (0.8, 0, 0)  # red highlight for the variable values
 _LINE_GAP = 2.0
 
 
@@ -281,7 +278,8 @@ def build_label_pdf(
             x = margin
             for text, is_value in segments:
                 if text:
-                    x = _insert_text(page, x, y, text, size, _VALUE_COLOR if is_value else _FIXED_COLOR)
+                    color = (0.85, 0.0, 0.0) if is_value else (0, 0, 0)
+                    x = _insert_text(page, x, y, text, size, color=color)
             y += size + _LINE_GAP
 
         doc.save(dest_path, garbage=3, deflate=True)
