@@ -1332,7 +1332,14 @@ def platform_get_orders(
     pagesize: int = Query(10, ge=1, le=100, description="Number of orders per page"),
     status_filter: Optional[List[OrderStatus]] = Query(None, alias="status[]", description="Filter by order status (supports multiple values, e.g. status[]=failed&status[]=errored)"),
     store_id: Optional[str] = Query(None, description="Filter by store ID"),
+    storeId_alias: Optional[str] = Query(None, alias="storeId", include_in_schema=False, description="(alias of store_id)"),
     source_order_id: Optional[str] = Query(None, alias="sourceOrderId", description="Fuzzy search by source order ID"),
+    created_at_gte: Optional[datetime] = Query(None, alias="createdAt__gte", description="Created-at lower bound (inclusive, ISO 8601 datetime or date)"),
+    created_at_lte: Optional[datetime] = Query(None, alias="createdAt__lte", description="Created-at upper bound (inclusive, ISO 8601 datetime or date)"),
+    sort_by: Optional[str] = Query(None, description="Sort column: createdAt, updatedAt, sourceOrderId, status (default: createdAt)"),
+    sortBy_alias: Optional[str] = Query(None, alias="sortBy", include_in_schema=False, description="(alias of sort_by)"),
+    sort_order: Optional[str] = Query(None, description="Sort direction: asc or desc (default: desc)"),
+    sortOrder_alias: Optional[str] = Query(None, alias="sortOrder", include_in_schema=False, description="(alias of sort_order)"),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -1344,6 +1351,8 @@ def platform_get_orders(
     Admin users can optionally filter by store_id query parameter.
     Supports filtering by multiple statuses: ?status[]=failed&status[]=errored
     Supports fuzzy search on sourceOrderId: ?sourceOrderId=ORD-12
+    Supports created-at range: ?createdAt__gte=2026-10-01&createdAt__lte=2026-10-31
+    Supports sorting: ?sortBy=createdAt&sortOrder=desc
     Returns additional fields: sourceOrderId, logs, files, version, storeId.
     """
     # Outside the try block so the 403 for out-of-scope stores is not
@@ -1351,8 +1360,13 @@ def platform_get_orders(
     # ADMIN is unrestricted (optional store_id filter honored as-is);
     # EDITOR/VIEWER are always scoped to their own store and cannot
     # fall back to seeing other stores' data.
-    effective_store_id = resolve_scoped_store_id(current_user, store_id)
+    effective_store_id = resolve_scoped_store_id(current_user, store_id or storeId_alias)
     try:
+        # Dual-named sort params — accept both snake_case (sort_by) and
+        # camelCase (sortBy). Whichever the caller supplies wins; when both
+        # are present the snake_case form takes precedence.
+        effective_sort_by = sort_by or sortBy_alias
+        effective_sort_order = sort_order or sortOrder_alias or "desc"
         orders, total_count, total_pages = order_service.get_all_orders(
             session,
             store_id=effective_store_id,
@@ -1360,6 +1374,10 @@ def platform_get_orders(
             pagesize=pagesize,
             statuses=status_filter,
             source_order_id=source_order_id,
+            created_at_gte=created_at_gte,
+            created_at_lte=created_at_lte,
+            sort_by=effective_sort_by,
+            sort_order=effective_sort_order,
         )
 
         order_summaries = []

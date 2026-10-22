@@ -318,7 +318,7 @@ def redoc():
     </head>
     <body>
         <redoc spec-url='/openapi_redoc.json'></redoc>
-        <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/redoc@2/bundles/redoc.standalone.js"></script>
     </body>
     </html>
     """
@@ -393,7 +393,7 @@ def oms_redoc():
     </head>
     <body>
         <redoc spec-url='/openapi_oms.json'></redoc>
-        <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/redoc@2/bundles/redoc.standalone.js"></script>
     </body>
     </html>
     """

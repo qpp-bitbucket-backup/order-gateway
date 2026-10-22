@@ -5,7 +5,7 @@ Beat task that aggregates per-store sales metrics into ``daily_sales_stats``
 """
 import logging
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional
 
 from sqlmodel import Session, select
 
@@ -29,6 +29,78 @@ def _iter_order_items(order: Order) -> Iterator[dict]:
     for item in items:
         if isinstance(item, dict):
             yield item
+
+
+def _extract_subtotal(payload: Optional[dict]) -> Optional[float]:
+    """Pull the pre-computed order subtotal from a creation_payload.
+
+    Two supported shapes, both produced by ``order_service.build_push_payload``:
+
+    * Open API:  ``priceInfo.subtotal``
+    * Legacy API: ``orderTotals`` list, entry whose ``name == "SUBTOTAL"``
+
+    Returns None when neither shape carries a numeric subtotal.
+    """
+    if not payload:
+        return None
+    # Open API shape
+    price_info = payload.get("priceInfo")
+    if isinstance(price_info, dict):
+        value = price_info.get("subtotal")
+        if isinstance(value, (int, float)):
+            return float(value)
+    # Legacy shape
+    for entry in payload.get("orderTotals") or []:
+        if isinstance(entry, dict) and entry.get("name") == "SUBTOTAL":
+            value = entry.get("value")
+            if isinstance(value, (int, float)):
+                return float(value)
+    return None
+
+
+def _sum_items(items: Optional[list]) -> float:
+    """Sum ``unitPrice * quantity`` (Open API) or ``unitPrice * qty`` (legacy)
+    across a creation_payload's items list. Unknown shape → 0.0.
+    """
+    total = 0.0
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        price = item.get("unitPrice") or 0
+        if not isinstance(price, (int, float)):
+            continue
+        qty = item.get("quantity") or item.get("qty") or 0
+        if not isinstance(qty, (int, float)):
+            continue
+        total += float(price) * float(qty)
+    return round(total, 2)
+
+
+def _get_order_amount(order: Order) -> float:
+    """Resolve an order's monetary amount, trying sources in order of trust:
+
+    1. ``creation_payload.priceInfo.subtotal`` / ``orderTotals SUBTOTAL``
+       — gateway-computed subtotal, always uses ``sku.unit_price``.
+    2. ``creation_payload.items[].unitPrice * quantity/qty``
+       — same data recomputed per line item.
+    3. ``order_data.items[].unitPrice * quantity``
+       — original external order data; ``unitPrice`` is often ``None`` here,
+         which is why steps 1–2 exist.
+
+    Returns 0.0 when every source is empty.
+    """
+    payload = order.creation_payload
+    # (1) Prefer the pre-computed subtotal on the payload.
+    subtotal = _extract_subtotal(payload)
+    if subtotal is not None:
+        return subtotal
+    # (2) Recompute from the payload's line items (unitPrice populated by SKU lookup).
+    if payload:
+        from_payload = _sum_items(payload.get("items"))
+        if from_payload > 0:
+            return from_payload
+    # (3) Last resort: original order_data (unitPrice usually None → 0).
+    return _sum_items((order.order_data or {}).get("items"))
 
 
 def _fetch_currency(store_id: str) -> Optional[str]:
@@ -55,10 +127,11 @@ def aggregate_day(
     is given, orders from other stores are excluded from the aggregation
     (used by the manual backfill script to target a single store).
     """
-    # created_at is stored as naive UTC (MySQL DATETIME columns read back
-    # naive), so the window boundaries must be naive too.
-    day_start = datetime.combine(day, time.min)
-    day_end = datetime.combine(day + timedelta(days=1), time.min)
+    # BaseModel.created_at is timezone-aware (Python datetime with tzinfo),
+    # so query boundaries must also carry tzinfo — MySQL DATETIME stores no
+    # zone, but SQLModel validates bind params against the column type.
+    day_start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+    day_end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=timezone.utc)
 
     order_query = select(Order).where(
         Order.is_active.is_(True),
@@ -92,9 +165,7 @@ def aggregate_day(
                 items_count += 1
                 qty = item.get("quantity") or 0
                 items_quantity += qty
-                unit_price = item.get("unitPrice")
-                if unit_price is not None:
-                    total_amount += float(unit_price) * qty
+            total_amount += _get_order_amount(order)
 
         if store_id not in currency_cache:
             # One QPMN lookup per store per run; falls back to "CNY" on error

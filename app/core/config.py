@@ -117,6 +117,22 @@ class Settings(BaseSettings):
     CONVERT_TO_PNG: bool = False
     PDF_TO_PNG_DPI: int = 300
 
+    # Brand label generation (order validation step): when enabled, one PDF
+    # label per order line item is generated (productName + SKU + quantity),
+    # uploaded to the QPMN file library and recorded in order.files under
+    # "label-{item_index}" keys — the push payload only reads
+    # "{sku_id}-{item_index}" keys, so labels never enter the design payload.
+    BRAND_LABEL_ENABLED: bool = False
+    BRAND_LABEL_WIDTH_MM: float = 100.0
+    BRAND_LABEL_HEIGHT_MM: float = 66.8
+    # Packing slip ship-from block (one line per \n); empty leaves the
+    # ship-from cell blank until configured per environment.
+    BRAND_LABEL_SHIP_FROM: str = ""
+    # Staging folder for packing documents. Files are generated under
+    # {BRAND_LABEL_LOCAL_DIR}/packing/<source_order_id>/ and removed once
+    # uploaded to QPMN; only failed uploads stay behind for inspection.
+    BRAND_LABEL_LOCAL_DIR: str = "tmp"
+
     # OMS API Configuration
     OMS_API_URL: str = ""
     OMS_VALIDATE_RETRY_COUNT: int = 5       # Max retry attempts when OMS returns 503/timeout
