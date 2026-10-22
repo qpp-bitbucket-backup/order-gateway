@@ -276,10 +276,9 @@ def build_label_pdf(
         for segments in lines:
             size = _line_fits_size(segments, max_text_width, base_size)
             x = margin
-            for text, is_value in segments:
+            for text, _is_value in segments:
                 if text:
-                    color = (0.85, 0.0, 0.0) if is_value else (0, 0, 0)
-                    x = _insert_text(page, x, y, text, size, color=color)
+                    x = _insert_text(page, x, y, text, size)
             y += size + _LINE_GAP
 
         doc.save(dest_path, garbage=3, deflate=True)
