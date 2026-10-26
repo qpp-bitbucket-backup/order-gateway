@@ -127,6 +127,8 @@ class ClientUpdateRequest(BaseModel):
     cooling_off_seconds: Optional[int] = Field(None, ge=0, description="Order cooling-off period in seconds before QPMN push (0 = none; pass to replace, omit to keep)")
     rate_limit_rps: Optional[int] = Field(None, ge=0, description="Per-client API rate limit in requests/second (pass to replace; omit to keep current value)")
     notification_config: Optional[NotificationConfig] = Field(None, description="Per-level order status email notification settings (pass to replace; omit to keep)")
+    brand_label_lines: Optional[List[str]] = Field(None, description="Per-client packing label template: one string per line with {sku}/{product_name} placeholders (pass a list to set, omit to keep)")
+    enable_brand_label: Optional[bool] = Field(None, description="Per-client switch for packing document generation at order validation (pass to set, omit to keep)")
     is_active: Optional[bool] = Field(None, description="Whether the client is active")
     rotate_secret: bool = Field(False, description="Generate a new secret for this client")
 
@@ -143,6 +145,8 @@ class ClientSummary(BaseModel):
     cooling_off_seconds: int = Field(0, description="Order cooling-off period in seconds before QPMN push (0 = none)")
     rate_limit_rps: Optional[int] = Field(None, description="Per-client API rate limit in requests/second after authentication (NULL = global default; 0 = unlimited)")
     notification_config: NotificationConfig = Field(default_factory=NotificationConfig, description="Per-level order status email notification settings")
+    brand_label_lines: Optional[List[str]] = Field(None, description="Per-client packing label template with {sku}/{product_name} placeholders (NULL = client has not configured one; label generation skipped)")
+    enable_brand_label: bool = Field(False, description="Per-client switch for packing document generation at order validation")
     is_active: bool = Field(..., description="Whether the client is active")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")

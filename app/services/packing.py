@@ -1,7 +1,7 @@
 """Packing document PDF generation for the Topps order flow.
 
-Two document kinds, both env-toggled by ``BRAND_LABEL_ENABLED`` and built
-during order validation (``tasks.orders.validate_order``):
+Two document kinds, both gated per client by ``clients.enable_brand_label``
+and built during order validation (``tasks.orders.validate_order``):
 
 1. Packing label — one per order line item, sized
    ``BRAND_LABEL_WIDTH_MM`` x ``BRAND_LABEL_HEIGHT_MM``. Fixed legal/
@@ -160,21 +160,6 @@ def _insert_text(page: "fitz.Page", x: float, y: float, text: str, fontsize: flo
 _LINE_GAP = 2.0
 
 
-def _label_lines(product_name: str, sku: str) -> List[List[Tuple[str, bool]]]:
-    return [
-        [("品牌: Topps", False)],
-        [("产品货号: ", False), (str(sku or ""), True)],
-        [("品名: ", False), (str(product_name or ""), True)],
-        [("规格: 张（数量以订单为准）", False)],
-        [("产地: 中国", False)],
-        [("执行标准: GB6675.1-2014,GB6675.2-2014", False)],
-        [("GB6675.3-2014,GB6675.4-2014", False)],
-        [("适用年龄: 8岁以上", False)],
-        [("出品方: 凡特西艺术珍藏品（上海）有限公司", False)],
-        [("地址: 中国（上海）自由贸易试验区张杨路707号二层西区205室", False)],
-    ]
-
-
 def _line_fits_size(segments: List[Tuple[str, bool]], max_width: float, base_size: float) -> float:
     """
     Return the largest font size <= *base_size* keeping the whole line
@@ -242,40 +227,66 @@ def build_label_pdf(
     *,
     product_name: str,
     sku: str,
+    template_lines: Optional[List[str]] = None,
 ) -> bool:
     """
     Render one packing label PDF to *dest_path*.
 
+    ``template_lines`` is the per-client label template stored on the clients
+    row (``brand_label_lines``): one string per printed line with ``{sku}``
+    and ``{product_name}`` placeholders, substituted via str.replace (not
+    str.format) so braces inside product names cannot crash rendering.
+    ``None`` or an empty list means the client has no template configured —
+    the label is skipped and this function returns False (caller logs it).
+
     Returns:
-        True on success, False on failure (caller logs and skips the label).
+        True on success, False on failure / missing template.
     """
+    # Per-client template is mandatory for label generation; missing template
+    # means the client hasn't configured one — caller logs and skips this
+    # line item rather than synthesising a fallback (removed _label_lines).
+    if not template_lines:
+        return False
     try:
         width = mm_to_points(settings.BRAND_LABEL_WIDTH_MM)
         height = mm_to_points(settings.BRAND_LABEL_HEIGHT_MM)
-        # Label padding: 12pt on every side, leaving the rest for text.
-        margin = 18.0
-        max_text_width = width - 2 * margin
+        margin_top = 14.0
+        margin_right = 18.0
+        margin_bottom = 4.0
+        margin_left = 18.0
+        max_text_width = width - margin_left - margin_right
 
-        # Wrap at the font-size cap so long lines (e.g. the address) break
-        # into physical lines instead of being shrunk to unreadable sizes;
-        # the base size then adapts to the wrapped line count.
         wrap_size = 12.0
         lines: List[List[Tuple[str, bool]]] = []
-        for segments in _label_lines(product_name, sku):
-            lines.extend(_wrap_segments(segments, max_text_width, wrap_size))
+        sku_text = str(sku or "")
+        name_text = str(product_name or "")
+        name_wrapped_lines = 0
+        for tpl in template_lines:
+            rendered = tpl.replace("{sku}", sku_text).replace("{product_name}", name_text)
+            wrapped = _wrap_segments([(rendered, False)], max_text_width, wrap_size)
+            if "{product_name}" in tpl:
+                # Printed height of the product name itself: when it wraps to
+                # more than two lines, reclaim space by shrinking the top margin.
+                name_wrapped_lines = len(wrapped)
+            lines.extend(wrapped)
+        if name_wrapped_lines >= 2:
+            margin_top -= (name_wrapped_lines-1) * 5
         n = len(lines)
 
         # Base size fits all lines (plus gaps) within the page height,
         # capped at wrap_size so labels keep a document-like density.
-        base_size = min(wrap_size, (height - 2 * margin - (n - 1) * _LINE_GAP) / n)
+        base_size = min(
+            wrap_size,
+            (height - margin_top - margin_bottom - (n - 1) * _LINE_GAP) / n,
+        )
 
         doc = fitz.open()
         page = doc.new_page(width=width, height=height)
 
-        y = margin + base_size
+        y = margin_top + base_size
         for segments in lines:
             size = _line_fits_size(segments, max_text_width, base_size)
-            x = margin
+            x = margin_left
             for text, _is_value in segments:
                 if text:
                     x = _insert_text(page, x, y, text, size)

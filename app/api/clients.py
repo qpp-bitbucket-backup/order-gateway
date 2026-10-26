@@ -62,6 +62,8 @@ def _to_summary(client: Client) -> ClientSummary:
         cooling_off_seconds=client.cooling_off_seconds or 0,
         rate_limit_rps=client.rate_limit_rps,
         notification_config=client.notification_config or {},
+        brand_label_lines=client.brand_label_lines,
+        enable_brand_label=client.enable_brand_label,
         is_active=client.is_active,
         created_at=client.created_at,
         updated_at=client.updated_at,
@@ -203,6 +205,11 @@ def update_client(
         client.rate_limit_rps = request.rate_limit_rps
     if request.notification_config is not None:
         client.notification_config = request.notification_config.model_dump()
+    if request.brand_label_lines is not None:
+        # [] normalises to NULL (no template configured = label generation skipped).
+        client.brand_label_lines = request.brand_label_lines or None
+    if request.enable_brand_label is not None:
+        client.enable_brand_label = request.enable_brand_label
     if request.is_active is not None:
         client.is_active = request.is_active
 
@@ -694,6 +701,11 @@ def platform_update_client(
         client.rate_limit_rps = request.rate_limit_rps
     if request.notification_config is not None:
         client.notification_config = request.notification_config.model_dump()
+    if request.brand_label_lines is not None:
+        # [] normalises to NULL (no template configured = label generation skipped).
+        client.brand_label_lines = request.brand_label_lines or None
+    if request.enable_brand_label is not None:
+        client.enable_brand_label = request.enable_brand_label
     if request.is_active is not None:
         client.is_active = request.is_active
 

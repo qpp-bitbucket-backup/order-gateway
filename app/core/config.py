@@ -117,12 +117,12 @@ class Settings(BaseSettings):
     CONVERT_TO_PNG: bool = False
     PDF_TO_PNG_DPI: int = 300
 
-    # Brand label generation (order validation step): when enabled, one PDF
-    # label per order line item is generated (productName + SKU + quantity),
+    # Brand label generation (order validation step): gated per client by
+    # clients.enable_brand_label. When enabled, one PDF label per order line
+    # item is generated (productName + SKU + quantity),
     # uploaded to the QPMN file library and recorded in order.files under
     # "label-{item_index}" keys — the push payload only reads
     # "{sku_id}-{item_index}" keys, so labels never enter the design payload.
-    BRAND_LABEL_ENABLED: bool = False
     BRAND_LABEL_WIDTH_MM: float = 100.0
     BRAND_LABEL_HEIGHT_MM: float = 66.8
     # Packing slip ship-from block (one line per \n); empty leaves the
