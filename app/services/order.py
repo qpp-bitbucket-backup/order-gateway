@@ -1122,24 +1122,34 @@ class OrderService:
             # Inject uploaded file URLs into effectImages imageUrls (Open API structure):
             # designData[].views[].designs[].effectImages[].imageUrl. One file per
             # view that carries effectImages, in order; views without designs
-            # (template-only materials) consume no file.
+            # (template-only materials) consume no file. When the packing-
+            # documents step produced a label for this item (order.files
+            # "label-{item_index}"), the LAST effect view is the label
+            # placeholder: it consumes no uploaded design file and its
+            # effectImages get the label URL instead.
             design_data = customize_project.get("designData", [])
-            open_file_index = 0
-            for material in design_data:
-                for view in material.get("views", []):
-                    view_designs = view.get("designs") or []
-                    if not any(d.get("effectImages") for d in view_designs) or open_file_index > len(files):
-                        continue
-                    file_obj = files[open_file_index] if open_file_index < len(files) else None
-                    if not file_obj:
-                        raise ValueError(f"SKU: [{sku_id}] design file not found")
-                    file_url = file_obj.get("url", None)
-                    if not file_url:
-                        raise ValueError(f"SKU: [{sku_id}] design file URL not found")
-                    open_file_index += 1
-                    for d in view_designs:
-                        for effect_image in d.get("effectImages", []):
-                            effect_image["imageUrl"] = file_url
+            label_files = files_dict.get(f"label-{item_index}") or []
+            label_url = label_files[0].get("url") if label_files else None
+            effect_views = [
+                view
+                for material in design_data
+                for view in material.get("views", [])
+                if any(d.get("effectImages") for d in (view.get("designs") or []))
+            ]
+            design_views = effect_views[:-1] if label_url else effect_views
+            if len(files) < len(design_views):
+                raise ValueError(f"SKU: [{sku_id}] design file not found")
+            for view, file_obj in zip(design_views, files):
+                file_url = file_obj.get("url")
+                if not file_url:
+                    raise ValueError(f"SKU: [{sku_id}] design file URL not found")
+                for d in view.get("designs") or []:
+                    for effect_image in d.get("effectImages", []):
+                        effect_image["imageUrl"] = file_url
+            if label_url and effect_views:
+                for d in effect_views[-1].get("designs") or []:
+                    for effect_image in d.get("effectImages", []):
+                        effect_image["imageUrl"] = label_url
 
             contexts.append({
                 "item": item,
@@ -1283,7 +1293,7 @@ class OrderService:
                 # description (order_data.items[].description) and falls back
                 # to the item sku; productName comes from the item's
                 # extraData (empty string when missing).
-                "metaData": {
+                "metadata": {
                     "sku": item.get("description") or item.get("sku") or "",
                     "productName": self._extract_product_name(item),
                 },

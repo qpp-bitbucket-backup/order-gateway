@@ -13,17 +13,42 @@ from app.services.packing import (
 )
 
 
+def _norm(text: str) -> str:
+    """Normalise PyMuPDF extraction quirks seen with the built-in fallback
+    fonts (helv/china-s on hosts without Arial/SimHei): spaces surface as
+    U+00A0 and hyphens as U+00AD soft hyphens. Display is unaffected."""
+    return text.replace("\xa0", " ").replace("\xad", "-")
+
+
+# Default label template for tests — mirrors the per-client template stored
+# in clients.brand_label_lines (half-width colons, {sku}/{product_name}
+# placeholders). build_label_pdf has no built-in fallback anymore.
+_DEFAULT_TEMPLATE = [
+    "品牌: Topps",
+    "产品货号: {sku}",
+    "品名: {product_name}",
+    "规格: 张（数量以订单为准）",
+    "产地: 中国",
+    "执行标准: GB6675.1-2014,GB6675.2-2014",
+    "GB6675.3-2014,GB6675.4-2014",
+    "适用年龄: 8岁以上",
+    "出品方: 凡特西艺术珍藏品（上海）有限公司",
+    "地址: 中国（上海）自由贸易试验区张杨路707号二层西区205室",
+]
+
+
 def _render(tmp_path, **kwargs):
     dest = str(tmp_path / "label.pdf")
+    kwargs.setdefault("template_lines", list(_DEFAULT_TEMPLATE))
     ok = build_label_pdf(dest, **kwargs)
     assert ok is True
     assert os.path.exists(dest)
     doc = fitz.open(dest)
     try:
-        text = doc[0].get_text()
+        text = _norm(doc[0].get_text())
         rect = doc[0].rect
         spans = [
-            (span["text"], span["color"], span["font"])
+            (_norm(span["text"]), span["color"], span["font"])
             for block in doc[0].get_text("dict")["blocks"]
             for line in block.get("lines", [])
             for span in line.get("spans", [])
@@ -44,14 +69,14 @@ def test_label_contains_variables_and_fixed_lines(tmp_path):
     assert "2026 Topps Chrome Baseball - Mega" in text
     # fixed lines (wrapped lines insert newlines — compare whitespace-stripped)
     joined = "".join(text.split())
-    assert "品牌：Topps" in text
-    assert "规格：张（数量以订单为准）" in joined
-    assert "产地：中国" in text
+    assert "品牌: Topps" in text
+    assert "规格: 张（数量以订单为准）" in joined
+    assert "产地: 中国" in text
     assert "GB6675.1-2014,GB6675.2-2014" in text
     assert "GB6675.3-2014,GB6675.4-2014" in text
-    assert "适用年龄：8岁以上" in text
-    assert "出品方：凡特西艺术珍藏品（上海）有限公司" in joined
-    assert "地址：中国（上海）自由贸易试验区张杨路707号二层西区205室" in joined
+    assert "适用年龄: 8岁以上" in text
+    assert "出品方: 凡特西艺术珍藏品（上海）有限公司" in joined
+    assert "地址: 中国（上海）自由贸易试验区张杨路707号二层西区205室" in joined
 
 
 def test_all_label_text_renders_in_black(tmp_path):
@@ -60,20 +85,21 @@ def test_all_label_text_renders_in_black(tmp_path):
         product_name="2026 Topps Chrome Baseball - Mega",
         sku="FGC006630",
     )
-    colors = {text: color for text, color, _ in spans}
-    # variable values render in black, same as the fixed text
-    assert colors.get("FGC006630") == 0
-    assert colors.get("2026 Topps Chrome Baseball - Mega") == 0
-    # fixed line (mixed line renders as two runs)
-    assert colors.get("品牌：") == 0
-    assert colors.get("Topps") == 0
+    # variable values render in black, same as the fixed text (span text may
+    # carry extraction quirks — look up by fragment)
+    color_of = lambda frag: next((c for t, c, _ in spans if frag in t), None)
+    assert color_of("FGC006630") == 0
+    assert color_of("2026 Topps Chrome Baseball - Mega") == 0
+    # every rendered span — fixed or variable — is black
+    assert all(color == 0 for _, color, _ in spans)
 
 
 def test_mixed_script_line_uses_native_fonts_per_run(tmp_path):
     _, _, spans = _render(tmp_path, product_name="P", sku="S")
-    fonts = {text: font for text, _, font in spans}
-    cjk_font = fonts.get("品牌：", "")
-    latin_font = fonts.get("Topps", "")
+    # script runs split at CJK/Latin boundaries — find the runs containing
+    # the brand prefix and the latin brand name
+    cjk_font = next((font for text, _, font in spans if "品牌" in text), "")
+    latin_font = next((font for text, _, font in spans if "Topps" in text), "")
     # CJK run renders in SimHei (or the built-in heiti fallback)
     assert "SimHei" in cjk_font or "china" in cjk_font.lower()
     # Latin run renders in Arial (or the Helvetica fallback)
@@ -83,7 +109,15 @@ def test_mixed_script_line_uses_native_fonts_per_run(tmp_path):
 def test_label_with_missing_product_name(tmp_path):
     text, _, _ = _render(tmp_path, product_name="", sku="PC-123")
     assert "PC-123" in text
-    assert "品牌：Topps" in text
+    assert "品牌: Topps" in text
+
+
+def test_label_without_template_is_skipped(tmp_path):
+    # no per-client template configured -> label generation is skipped,
+    # no file is written (the removed built-in fallback must not return)
+    dest = str(tmp_path / "label.pdf")
+    assert build_label_pdf(dest, product_name="P", sku="S") is False
+    assert not os.path.exists(dest)
 
 
 def test_label_page_size_matches_settings_mm(tmp_path, monkeypatch):
@@ -91,9 +125,9 @@ def test_label_page_size_matches_settings_mm(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "BRAND_LABEL_WIDTH_MM", 100.0)
     monkeypatch.setattr(settings, "BRAND_LABEL_HEIGHT_MM", 66.8)
     _, rect, _ = _render(tmp_path, product_name="P", sku="S")
-    # 100mm x 50mm -> 283.46 x 141.73 points
+    # 100mm x 66.8mm -> 283.46 x 189.35 points
     assert rect.width == pytest.approx(283.46, abs=0.5)
-    assert rect.height == pytest.approx(141.73, abs=0.5)
+    assert rect.height == pytest.approx(189.35, abs=0.5)
 
 
 def test_long_sku_still_renders(tmp_path):
@@ -108,21 +142,26 @@ def test_address_wraps_onto_multiple_lines(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "BRAND_LABEL_WIDTH_MM", 100.0)
     monkeypatch.setattr(settings, "BRAND_LABEL_HEIGHT_MM", 66.8)
     dest = str(tmp_path / "label.pdf")
-    assert build_label_pdf(dest, product_name="P", sku="S") is True
+    assert build_label_pdf(dest, product_name="P", sku="S",
+                           template_lines=list(_DEFAULT_TEMPLATE)) is True
     doc = fitz.open(dest)
     try:
         lines = [
-            "".join(span["text"] for span in line.get("spans", []))
+            _norm("".join(span["text"] for span in line.get("spans", [])))
             for block in doc[0].get_text("dict")["blocks"]
             for line in block.get("lines", [])
         ]
     finally:
         doc.close()
-    address_lines = [ln for ln in lines if "张杨路707号" in ln or "地址：" in ln]
-    # the address no longer fits one 100mm line — it must have wrapped
-    assert len(address_lines) >= 2
-    assert any("地址：" in ln for ln in address_lines)
-    assert any("张杨路707号" in ln for ln in address_lines)
+    # the address no longer fits one 100mm line — it must have wrapped.
+    # the break may land anywhere (e.g. "张杨路" / "707号…" on separate
+    # lines), so check fragments, not the contiguous string.
+    text_all = "\n".join(lines)
+    assert "地址:" in text_all
+    assert "张杨路" in text_all
+    assert "707号" in text_all
+    # 10 template lines in, more physical lines out -> wrapping happened
+    assert len(lines) > len(_DEFAULT_TEMPLATE)
 
 
 def test_helpers():
@@ -170,7 +209,7 @@ def _build_slip(tmp_path, **overrides):
     assert ok is True
     doc = fitz.open(dest)
     try:
-        text = "".join(page.get_text() for page in doc)
+        text = _norm("".join(page.get_text() for page in doc))
         page_rect = doc[0].rect
         n_pages = len(doc)
     finally:
@@ -180,11 +219,12 @@ def _build_slip(tmp_path, **overrides):
 
 def test_packing_slip_contains_all_sections(tmp_path):
     text, _, _ = _build_slip(tmp_path)
-    # title + meta
+    # title + meta (meta renders label and value in separate columns with
+    # no colon; extraction may split them onto separate lines)
     assert "PACKING LIST" in text
-    assert "Date: 01/01/2026" in text
-    assert "Order Number: SO123456789" in text
-    assert "Shipping Method: SF" in text
+    assert "Date" in text and "01/01/2026" in text
+    assert "Order Number" in text and "SO123456789" in text
+    assert "Shipping Method" in text and "SF" in text
     # shipping information
     assert "Ship from Address" in text
     assert "Ship to Address" in text

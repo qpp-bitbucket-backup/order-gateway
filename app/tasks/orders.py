@@ -43,6 +43,14 @@ if settings.DEBUG:
 
 _PUSH_ALERTS = ALERTS["push"]
 
+# ---------------------------------------------------------------------------
+# Packing document generation feature flags (code-level, no DB/table fields).
+# Set to True to enable the corresponding document in
+# _generate_packing_documents; both default to False so nothing runs until
+# explicitly opted in.
+# ---------------------------------------------------------------------------
+PACKING_SLIP_ENABLED = False
+
 
 def _capture_push_alert(alert_key: str, order_id: str, **format_args) -> None:
     """Capture a push_order failure to Sentry, tagged for alert-rule filtering.
@@ -431,6 +439,11 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
     """
     from app.services.order import order_service  # lazy import, avoids circular dependency
 
+    # Per-client switch (clients.enable_brand_label) — replaces the old
+    # global BRAND_LABEL_ENABLED env var.
+    if not client_service.get_brand_label_enabled(order.store_id):
+        return
+
     store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
     if not store_key:
         logger.warning(
@@ -446,26 +459,10 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
     doc_files: Dict[str, List[Any]] = {}
     generated = uploaded = 0
 
-    # Packing slip inputs: ship-to from the delivery address just attached
-    # by the validation step; per-item thumbnail from the order's uploaded
-    # design files (order.files "{sku_id}-{item_index}" first URL).
-    delivery_address = session.exec(
-        select(Address).where(
-            Address.order_id == order.order_id,
-            Address.type == AddressType.DELIVERY,
-        )
-    ).first()
-    # Tolerate both real newlines and literal "\n" sequences (dotenv quoting
-    # keeps "\n" as two characters unless the value is double-quoted).
-    ship_from_lines = [
-        ln.strip()
-        for ln in settings.BRAND_LABEL_SHIP_FROM.replace("\\n", "\n").split("\n")
-        if ln.strip()
-    ]
-    ship_to_lines = _ship_to_lines(delivery_address)
-    slip_rows: List[Dict[str, Any]] = []
-    total_qty = 0
-    files_dict = order.files or {}
+    # Per-client label template (clients.brand_label_lines); None/empty
+    # means the client has not configured one — label PDF generation will
+    # be skipped for that client (no fallback default template exists).
+    label_template = client_service.get_brand_label_lines(order.store_id)
 
     # Staging folder for the generated documents
     # ({BRAND_LABEL_LOCAL_DIR}/packing/<source_order_id>/): each file is
@@ -489,6 +486,7 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
             dest_path,
             product_name=order_service._extract_product_name(item),
             sku=item.get("description") or item.get("sku") or "",
+            template_lines=label_template,
         ):
             continue
         generated += 1
@@ -504,70 +502,94 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
         _remove_local(dest_path)
 
     # --- Packing slip (A4) ---
+    # Code-level feature flag: flip PACKING_SLIP_ENABLED at module top to
+    # opt in. Default False keeps QPMN-generated slips as the source of
+    # truth; when True, this function also builds and uploads one.
     thumb_paths: List[str] = []
-    for item_index, item in enumerate(items):
-        qty = item.get("quantity", 1) or 1
-        total_qty += qty
-
-        image_path = None
-        sku_ref = item.get("sku")
-        sku_obj = find_sku_by_ref(
-            session, sku_ref, active_only=False, match_internal_id=True,
-            store_id=order.store_id,
-        ) if sku_ref else None
-        if sku_obj:
-            item_files = files_dict.get(f"{sku_obj.sku_id}-{item_index}") or []
-            file_url = item_files[0].get("url") if item_files else None
-            if file_url:
-                ok, result = file_service.download_file(file_url, docs_dir)
-                if ok:
-                    image_path = result
-                    thumb_paths.append(result)
-
-        slip_rows.append({
-            "line": f"{item_index + 1} of {len(items)}",
-            "sku": item.get("description") or item.get("sku") or "",
-            "product_name": order_service._extract_product_name(item),
-            "qty": qty,
-            "image_path": image_path,
-        })
-
-    slip_path = os.path.join(docs_dir, packing_slip_filename(order.source_order_id))
-    if build_packing_slip_pdf(
-        slip_path,
-        order_number=order.source_order_id,
-        date_str=datetime.now(timezone.utc).strftime("%d/%m/%Y"),
-        shipping_method=order_service.fetch_shipping_method_from_qpmn(order.store_id or ""),
-        ship_from_lines=ship_from_lines,
-        ship_to_lines=ship_to_lines,
-        item_rows=slip_rows,
-        total_qty=total_qty,
-    ):
-        slip_upload = file_service.upload_to_qpmn(slip_path, store_key)
-        if slip_upload:
-            doc_files[PACKING_SLIP_FILE_KEY] = [slip_upload]
-            _append_order_log(
-                order,
-                "packing_slip_generated",
-                f"Packing slip generated and uploaded to QPMN "
-                f"({total_qty} total qty, {len(slip_rows)} item row(s))",
+    if PACKING_SLIP_ENABLED:
+        # Packing slip inputs: ship-to from the delivery address just attached
+        # by the validation step; per-item thumbnail from the order's uploaded
+        # design files (order.files "{sku_id}-{item_index}" first URL).
+        delivery_address = session.exec(
+            select(Address).where(
+                Address.order_id == order.order_id,
+                Address.type == AddressType.DELIVERY,
             )
-            _remove_local(slip_path)
-        else:
-            logger.error("[Celery] Packing slip upload failed for order %s", order.order_id)
-            _append_order_log(order, "packing_slip_upload_failed", "Packing slip upload to QPMN failed")
-    else:
-        _append_order_log(order, "packing_slip_failed", "Packing slip generation failed")
+        ).first()
+        # Tolerate both real newlines and literal "\n" sequences (dotenv quoting
+        # keeps "\n" as two characters unless the value is double-quoted).
+        ship_from_lines = [
+            ln.strip()
+            for ln in settings.BRAND_LABEL_SHIP_FROM.replace("\\n", "\n").split("\n")
+            if ln.strip()
+        ]
+        ship_to_lines = _ship_to_lines(delivery_address)
+        slip_rows: List[Dict[str, Any]] = []
+        total_qty = 0
+        files_dict = order.files or {}
+        for item_index, item in enumerate(items):
+            qty = item.get("quantity", 1) or 1
+            total_qty += qty
 
-    # Downloaded thumbnails are embedded in the slip — remove them either way.
-    for thumb in thumb_paths:
-        _remove_local(thumb)
-    # Drop the staging directory when nothing failed (keep it for the
-    # leftover failed uploads).
-    try:
-        os.rmdir(docs_dir)
-    except OSError:
-        pass
+            image_path = None
+            sku_ref = item.get("sku")
+            sku_obj = find_sku_by_ref(
+                session, sku_ref, active_only=False, match_internal_id=True,
+                store_id=order.store_id,
+            ) if sku_ref else None
+            if sku_obj:
+                item_files = files_dict.get(f"{sku_obj.sku_id}-{item_index}") or []
+                file_url = item_files[0].get("url") if item_files else None
+                if file_url:
+                    ok, result = file_service.download_file(file_url, docs_dir)
+                    if ok:
+                        image_path = result
+                        thumb_paths.append(result)
+
+            slip_rows.append({
+                "line": f"{item_index + 1} of {len(items)}",
+                "sku": item.get("description") or item.get("sku") or "",
+                "product_name": order_service._extract_product_name(item),
+                "qty": qty,
+                "image_path": image_path,
+            })
+
+        slip_path = os.path.join(docs_dir, packing_slip_filename(order.source_order_id))
+        if build_packing_slip_pdf(
+            slip_path,
+            order_number=order.source_order_id,
+            date_str=datetime.now(timezone.utc).strftime("%d/%m/%Y"),
+            shipping_method=order_service.fetch_shipping_method_from_qpmn(order.store_id or ""),
+            ship_from_lines=ship_from_lines,
+            ship_to_lines=ship_to_lines,
+            item_rows=slip_rows,
+            total_qty=total_qty,
+        ):
+            slip_upload = file_service.upload_to_qpmn(slip_path, store_key)
+            if slip_upload:
+                doc_files[PACKING_SLIP_FILE_KEY] = [slip_upload]
+                _append_order_log(
+                    order,
+                    "packing_slip_generated",
+                    f"Packing slip generated and uploaded to QPMN "
+                    f"({total_qty} total qty, {len(slip_rows)} item row(s))",
+                )
+                _remove_local(slip_path)
+            else:
+                logger.error("[Celery] Packing slip upload failed for order %s", order.order_id)
+                _append_order_log(order, "packing_slip_upload_failed", "Packing slip upload to QPMN failed")
+        else:
+            _append_order_log(order, "packing_slip_failed", "Packing slip generation failed")
+
+        # Downloaded thumbnails are embedded in the slip — remove them either way.
+        for thumb in thumb_paths:
+            _remove_local(thumb)
+        # Drop the staging directory when nothing failed (keep it for the
+        # leftover failed uploads).
+        try:
+            os.rmdir(docs_dir)
+        except OSError:
+            pass
 
     if doc_files:
         order.files = {**(order.files or {}), **doc_files}
@@ -676,13 +698,12 @@ def validate_order(self, order_data: Dict[str, Any]) -> bool:
             session.commit()
             enqueue_status_change_email(session, order, from_status, OrderStatus.VALIDATED, level, validated_msg)
 
-            # Packing documents (env-toggled via BRAND_LABEL_ENABLED): one
+            # Packing documents (per-client via clients.enable_brand_label):
             # PDF label per line item plus one A4 packing slip per order,
             # uploaded to the QPMN file library and recorded under
             # order.files "label-{item_index}" / "packing-slip" keys.
             # Failures never block validation — documents are auxiliary.
-            if settings.BRAND_LABEL_ENABLED:
-                _generate_packing_documents(session, order)
+            _generate_packing_documents(session, order)
 
             # Notify OMS/VFS of the dataready status ourselves — QPMN never
             # sends an order_item_* event for VALIDATED (confirmed with QPMN),

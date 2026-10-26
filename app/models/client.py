@@ -1,6 +1,6 @@
 from sqlmodel import Field, Column
 from sqlalchemy import JSON
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from app.models.base import BaseModel
 
@@ -63,5 +63,23 @@ class Client(BaseModel, table=True):
             'Per-level order status email notification settings: '
             '{"info"|"warning"|"error": {"enabled": bool, "emails": [...]}}; '
             "NULL = all levels disabled (no status-change emails sent)"
+        ),
+    )
+    brand_label_lines: Optional[List[str]] = Field(
+        None,
+        sa_column=Column(JSON),
+        description=(
+            "Per-client packing label template: one string per printed line, "
+            "with {sku} and {product_name} placeholders substituted per line "
+            "item (e.g. \"产品货号: {sku}\"); NULL / empty = client has not "
+            "configured one (label generation skipped — no fallback template exists)"
+        ),
+    )
+    enable_brand_label: bool = Field(
+        default=False,
+        nullable=False,
+        description=(
+            "Per-client switch for packing document generation at order "
+            "validation (label PDFs + packing slip); False = skip entirely"
         ),
     )
