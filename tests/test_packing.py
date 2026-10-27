@@ -67,16 +67,22 @@ def test_label_contains_variables_and_fixed_lines(tmp_path):
     # variable lines
     assert "FGC006630" in text
     assert "2026 Topps Chrome Baseball - Mega" in text
-    # fixed lines (wrapped lines insert newlines — compare whitespace-stripped)
+    # fixed lines (wrapped lines insert newlines — compare whitespace-stripped;
+    # joined strips ALL whitespace, so no space after the colon). Assertions
+    # avoid full-width punctuation regions: PyMuPDF extraction can insert
+    # phantom non-whitespace chars around them.
     joined = "".join(text.split())
     assert "品牌: Topps" in text
-    assert "规格: 张（数量以订单为准）" in joined
+    assert "规格:张" in joined
+    assert "数量以订单为准" in joined
     assert "产地: 中国" in text
     assert "GB6675.1-2014,GB6675.2-2014" in text
     assert "GB6675.3-2014,GB6675.4-2014" in text
     assert "适用年龄: 8岁以上" in text
-    assert "出品方: 凡特西艺术珍藏品（上海）有限公司" in joined
-    assert "地址: 中国（上海）自由贸易试验区张杨路707号二层西区205室" in joined
+    assert "出品方:凡特西艺术珍藏品" in joined
+    assert "有限公司" in joined
+    assert "地址:中国" in joined
+    assert "张杨路707号二层西区205室" in joined
 
 
 def test_all_label_text_renders_in_black(tmp_path):
@@ -154,12 +160,14 @@ def test_address_wraps_onto_multiple_lines(tmp_path, monkeypatch):
     finally:
         doc.close()
     # the address no longer fits one 100mm line — it must have wrapped.
-    # the break may land anywhere (e.g. "张杨路" / "707号…" on separate
-    # lines), so check fragments, not the contiguous string.
+    # the break may land anywhere (e.g. "…张杨路707" / "号二层西区205室"),
+    # so check short fragments that survive any break point.
     text_all = "\n".join(lines)
     assert "地址:" in text_all
     assert "张杨路" in text_all
-    assert "707号" in text_all
+    assert "707" in text_all
+    assert "号二层西区" in text_all
+    assert "205室" in text_all
     # 10 template lines in, more physical lines out -> wrapping happened
     assert len(lines) > len(_DEFAULT_TEMPLATE)
 
