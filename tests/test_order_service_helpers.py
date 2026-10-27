@@ -1,9 +1,18 @@
 """Unit tests for pure helpers and status sets in app/services/order.py."""
-from app.models.order import ORDER_STATE_TRANSITIONS, OrderStatus, can_transition
+from unittest.mock import patch
+
+import pytest
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine
+
+from app.models.order import ORDER_STATE_TRANSITIONS, Order, OrderStatus, can_transition
 from app.services.order import (
     DELETABLE_STATUSES,
+    NON_CANCELLABLE_STATUSES,
     REPUBLISHABLE_STATUSES,
+    SHIPMENT_CANCELLABLE_STATUSES,
     UPDATABLE_STATUSES,
+    order_service,
     parse_parallel_card_id,
 )
 
@@ -86,3 +95,67 @@ class TestStateMachineConsistency:
 
     def test_every_status_has_entry(self):
         assert set(ORDER_STATE_TRANSITIONS) == set(OrderStatus)
+
+
+class TestShipmentCancellableStatuses:
+    """TI-71/72: cancellation after 'reviewed' but before 'shipped' must
+    route through QPMN's shipment-cancel API (§3.4), not the order-cancel
+    API (§3.3, only valid before 'reviewed')."""
+
+    def test_shipment_cancellable_statuses(self):
+        assert SHIPMENT_CANCELLABLE_STATUSES == {
+            OrderStatus.PRINTREADY,
+            OrderStatus.PRINTED,
+            OrderStatus.PRODUCED,
+        }
+
+    def test_non_cancellable_statuses_no_longer_include_shipment_range(self):
+        assert NON_CANCELLABLE_STATUSES == {
+            OrderStatus.SHIPPED,
+            OrderStatus.CANCELLED,
+            OrderStatus.RETURNING,
+            OrderStatus.RETURN_COMPLETED,
+        }
+        assert SHIPMENT_CANCELLABLE_STATUSES.isdisjoint(NON_CANCELLABLE_STATUSES)
+
+    def test_shipment_range_can_transition_to_cancelled(self):
+        for status in SHIPMENT_CANCELLABLE_STATUSES:
+            assert can_transition(status, OrderStatus.CANCELLED)
+
+    @staticmethod
+    def _sqlite_session():
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        SQLModel.metadata.create_all(engine)
+        return Session(engine)
+
+    @pytest.mark.parametrize("status", [OrderStatus.PRINTREADY, OrderStatus.PRINTED, OrderStatus.PRODUCED])
+    def test_cancel_order_uses_shipment_cancel_api_in_shipment_range(self, status):
+        session = self._sqlite_session()
+        order = Order(order_id="o1", source_account="a", source_order_id="s1", status=status, store_id="store-1")
+        session.add(order)
+        session.commit()
+
+        with patch.object(order_service, "cancel_qpmn_shipment", return_value={"success": True}) as mock_shipment, \
+             patch.object(order_service, "cancel_qpmn_order") as mock_order, \
+             patch("app.tasks.notifications.notify_order_status_email"):
+            order_service.cancel_order(session, order)
+
+        mock_shipment.assert_called_once_with(order)
+        mock_order.assert_not_called()
+        assert order.status == OrderStatus.CANCELLED
+
+    def test_cancel_order_uses_order_cancel_api_before_reviewed(self):
+        session = self._sqlite_session()
+        order = Order(order_id="o2", source_account="a", source_order_id="s2", status=OrderStatus.RECEIVED, store_id="store-1")
+        session.add(order)
+        session.commit()
+
+        with patch.object(order_service, "cancel_qpmn_order", return_value={"success": True}) as mock_order, \
+             patch.object(order_service, "cancel_qpmn_shipment") as mock_shipment, \
+             patch("app.tasks.notifications.notify_order_status_email"):
+            order_service.cancel_order(session, order)
+
+        mock_order.assert_called_once_with(order)
+        mock_shipment.assert_not_called()
+        assert order.status == OrderStatus.CANCELLED
+
