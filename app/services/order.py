@@ -32,6 +32,7 @@ from app.core.sentry_alerts import ALERTS, capture_integration_alert
 logger = logging.getLogger(__name__)
 
 _CANCEL_ALERTS = ALERTS["cancel"]
+_SHIPMENT_CANCEL_ALERTS = ALERTS["shipment_cancel"]
 _RETURN_ALERTS = ALERTS["return"]
 _SHIPPING_ALERTS = ALERTS["shipping"]
 _CURRENCY_ALERTS = ALERTS["currency"]
@@ -46,6 +47,46 @@ def _capture_cancel_alert(alert_key: str, order_id: Optional[str] = None, **form
         _CANCEL_ALERTS[alert_key], order_id=order_id,
         format_args={"order_id": order_id, **format_args}, component="qpmn_api",
     )
+
+
+def _capture_shipment_cancel_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
+    """Capture a cancel_qpmn_shipment failure to Sentry (synchronous, non-Celery)."""
+    capture_integration_alert(
+        _SHIPMENT_CANCEL_ALERTS[alert_key], order_id=order_id,
+        format_args={"order_id": order_id, **format_args}, component="qpmn_api",
+    )
+
+
+def _build_qpmn_return_payload(return_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate OMS's return request body into QPMN's §3.5 return body.
+
+    ``items`` is intentionally omitted — QPMN treats a missing ``items``
+    as a full-order return, which matches OMS's ``isFullReturn=true``
+    (default) case exactly.
+
+    Raises:
+        ValueError: for ``isFullReturn=false`` (partial return) — translating
+            that case needs each returned item's QPMN order-item id, and we
+            don't yet have a SKU-to-QPMN-item-id mapping to build
+            ``items[].id`` from OMS's SKU-keyed items (see TI-72).
+    """
+    if not return_payload.get("isFullReturn", True):
+        raise ValueError(
+            "Partial return (isFullReturn=false) is not yet supported — "
+            "no SKU-to-QPMN-item-id mapping exists to build items[].id (TI-72)."
+        )
+
+    qpmn_payload: Dict[str, Any] = {}
+    if return_payload.get("reason"):
+        qpmn_payload["reason"] = return_payload["reason"]
+
+    tracking_number = return_payload.get("trackingNumber")
+    if tracking_number:
+        qpmn_payload["returnShipments"] = [{
+            "trackingNumber": tracking_number,
+            "carrierName": return_payload.get("carrierName"),
+        }]
+    return qpmn_payload
 
 
 def _capture_return_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
@@ -83,13 +124,22 @@ UPDATABLE_STATUSES = {
     OrderStatus.ERRORED,
 }
 
-# Statuses that do NOT allow cancellation
-NON_CANCELLABLE_STATUSES = {
+# Statuses where QPMN has passed "reviewed" but not yet reached "shipped" —
+# cancellation must go through QPMN's shipment-cancel API (§3.4,
+# cancel_qpmn_shipment) rather than the order-cancel API (§3.3,
+# cancel_qpmn_order, only valid before "reviewed").
+SHIPMENT_CANCELLABLE_STATUSES = {
     OrderStatus.PRINTREADY,
     OrderStatus.PRINTED,
     OrderStatus.PRODUCED,
+}
+
+# Statuses that do NOT allow cancellation by either QPMN API
+NON_CANCELLABLE_STATUSES = {
     OrderStatus.SHIPPED,
     OrderStatus.CANCELLED,
+    OrderStatus.RETURNING,
+    OrderStatus.RETURN_COMPLETED,
 }
 
 # Statuses that allow deletion via the platform API (soft delete): the order
@@ -564,6 +614,93 @@ class OrderService:
             "data": body.get("data"),
         }
 
+    def cancel_qpmn_shipment(self, order: Order) -> Dict[str, Any]:
+        """
+        Call QPMN's shipment-cancel API (§3.4) to cancel the shipment of an
+        order that has already passed "reviewed" but not yet reached
+        "shipped" — ``cancel_qpmn_order`` (§3.3) only works before "reviewed",
+        so orders in ``SHIPMENT_CANCELLABLE_STATUSES`` must use this instead.
+
+        POST {QPMN_OPEN_API_URL}/orders/{store_order_id}/shipment/cancel
+        Authorization: Basic {store_token}
+
+        Returns the same result shape as ``cancel_qpmn_order``.
+        """
+        if not order.store_order_id:
+            logger.info("[OrderService] Order %s has no store_order_id (never pushed to QPMN), skip shipment-cancel API call", order.order_id)
+            return {"success": True, "status_code": None, "data": None, "skipped": True}
+
+        store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
+        if not store_key:
+            logger.warning("[OrderService] No store_key for order %s, cannot call QPMN shipment-cancel API", order.order_id)
+            _capture_shipment_cancel_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
+            return {"success": False, "status_code": None, "error": "No store_key configured"}
+
+        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/shipment/cancel"
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": _JSON_CONTENT_TYPE,
+        }
+
+        logger.info(
+            "[OrderService] Calling QPMN shipment-cancel API for order %s (store_order_id=%s)",
+            order.order_id,
+            order.store_order_id,
+        )
+
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                response = client.post(api_url, headers=headers)
+        except httpx.TimeoutException:
+            logger.error("[OrderService] QPMN shipment-cancel API timeout for order %s", order.order_id)
+            _capture_shipment_cancel_alert("TIMEOUT", order.order_id)
+            return {"success": False, "status_code": None, "error": "QPMN API timeout"}
+        except Exception as exc:
+            logger.error("[OrderService] QPMN shipment-cancel API request failed for order %s: %s", order.order_id, exc)
+            _capture_shipment_cancel_alert("REQUEST_FAILED", order.order_id, exc=exc)
+            return {"success": False, "status_code": None, "error": str(exc)}
+
+        # Non-200 responses are failures
+        if response.status_code != 200:
+            error_body = None
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            logger.warning(
+                "[OrderService] QPMN shipment-cancel API returned %s for order %s: %s",
+                response.status_code,
+                order.order_id,
+                error_body,
+            )
+            _capture_shipment_cancel_alert("REJECTED_HTTP", order.order_id, status_code=response.status_code, error_body=error_body)
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": error_body,
+            }
+
+        body = response.json()
+        if not body.get("success"):
+            logger.warning(
+                "[OrderService] QPMN shipment-cancel API returned success=false for order %s: %s",
+                order.order_id,
+                body,
+            )
+            _capture_shipment_cancel_alert("REJECTED_SUCCESS_FALSE", order.order_id, body=body)
+            return {
+                "success": False,
+                "status_code": 200,
+                "error": body,
+            }
+
+        logger.info("[OrderService] QPMN shipment-cancel API succeeded for order %s", order.order_id)
+        return {
+            "success": True,
+            "status_code": 200,
+            "data": body.get("data"),
+        }
+
     def cancel_order(
         self,
         session: Session,
@@ -572,7 +709,9 @@ class OrderService:
         """
         Cancel an existing order.
 
-        Calls the QPMN cancel API first. Only when QPMN returns HTTP 200 with
+        Calls the QPMN order-cancel API (§3.3) before "reviewed", or the
+        shipment-cancel API (§3.4, SHIPMENT_CANCELLABLE_STATUSES) once past
+        "reviewed" but before "shipped". Only when QPMN returns HTTP 200 with
         ``success=true`` does the local order status change to CANCELLED.
         All results (request, response, success/failure) are appended to
         ``order.logs``.
@@ -593,8 +732,11 @@ class OrderService:
                 f"Cannot cancel order with status '{order.status.value}'."
             )
 
-        # --- 1. Call QPMN cancel API ---
-        qpmn_result = self.cancel_qpmn_order(order)
+        # --- 1. Call the appropriate QPMN cancel API ---
+        if order.status in SHIPMENT_CANCELLABLE_STATUSES:
+            qpmn_result = self.cancel_qpmn_shipment(order)
+        else:
+            qpmn_result = self.cancel_qpmn_order(order)
 
         if qpmn_result.get("success"):
             # --- QPMN confirmed cancellation ---
@@ -640,11 +782,12 @@ class OrderService:
         """
         Call the QPMN return API to initiate a return on the QPMN side.
 
-        PUT {QPMN_OPEN_API_URL}/orders/{store_order_id}/return
+        POST {QPMN_OPEN_API_URL}/orders/{store_order_id}/returns
         Authorization: Basic {store_token}
 
-        The return request body (reason / isFullReturn / return tracking
-        info) is forwarded as the JSON body.
+        OMS's return request body (reason / isFullReturn / return tracking
+        info) is translated into QPMN's §3.5 body shape — see
+        ``_build_qpmn_return_payload``.
 
         Returns:
             A dict with keys:
@@ -653,13 +796,19 @@ class OrderService:
             - ``data``: Response body data (on success).
             - ``error``: Error message (on failure).
         """
+        try:
+            qpmn_payload = _build_qpmn_return_payload(return_payload or {})
+        except ValueError as exc:
+            logger.warning("[OrderService] Cannot build QPMN return payload for order %s: %s", order.order_id, exc)
+            return {"success": False, "status_code": None, "error": str(exc)}
+
         store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
         if not store_key:
             logger.warning("[OrderService] No store_key for order %s, cannot call QPMN return API", order.order_id)
             _capture_return_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
 
-        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/return"
+        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/returns"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
@@ -673,7 +822,7 @@ class OrderService:
 
         try:
             with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-                response = client.put(api_url, headers=headers, json=return_payload or {})
+                response = client.post(api_url, headers=headers, json=qpmn_payload)
         except httpx.TimeoutException:
             logger.error("[OrderService] QPMN return API timeout for order %s", order.order_id)
             _capture_return_alert("TIMEOUT", order.order_id)

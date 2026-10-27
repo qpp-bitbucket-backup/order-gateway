@@ -83,6 +83,33 @@ ALERTS: Dict[str, Dict[str, Dict[str, str]]] = {
             "message": "cancel_qpmn_order: QPMN returned success=false for order {order_id}: {body}",
         },
     },
+    "shipment_cancel": {
+        "NO_STORE_KEY": {
+            "level": SENTRY_LEVEL_WARNING,
+            "failure_type": "qpmn_shipment_cancel_no_store_key",
+            "message": "cancel_qpmn_shipment: no store_key configured for store_id={store_id} (order {order_id})",
+        },
+        "TIMEOUT": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_shipment_cancel_timeout",
+            "message": "cancel_qpmn_shipment: QPMN API timeout for order {order_id}",
+        },
+        "REQUEST_FAILED": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_shipment_cancel_request_failed",
+            "message": "cancel_qpmn_shipment: request failed for order {order_id}: {exc}",
+        },
+        "REJECTED_HTTP": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_shipment_cancel_rejected",
+            "message": "cancel_qpmn_shipment: QPMN returned HTTP {status_code} for order {order_id}: {error_body}",
+        },
+        "REJECTED_SUCCESS_FALSE": {
+            "level": SENTRY_LEVEL_ERROR,
+            "failure_type": "qpmn_shipment_cancel_rejected",
+            "message": "cancel_qpmn_shipment: QPMN returned success=false for order {order_id}: {body}",
+        },
+    },
 "return": {
         "NO_STORE_KEY": {
             "level": SENTRY_LEVEL_WARNING,
