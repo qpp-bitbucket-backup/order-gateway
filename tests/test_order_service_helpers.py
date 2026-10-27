@@ -12,6 +12,7 @@ from app.services.order import (
     REPUBLISHABLE_STATUSES,
     SHIPMENT_CANCELLABLE_STATUSES,
     UPDATABLE_STATUSES,
+    _build_qpmn_return_payload,
     order_service,
     parse_parallel_card_id,
 )
@@ -158,4 +159,33 @@ class TestShipmentCancellableStatuses:
         mock_order.assert_called_once_with(order)
         mock_shipment.assert_not_called()
         assert order.status == OrderStatus.CANCELLED
+
+
+class TestBuildQpmnReturnPayload:
+    """TI-71/72: translate OMS's return request shape into QPMN §3.5's body."""
+
+    def test_full_return_omits_items(self):
+        payload = _build_qpmn_return_payload({
+            "reason": "damaged", "isFullReturn": True,
+            "trackingNumber": "1Z1", "carrierName": "FedEx",
+        })
+        assert "items" not in payload
+        assert payload["reason"] == "damaged"
+        assert payload["returnShipments"] == [{"trackingNumber": "1Z1", "carrierName": "FedEx"}]
+
+    def test_full_return_without_tracking_omits_return_shipments(self):
+        payload = _build_qpmn_return_payload({"reason": "damaged", "isFullReturn": True})
+        assert "returnShipments" not in payload
+        assert payload == {"reason": "damaged"}
+
+    def test_defaults_to_full_return_when_unspecified(self):
+        # isFullReturn defaults to True on the OMS side too.
+        assert _build_qpmn_return_payload({"reason": "damaged"}) == {"reason": "damaged"}
+
+    def test_partial_return_rejected(self):
+        with pytest.raises(ValueError, match="Partial return"):
+            _build_qpmn_return_payload({
+                "reason": "damaged", "isFullReturn": False,
+                "items": [{"sku": "PC-123", "quantity": 1}],
+            })
 

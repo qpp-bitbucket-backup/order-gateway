@@ -57,6 +57,36 @@ def _capture_shipment_cancel_alert(alert_key: str, order_id: Optional[str] = Non
     )
 
 
+def _build_qpmn_return_payload(return_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate OMS's return request body into QPMN's §3.5 return body.
+
+    ``items`` is intentionally omitted — QPMN treats a missing ``items``
+    as a full-order return, which matches OMS's ``isFullReturn=true``
+    (default) case exactly.
+
+    Raises:
+        ValueError: for ``isFullReturn=false`` (partial return) — translating
+            that case needs each returned item's QPMN order-item id, and we
+            don't yet have a SKU-to-QPMN-item-id mapping to build
+            ``items[].id`` from OMS's SKU-keyed items (see TI-72).
+    """
+    if not return_payload.get("isFullReturn", True):
+        raise ValueError(
+            "Partial return (isFullReturn=false) is not yet supported — "
+            "no SKU-to-QPMN-item-id mapping exists to build items[].id (TI-72)."
+        )
+
+    qpmn_payload: Dict[str, Any] = {}
+    if return_payload.get("reason"):
+        qpmn_payload["reason"] = return_payload["reason"]
+
+    tracking_number = return_payload.get("trackingNumber")
+    if tracking_number:
+        qpmn_payload["returnShipments"] = [{
+            "trackingNumber": tracking_number,
+            "carrierName": return_payload.get("carrierName"),
+        }]
+    return qpmn_payload
 
 
 def _capture_return_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
@@ -752,11 +782,12 @@ class OrderService:
         """
         Call the QPMN return API to initiate a return on the QPMN side.
 
-        PUT {QPMN_OPEN_API_URL}/orders/{store_order_id}/return
+        POST {QPMN_OPEN_API_URL}/orders/{store_order_id}/returns
         Authorization: Basic {store_token}
 
-        The return request body (reason / isFullReturn / return tracking
-        info) is forwarded as the JSON body.
+        OMS's return request body (reason / isFullReturn / return tracking
+        info) is translated into QPMN's §3.5 body shape — see
+        ``_build_qpmn_return_payload``.
 
         Returns:
             A dict with keys:
@@ -765,13 +796,19 @@ class OrderService:
             - ``data``: Response body data (on success).
             - ``error``: Error message (on failure).
         """
+        try:
+            qpmn_payload = _build_qpmn_return_payload(return_payload or {})
+        except ValueError as exc:
+            logger.warning("[OrderService] Cannot build QPMN return payload for order %s: %s", order.order_id, exc)
+            return {"success": False, "status_code": None, "error": str(exc)}
+
         store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
         if not store_key:
             logger.warning("[OrderService] No store_key for order %s, cannot call QPMN return API", order.order_id)
             _capture_return_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
 
-        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/return"
+        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/returns"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
@@ -785,7 +822,7 @@ class OrderService:
 
         try:
             with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-                response = client.put(api_url, headers=headers, json=return_payload or {})
+                response = client.post(api_url, headers=headers, json=qpmn_payload)
         except httpx.TimeoutException:
             logger.error("[OrderService] QPMN return API timeout for order %s", order.order_id)
             _capture_return_alert("TIMEOUT", order.order_id)
