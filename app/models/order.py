@@ -145,6 +145,7 @@ STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
     OrderStatus.SHIPPED: "package_shipped",
     OrderStatus.CANCELLED: "order_item_canceled",
     OrderStatus.ERRORED: "order_item_failed",
+    OrderStatus.RETURN_COMPLETED: "order_return_completed",
 }
 
 # Reverse lookup: external event status code -> internal status

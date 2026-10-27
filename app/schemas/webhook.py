@@ -53,6 +53,38 @@ class QpmnPackageShippedEvent(QpmnWebhookShipment):
     """Body for ``package_shipped`` events (§5.4.2) — identical shape to ``QpmnWebhookShipment``."""
 
 
+class QpmnReturnItem(BaseModel):
+    """Per-item quantity within a return (QPMN webhook spec §5.4.3/§6.7)."""
+
+    id: str = Field(..., description="Store retail order item id")
+    qty: int = Field(..., description="Quantity returned")
+
+
+class QpmnReturnShipment(BaseModel):
+    """Return shipment logistics info (QPMN webhook spec §5.4.3/§6.7)."""
+
+    trackingNumber: Optional[str] = Field(None, description="Tracking number")
+    carrierCode: Optional[str] = Field(None, description="Carrier code")
+    carrierName: Optional[str] = Field(None, description="Carrier name")
+
+
+class QpmnReturnOrder(BaseModel):
+    """Return order detail (QPMN webhook spec §5.4.3/§6.7)."""
+
+    id: int = Field(..., description="Return order id")
+    returnType: Optional[str] = Field(None, description="Return type: REJECTION, QUALITY_ISSUE")
+    reason: Optional[str] = Field(None, description="Return reason")
+    items: Optional[List[QpmnReturnItem]] = Field(None, description="Returned item details")
+    returnShipments: Optional[List[QpmnReturnShipment]] = Field(None, description="Return shipment logistics")
+
+
+class QpmnReturnCompletedEvent(BaseModel):
+    """Body for ``order_return_completed`` events (§5.4.3/§6.7)."""
+
+    orderId: int = Field(..., description="Store retail order id")
+    returnOrder: QpmnReturnOrder = Field(..., description="Return order detail")
+
+
 class WebhookResponse(BaseModel):
     """Standard webhook acknowledgement response.
 
