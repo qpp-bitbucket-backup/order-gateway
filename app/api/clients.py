@@ -786,7 +786,7 @@ def platform_create_webhook(
     """Register a QPMN webhook for this client's store (§4.1, JWT admin only)."""
     client = _get_webhook_client_or_404(client_id, session)
     try:
-        data = qpmn_webhook.create_webhook(client.store_key, request.name, request.url, request.eventTypes, request.enabled)
+        data = qpmn_webhook.create_webhook(client.store_key, request.name, request.url, request.eventTypes, request.enabled, store_id=client.store_id)
     except qpmn_webhook.QpmnApiError as e:
         raise _qpmn_error_to_http(e)
     return WebhookRegistrationResponse(webhook=WebhookRegistration(**data))
@@ -805,7 +805,7 @@ def platform_list_webhooks(
     """List QPMN webhooks registered for this client's store (§4.2, JWT admin only)."""
     client = _get_webhook_client_or_404(client_id, session)
     try:
-        data = qpmn_webhook.list_webhooks(client.store_key, page=page, size=pagesize, enabled=enabled, name=name)
+        data = qpmn_webhook.list_webhooks(client.store_key, page=page, size=pagesize, enabled=enabled, name=name, store_id=client.store_id)
     except qpmn_webhook.QpmnApiError as e:
         raise _qpmn_error_to_http(e)
     content = data.get("content", [])
@@ -827,7 +827,7 @@ def platform_get_webhook(
     """Get a single QPMN webhook by id for this client's store (§4.3, JWT admin only)."""
     client = _get_webhook_client_or_404(client_id, session)
     try:
-        data = qpmn_webhook.get_webhook(client.store_key, webhook_id)
+        data = qpmn_webhook.get_webhook(client.store_key, webhook_id, store_id=client.store_id)
     except qpmn_webhook.QpmnApiError as e:
         raise _qpmn_error_to_http(e)
     return WebhookRegistrationResponse(webhook=WebhookRegistration(**data))
@@ -844,7 +844,7 @@ def platform_update_webhook(
     """Update a QPMN webhook for this client's store (§4.4, JWT admin only)."""
     client = _get_webhook_client_or_404(client_id, session)
     try:
-        data = qpmn_webhook.update_webhook(client.store_key, webhook_id, request.name, request.url, request.eventTypes, request.enabled)
+        data = qpmn_webhook.update_webhook(client.store_key, webhook_id, request.name, request.url, request.eventTypes, request.enabled, store_id=client.store_id)
     except qpmn_webhook.QpmnApiError as e:
         raise _qpmn_error_to_http(e)
     return WebhookRegistrationResponse(webhook=WebhookRegistration(**data))
@@ -860,7 +860,7 @@ def platform_delete_webhook(
     """Delete a QPMN webhook for this client's store (§4.5, JWT admin only)."""
     client = _get_webhook_client_or_404(client_id, session)
     try:
-        data = qpmn_webhook.delete_webhook(client.store_key, webhook_id)
+        data = qpmn_webhook.delete_webhook(client.store_key, webhook_id, store_id=client.store_id)
     except qpmn_webhook.QpmnApiError as e:
         raise _qpmn_error_to_http(e)
     return WebhookRegistrationResponse(webhook=WebhookRegistration(**data))

@@ -103,6 +103,17 @@ class Settings(BaseSettings):
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
     QPMN_ORDER_API_VERSION: str = "open"   # Order creation API version: "legacy" or "open"
 
+    # QPMN release-platform routing (stage testing only): orders whose
+    # sourceOrderId contains QPMN_RELEASE_ORDER_MARKER are created under the
+    # simulated-production client (QPMN_RELEASE_STORE_ID in the clients
+    # table — its store_key holds the release credential) and all QPMN
+    # calls for that store use the release URLs below. Leave any value
+    # empty to disable the feature entirely (production must not set it).
+    QPMN_RELEASE_ORDER_MARKER: str = ""    # e.g. "-REL"
+    QPMN_RELEASE_STORE_ID: str = ""        # store_id of the simulated-production client
+    QPMN_RELEASE_API_URL: str = ""         # release platform base API URL
+    QPMN_RELEASE_OPEN_API_URL: str = ""    # release platform open API URL
+
     # PDF Processing Configuration
     MODIFY_PDF_RESOLUTION: bool = False
     PDF_TARGET_WIDTH: float = 595.0  # A4 width in points (8.27 inches)

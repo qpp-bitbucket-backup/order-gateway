@@ -1,7 +1,8 @@
 """Client service for managing client-related operations."""
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from sqlmodel import Session, select
+from app.core.config import settings
 from app.core.database import engine
 from app.models.client import Client
 
@@ -99,6 +100,87 @@ class ClientService:
                 select(Client).where(Client.store_id == store_id)
             ).first()
             return bool(client and client.enable_brand_label)
+
+    @staticmethod
+    def _release_routing_configured() -> bool:
+        """True when the release-routing feature is fully configured
+        (marker + target store + both release URLs set)."""
+        return bool(
+            settings.QPMN_RELEASE_ORDER_MARKER
+            and settings.QPMN_RELEASE_STORE_ID
+            and settings.QPMN_RELEASE_API_URL
+            and settings.QPMN_RELEASE_OPEN_API_URL
+        )
+
+    def get_qpmn_urls(self, store_id: Optional[str]) -> Tuple[str, str]:
+        """
+        Resolve the QPMN base URLs for a store.
+
+        The simulated-production client (store_id ==
+        QPMN_RELEASE_STORE_ID) talks to the release platform; every other
+        store uses the global stage URLs.
+
+        Returns:
+            (api_url, open_api_url)
+        """
+        if (
+            store_id
+            and self._release_routing_configured()
+            and store_id == settings.QPMN_RELEASE_STORE_ID
+        ):
+            return settings.QPMN_RELEASE_API_URL, settings.QPMN_RELEASE_OPEN_API_URL
+        return settings.QPMN_API_URL, settings.QPMN_OPEN_API_URL
+
+    def resolve_release_routing(self, source_order_id: Optional[str]) -> Optional[str]:
+        """
+        Order-level release routing (stage testing only).
+
+        When ``sourceOrderId`` contains the configured marker, the order is
+        created under the simulated-production client so the whole flow
+        (uploads, push, SKUs, cancel/return, currency/shipping lookups)
+        runs against the QPMN release platform.
+
+        Routing activates only when ALL four env vars are set; with any of
+        them unset the feature is considered disabled and the order is
+        created under the authenticated client's store as usual (a warning
+        is logged when the marker matched, so partial configuration is
+        visible).
+
+        Returns:
+            The release store_id when routing applies, None otherwise
+            (including the disabled/partial-config fallback).
+
+        Raises:
+            ValueError: the marker matched and the feature is fully
+                configured, but the simulated-production client is missing,
+                inactive or has no store_key — callers must reject the order
+                (400) rather than silently falling back to stage.
+        """
+        marker = settings.QPMN_RELEASE_ORDER_MARKER
+        if not marker or not source_order_id or marker not in source_order_id:
+            return None
+        if not self._release_routing_configured():
+            logger.warning(
+                "[ClientService] sourceOrderId '%s' carries the release marker "
+                "'%s' but release routing is not fully configured (marker / "
+                "store / URLs env vars); falling back to the client's own store",
+                source_order_id,
+                marker,
+            )
+            return None
+        target_store = settings.QPMN_RELEASE_STORE_ID
+        with Session(engine) as session:
+            client = session.exec(
+                select(Client).where(
+                    Client.store_id == target_store, Client.is_active == True
+                )
+            ).first()
+        if not client or not client.store_key:
+            raise ValueError(
+                f"Release routing target client '{target_store}' is missing, "
+                "inactive or has no store_key configured"
+            )
+        return target_store
 
 
 # Create singleton instance

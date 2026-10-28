@@ -18,7 +18,7 @@ from app.models.address import Address, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from app.services.file import file_service
-from app.services.sku_matching import find_sku_by_ref
+from app.services.sku_matching import find_sku_by_ref, design_file_key
 from app.services.watermark import watermark_to_png, WATERMARK_TEXT
 from app.services.client import client_service
 from app.services.oms import oms_service, OMSRetryableError
@@ -345,14 +345,18 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                                         _mark_order_failed(order_id, f"Cannot watermark design files: {wm_err}")
                                         logger.error(f"File: [{page_file}] watermark failed: {wm_err}", exc_info=True)
                                         return True
-                                upload_result = file_service.upload_to_qpmn(page_file, store_key)
+                                upload_result = file_service.upload_to_qpmn(page_file, store_key, store_id=store_id)
                                 if not upload_result:
                                     _mark_order_failed(order_id,"Cannot upload design files")
                                     logger.error(f"File: [{page_file}] upload failed")
                                     return True
                                 item_files.append(upload_result)
-                            uploaded_files.setdefault(f"{sku}-{file_index}", []).extend(item_files)
-                            # uploaded_files[f"{sku}-{file_index}"] += item_files
+                            # order.files key: items[].sourceItemId when the
+                            # source platform provides one, else the
+                            # historical {resolved_sku}-{item_index}.
+                            uploaded_files.setdefault(
+                                design_file_key(product, sku, file_index), []
+                            ).extend(item_files)
                             
                         except Exception as file_err:
                             logger.error(
@@ -431,7 +435,7 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
       - one packing label PDF per line item (Topps product label);
       - one A4 packing slip (packing list) per order.
 
-    Field conventions match the QPMN line-item metaData: SKU prefers the
+    Field conventions match the QPMN line-item metadata: SKU prefers the
     item description and falls back to the item sku; productName comes from
     the item's extraData (empty when missing). Documents are auxiliary: a
     missing store_key, a generation failure or an upload failure is logged
@@ -490,7 +494,7 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
         ):
             continue
         generated += 1
-        upload_result = file_service.upload_to_qpmn(dest_path, store_key)
+        upload_result = file_service.upload_to_qpmn(dest_path, store_key, store_id=order.store_id)
         if not upload_result:
             logger.error(
                 "[Celery] Packing label upload failed for order %s item %s",
@@ -538,7 +542,7 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
                 store_id=order.store_id,
             ) if sku_ref else None
             if sku_obj:
-                item_files = files_dict.get(f"{sku_obj.sku_id}-{item_index}") or []
+                item_files = files_dict.get(design_file_key(item, sku_obj.sku_id, item_index)) or []
                 file_url = item_files[0].get("url") if item_files else None
                 if file_url:
                     ok, result = file_service.download_file(file_url, docs_dir)
@@ -565,7 +569,7 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
             item_rows=slip_rows,
             total_qty=total_qty,
         ):
-            slip_upload = file_service.upload_to_qpmn(slip_path, store_key)
+            slip_upload = file_service.upload_to_qpmn(slip_path, store_key, store_id=order.store_id)
             if slip_upload:
                 doc_files[PACKING_SLIP_FILE_KEY] = [slip_upload]
                 _append_order_log(
@@ -881,12 +885,15 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             session.add(order)
             session.commit()
 
-            # Select API URL based on configured API version
+            # Select API URL based on configured API version. The base URLs
+            # follow the order's store — simulated-production stores push to
+            # the QPMN release platform (see client_service.get_qpmn_urls).
             use_open_api = settings.QPMN_ORDER_API_VERSION == "open"
+            api_base, open_api_base = client_service.get_qpmn_urls(order.store_id)
             if use_open_api:
-                api_url = f"{settings.QPMN_OPEN_API_URL.rstrip('/')}/orders"
+                api_url = f"{open_api_base.rstrip('/')}/orders"
             else:
-                api_url = f"{settings.QPMN_API_URL}/store/orders"
+                api_url = f"{api_base}/store/orders"
 
             store_key = client_service.get_store_key_by_id(order.store_id)
             headers = {"Authorization": f"Basic {store_key}"}

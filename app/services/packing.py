@@ -8,7 +8,7 @@ and built during order validation (``tasks.orders.validate_order``):
    marketing body plus two variable values from the line item —
    产品货号 (SKU: item description, falling back to the item sku) and
    品名 (productName: item extraData productName, empty when missing) —
-   matching the QPMN line-item ``metaData`` conventions.
+   matching the QPMN line-item ``metadata`` conventions.
 
 2. Packing slip — one A4 packing list per order (PACKING LIST header,
    date / order number / shipping method, ship-from + ship-to address

@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from app.core.config import settings
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
+from app.services.client import client_service
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,12 @@ class QpmnApiError(Exception):
         super().__init__(message)
 
 
-def _request(method: str, path: str, store_key: str, **kwargs) -> Dict[str, Any]:
-    url = f"{settings.QPMN_OPEN_API_URL.rstrip('/')}/{path.lstrip('/')}"
+def _request(method: str, path: str, store_key: str, store_id: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    # Base URL follows the client's store: the simulated-production client
+    # (release routing) talks to QPMN_RELEASE_OPEN_API_URL, others to the
+    # global stage URL.
+    _, open_api_base = client_service.get_qpmn_urls(store_id)
+    url = f"{open_api_base.rstrip('/')}/{path.lstrip('/')}"
     headers = {"Authorization": f"Basic {store_key}"}
 
     try:
@@ -78,9 +82,9 @@ def _request(method: str, path: str, store_key: str, **kwargs) -> Dict[str, Any]
     return body.get("data") or {}
 
 
-def create_webhook(store_key: str, name: str, url: str, event_types: List[str], enabled: bool) -> Dict[str, Any]:
+def create_webhook(store_key: str, name: str, url: str, event_types: List[str], enabled: bool, store_id: Optional[str] = None) -> Dict[str, Any]:
     """§4.1 新增 Webhook."""
-    return _request("POST", "webhook", store_key, json={
+    return _request("POST", "webhook", store_key, store_id=store_id, json={
         "name": name,
         "url": url,
         "eventTypes": event_types,
@@ -95,6 +99,7 @@ def list_webhooks(
     enabled: Optional[bool] = None,
     name: Optional[str] = None,
     event_types: Optional[List[str]] = None,
+    store_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """§4.2 查询店铺所有 Webhook."""
     params: Dict[str, Any] = {"page": page, "size": size}
@@ -104,17 +109,17 @@ def list_webhooks(
         params["name"] = name
     if event_types:
         params["eventTypes"] = event_types
-    return _request("GET", "webhook", store_key, params=params)
+    return _request("GET", "webhook", store_key, store_id=store_id, params=params)
 
 
-def get_webhook(store_key: str, webhook_id: int) -> Dict[str, Any]:
+def get_webhook(store_key: str, webhook_id: int, store_id: Optional[str] = None) -> Dict[str, Any]:
     """§4.3 查询店铺指定 Webhook."""
-    return _request("GET", f"webhook/{webhook_id}", store_key)
+    return _request("GET", f"webhook/{webhook_id}", store_key, store_id=store_id)
 
 
-def update_webhook(store_key: str, webhook_id: int, name: str, url: str, event_types: List[str], enabled: bool) -> Dict[str, Any]:
+def update_webhook(store_key: str, webhook_id: int, name: str, url: str, event_types: List[str], enabled: bool, store_id: Optional[str] = None) -> Dict[str, Any]:
     """§4.4 更新 Webhook."""
-    return _request("PUT", f"webhook/{webhook_id}", store_key, json={
+    return _request("PUT", f"webhook/{webhook_id}", store_key, store_id=store_id, json={
         "name": name,
         "url": url,
         "eventTypes": event_types,
@@ -122,6 +127,6 @@ def update_webhook(store_key: str, webhook_id: int, name: str, url: str, event_t
     })
 
 
-def delete_webhook(store_key: str, webhook_id: int) -> Dict[str, Any]:
+def delete_webhook(store_key: str, webhook_id: int, store_id: Optional[str] = None) -> Dict[str, Any]:
     """§4.5 删除 Webhook."""
-    return _request("DELETE", f"webhook/{webhook_id}", store_key)
+    return _request("DELETE", f"webhook/{webhook_id}", store_key, store_id=store_id)

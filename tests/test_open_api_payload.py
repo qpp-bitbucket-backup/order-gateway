@@ -100,7 +100,7 @@ def test_item_meta_data_prefers_description_and_extra_data_product_name():
         "properties": {}, "customize_project": {},
     }]
     payload = _build(contexts=contexts)
-    assert payload["items"][0]["metaData"] == {
+    assert payload["items"][0]["metadata"] == {
         "sku": "MALL-SKU-1",
         "productName": "Greeting Card",
     }
@@ -114,7 +114,7 @@ def test_item_meta_data_falls_back_to_sku_and_empty_product_name():
         "properties": {}, "customize_project": {},
     }]
     payload = _build(contexts=contexts)
-    assert payload["items"][0]["metaData"] == {
+    assert payload["items"][0]["metadata"] == {
         "sku": "PC-123",
         "productName": "",
     }

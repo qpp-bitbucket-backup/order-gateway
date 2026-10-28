@@ -135,7 +135,8 @@ def fetch_products_from_qpmn(store_id: str, store_key: str, page: int =1) -> Lis
     # Use store_key for authentication if provided, otherwise use global API key
     api_key = store_key
     
-    api_url = f"{settings.QPMN_API_URL}/stores/{store_id}/products"
+    api_base, _ = client_service.get_qpmn_urls(store_id)
+    api_url = f"{api_base}/stores/{store_id}/products"
     logger.info(f"Fetching products from QPMN API: {api_url}")
     
     try:
@@ -319,7 +320,9 @@ def sync_products_to_db(
     }
 
 
-def fetch_product_design_data_from_sample(product_id: str, store_key: str) -> Optional[Dict[str, Any]]:
+def fetch_product_design_data_from_sample(
+    product_id: str, store_key: str, store_id: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """
     Fetch the productDesignData from the QPMN order sample data API.
 
@@ -328,14 +331,17 @@ def fetch_product_design_data_from_sample(product_id: str, store_key: str) -> Op
     Args:
         product_id: QPMN product ID
         store_key: Store key for API authentication (from clients table)
+        store_id: Store the product belongs to — selects the platform
+            (simulated-production stores query the release API)
 
     Returns:
         The productDesignData dict from the first sample item carrying one,
         or None on any failure (errors are logged, never raised, so the
         product sync is not affected).
     """
+    api_base, _ = client_service.get_qpmn_urls(store_id)
     api_url = (
-        f"{settings.QPMN_API_URL.rstrip('/')}/v2/store/products/{product_id}/order/sampleData"
+        f"{api_base.rstrip('/')}/v2/store/products/{product_id}/order/sampleData"
     )
     try:
         headers = {
@@ -373,7 +379,7 @@ def _apply_product_design_data_from_sample(
         store_key = client_service.get_store_key_by_id(store_id)
         if not store_key:
             return
-        product_design_data = fetch_product_design_data_from_sample(product_id, store_key)
+        product_design_data = fetch_product_design_data_from_sample(product_id, store_key, store_id=store_id)
         if product_design_data:
             sku.product_design_data = product_design_data
             logger.debug(f"Stored productDesignData for SKU: {sku.code}")
@@ -383,7 +389,9 @@ def _apply_product_design_data_from_sample(
         )
 
 
-def fetch_product_retail_price(product_id: str, store_key: str) -> Optional[float]:
+def fetch_product_retail_price(
+    product_id: str, store_key: str, store_id: Optional[str] = None
+) -> Optional[float]:
     """
     Fetch the product's retail price from the QPMN resale price config API.
 
@@ -399,13 +407,16 @@ def fetch_product_retail_price(product_id: str, store_key: str) -> Optional[floa
     Args:
         product_id: QPMN product ID
         store_key: Store key for API authentication (from clients table)
+        store_id: Store the product belongs to — selects the platform
+            (simulated-production stores query the release API)
 
     Returns:
         The retail price as float, or None on any failure (errors are logged,
         never raised, so the product sync is not affected).
     """
+    api_base, _ = client_service.get_qpmn_urls(store_id)
     api_url = (
-        f"{settings.QPMN_API_URL.rstrip('/')}/v2/storeProduct/{product_id}/resalePriceConfigs"
+        f"{api_base.rstrip('/')}/v2/storeProduct/{product_id}/resalePriceConfigs"
     )
     try:
         headers = {
@@ -455,7 +466,7 @@ def _apply_retail_price(
         store_key = client_service.get_store_key_by_id(store_id)
         if not store_key:
             return
-        retail_price = fetch_product_retail_price(product_id, store_key)
+        retail_price = fetch_product_retail_price(product_id, store_key, store_id=store_id)
         if retail_price is not None:
             sku.unit_price = retail_price
             logger.debug(f"Stored retail price {retail_price} for SKU: {sku.code}")
@@ -591,9 +602,10 @@ def sync_skus_from_qpmn(store_id: str = None) -> Dict[str, Any]:
         if store_id:
             params["store_id"] = store_id
         
+        api_base, _ = client_service.get_qpmn_urls(store_id)
         with httpx.Client(timeout=30.0) as client:
             response = client.get(
-                f"{settings.QPMN_API_URL}/skus",
+                f"{api_base}/skus",
                 headers=headers,
                 params=params,
             )
