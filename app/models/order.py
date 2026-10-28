@@ -69,21 +69,25 @@ ORDER_STATE_TRANSITIONS: Dict[OrderStatus, List[OrderStatus]] = {
         OrderStatus.FAILED,       # 處理失敗
         OrderStatus.ERRORED       # 處理過程異常
     ],
-    # 列印就緒：開始列印， 已經Push 到QPMN 不能進行取消
+    # 列印就緒：已經 Push 到 QPMN，不能經「訂單取消」API 取消，但可經「發貨取消」
+    # API（QPMN §3.4）取消，直到 SHIPPED 為止
     OrderStatus.PRINTREADY: [
         OrderStatus.PRINTED,      # 列印完成
+        OrderStatus.CANCELLED,    # 經 QPMN 發貨取消 API 取消
         OrderStatus.FAILED,       # 列印失敗
         OrderStatus.ERRORED       # 列印過程異常
     ],
-    # 已列印（單一組件完成）：等待其餘組件一併列印完成， 不能進行取消
+    # 已列印（單一組件完成）：等待其餘組件一併列印完成，可經「發貨取消」API 取消
     OrderStatus.PRINTED: [
         OrderStatus.PRODUCED,     # 全部訂單項目已完成生產
+        OrderStatus.CANCELLED,    # 經 QPMN 發貨取消 API 取消
         OrderStatus.FAILED,       # 生產過程失敗
         OrderStatus.ERRORED       # 生產過程異常
     ],
-    # 已完成生產：全部訂單項目均已列印完成，準備出貨， 不能進行取消
+    # 已完成生產：全部訂單項目均已列印完成，準備出貨，可經「發貨取消」API 取消
     OrderStatus.PRODUCED: [
         OrderStatus.SHIPPED,      # 已出貨（終端狀態）
+        OrderStatus.CANCELLED,    # 經 QPMN 發貨取消 API 取消
         OrderStatus.FAILED,       # 出貨準備失敗
         OrderStatus.ERRORED       # 出貨過程異常
     ],
@@ -141,6 +145,7 @@ STATUS_EVENT_MAP: Dict[OrderStatus, str] = {
     OrderStatus.SHIPPED: "package_shipped",
     OrderStatus.CANCELLED: "order_item_canceled",
     OrderStatus.ERRORED: "order_item_failed",
+    OrderStatus.RETURN_COMPLETED: "order_return_completed",
 }
 
 # Reverse lookup: external event status code -> internal status
