@@ -43,6 +43,7 @@ from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection
 from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, DELETABLE_STATUSES, REPUBLISHABLE_STATUSES, parse_parallel_card_id
+from app.services.client import client_service
 from app.services.order_notifications import enqueue_status_change_email, record_status_change
 from app.services.sku_matching import find_sku_by_ref
 from app.services.oss import oss_service
@@ -278,6 +279,18 @@ def validate_order(
     Returns validation result without persisting the order.
     """
     _log_request("POST /order/validate", request.model_dump())
+
+    # Release-platform routing (stage testing): sourceOrderId carrying the
+    # configured marker validates against the simulated-production client's
+    # SKUs and duplicate namespace.
+    try:
+        release_store_id = client_service.resolve_release_routing(
+            request.orderData.sourceOrderId
+        )
+    except ValueError as routing_err:
+        raise HTTPException(status_code=400, detail=str(routing_err))
+    if release_store_id:
+        store_id = release_store_id
 
     def _error(loc: list, msg: str, error_type: str, input_value=None) -> dict:
         """Build one error object matching FastAPI's standard validation error shape."""
@@ -532,6 +545,27 @@ def submit_order(
     and an active previous version is rejected ("still being processed").
     """
     _log_request(_POST_ORDER_ENDPOINT, request.model_dump())
+    # Release-platform routing (stage testing): sourceOrderId carrying the
+    # configured marker is created under the simulated-production client —
+    # uploads, SKU matching, push and all follow-up QPMN calls then run
+    # against the release platform (see client_service.get_qpmn_urls).
+    try:
+        release_store_id = client_service.resolve_release_routing(
+            request.orderData.sourceOrderId
+        )
+    except ValueError as routing_err:
+        error_resp = OrderCreationErrorResponse(
+            error={
+                "ofError": True,
+                "statusCode": 400,
+                "code": 400,
+                "message": str(routing_err),
+            }
+        )
+        _log_response(_POST_ORDER_ENDPOINT, error_resp.model_dump())
+        return JSONResponse(status_code=400, content=error_resp.model_dump())
+    if release_store_id:
+        store_id = release_store_id
     try:
         # Check for duplicate (idempotency)
         existing_order = order_service.check_duplicate(

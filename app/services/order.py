@@ -18,7 +18,7 @@ from app.models.order import Order, OrderStatus, OrderType
 from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
 from app.services.file import file_service
-from app.services.sku_matching import find_sku_by_ref
+from app.services.sku_matching import find_sku_by_ref, design_file_key
 from app.services.client import client_service
 from app.services.address_mapping import get_state_code, to_iso_country_code
 from app.services.order_notifications import (
@@ -550,7 +550,8 @@ class OrderService:
             _capture_cancel_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
 
-        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/cancel"
+        _, open_api_base = client_service.get_qpmn_urls(order.store_id)
+        api_url = f"{open_api_base}/orders/{order.store_order_id}/cancel"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
@@ -807,8 +808,8 @@ class OrderService:
             logger.warning("[OrderService] No store_key for order %s, cannot call QPMN return API", order.order_id)
             _capture_return_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
-
-        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/returns"
+        _, open_api_base = client_service.get_qpmn_urls(order.store_id)
+        api_url = f"{open_api_base}/orders/{order.store_order_id}/returns"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
@@ -1097,8 +1098,9 @@ class OrderService:
             logger.warning("[OrderService] No store_key for order %s", order.order_id)
             return {"success": False, "error": "No store_key configured"}
 
+        _, open_api_base = client_service.get_qpmn_urls(order.store_id)
         api_url = (
-            f"{settings.QPMN_OPEN_API_URL}/orders"
+            f"{open_api_base}/orders"
             f"/{order.store_order_id}/deliveryAddress"
         )
         headers = {
@@ -1248,10 +1250,11 @@ class OrderService:
             # for them.
             designs = customize_project.get("designs", [])
             
-            # order.files keys always use the resolved internal sku_id (the
-            # publish task resolves source_sku before writing) so they match
-            # the QPMN payload ids
-            files = files_dict.get(f"{sku_id}-{item_index}", [])
+            # order.files key: items[].sourceItemId when the source platform
+            # provides one, else the resolved internal sku_id composite (the
+            # publish task resolves source_sku before writing) — both sides
+            # derive the key through the same helper.
+            files = files_dict.get(design_file_key(item, sku_id, item_index), [])
 
             # Inject uploaded file URLs into pageContentDesigns images (legacy structure)
             for index, design in enumerate(designs):
@@ -1638,7 +1641,8 @@ class OrderService:
                 _capture_shipping_alert("NO_STORE_KEY", store_id=store_id)
                 return "Standard"
 
-            api_url = f"{settings.QPMN_API_URL}/store/{store_id}/default/shippingMethod"
+            api_base, _ = client_service.get_qpmn_urls(store_id)
+            api_url = f"{api_base}/store/{store_id}/default/shippingMethod"
             headers = {
                 "Authorization": f"Basic {store_key}",
                 "Content-Type": _JSON_CONTENT_TYPE,
@@ -1683,7 +1687,8 @@ class OrderService:
             (True, "") when the store exists and the key authorizes,
             otherwise (False, human-readable reason).
         """
-        api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
+        api_base, _ = client_service.get_qpmn_urls(store_id)
+        api_url = f"{api_base}/partner/stores/{store_id}"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
@@ -1741,7 +1746,8 @@ class OrderService:
                 _capture_currency_alert("NO_STORE_KEY", store_id=store_id)
                 return "CNY"
 
-            api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
+            api_base, _ = client_service.get_qpmn_urls(store_id)
+            api_url = f"{api_base}/partner/stores/{store_id}"
             headers = {
                 "Authorization": f"Basic {store_key}",
                 "Content-Type": _JSON_CONTENT_TYPE,

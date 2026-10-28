@@ -108,6 +108,30 @@ class OrderData(BaseModel):
     amount: Optional[float] = Field(None, description="Order amount")
     customerName: Optional[str] = Field(None, description="Customer name")
 
+    @model_validator(mode="after")
+    def _source_item_ids_unique(self) -> "OrderData":
+        """Siteflow contract: items[].sourceItemId is unique within the order.
+
+        The value doubles as the order.files design-file key (see
+        app.services.sku_matching.design_file_key), so duplicates would
+        silently merge two items' uploaded files. Comparison mirrors that
+        helper: str()-normalised (int 1 and "1" collide), None/blank values
+        are treated as absent (they fall back to the composite key).
+        """
+        seen: set = set()
+        for idx, item in enumerate(self.items):
+            raw = item.sourceItemId
+            if raw is None or not str(raw).strip():
+                continue
+            key = str(raw)
+            if key in seen:
+                raise ValueError(
+                    f"orderData.items[{idx}].sourceItemId '{key}' is a duplicate — "
+                    "sourceItemId must be unique within the order"
+                )
+            seen.add(key)
+        return self
+
 
 class OrderValidationRequest(BaseModel):
     """Schema for order validation request."""
