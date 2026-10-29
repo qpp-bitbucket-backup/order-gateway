@@ -18,7 +18,7 @@ from app.models.order import Order, OrderStatus, OrderType
 from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
 from app.services.file import file_service
-from app.services.sku_matching import find_sku_by_ref
+from app.services.sku_matching import find_sku_by_ref, design_file_key
 from app.services.client import client_service
 from app.services.address_mapping import get_state_code, to_iso_country_code
 from app.services.order_notifications import (
@@ -32,6 +32,7 @@ from app.core.sentry_alerts import ALERTS, capture_integration_alert
 logger = logging.getLogger(__name__)
 
 _CANCEL_ALERTS = ALERTS["cancel"]
+_SHIPMENT_CANCEL_ALERTS = ALERTS["shipment_cancel"]
 _RETURN_ALERTS = ALERTS["return"]
 _SHIPPING_ALERTS = ALERTS["shipping"]
 _CURRENCY_ALERTS = ALERTS["currency"]
@@ -46,6 +47,46 @@ def _capture_cancel_alert(alert_key: str, order_id: Optional[str] = None, **form
         _CANCEL_ALERTS[alert_key], order_id=order_id,
         format_args={"order_id": order_id, **format_args}, component="qpmn_api",
     )
+
+
+def _capture_shipment_cancel_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
+    """Capture a cancel_qpmn_shipment failure to Sentry (synchronous, non-Celery)."""
+    capture_integration_alert(
+        _SHIPMENT_CANCEL_ALERTS[alert_key], order_id=order_id,
+        format_args={"order_id": order_id, **format_args}, component="qpmn_api",
+    )
+
+
+def _build_qpmn_return_payload(return_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate OMS's return request body into QPMN's §3.5 return body.
+
+    ``items`` is intentionally omitted — QPMN treats a missing ``items``
+    as a full-order return, which matches OMS's ``isFullReturn=true``
+    (default) case exactly.
+
+    Raises:
+        ValueError: for ``isFullReturn=false`` (partial return) — translating
+            that case needs each returned item's QPMN order-item id, and we
+            don't yet have a SKU-to-QPMN-item-id mapping to build
+            ``items[].id`` from OMS's SKU-keyed items (see TI-72).
+    """
+    if not return_payload.get("isFullReturn", True):
+        raise ValueError(
+            "Partial return (isFullReturn=false) is not yet supported — "
+            "no SKU-to-QPMN-item-id mapping exists to build items[].id (TI-72)."
+        )
+
+    qpmn_payload: Dict[str, Any] = {}
+    if return_payload.get("reason"):
+        qpmn_payload["reason"] = return_payload["reason"]
+
+    tracking_number = return_payload.get("trackingNumber")
+    if tracking_number:
+        qpmn_payload["returnShipments"] = [{
+            "trackingNumber": tracking_number,
+            "carrierName": return_payload.get("carrierName"),
+        }]
+    return qpmn_payload
 
 
 def _capture_return_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
@@ -83,13 +124,22 @@ UPDATABLE_STATUSES = {
     OrderStatus.ERRORED,
 }
 
-# Statuses that do NOT allow cancellation
-NON_CANCELLABLE_STATUSES = {
+# Statuses where QPMN has passed "reviewed" but not yet reached "shipped" —
+# cancellation must go through QPMN's shipment-cancel API (§3.4,
+# cancel_qpmn_shipment) rather than the order-cancel API (§3.3,
+# cancel_qpmn_order, only valid before "reviewed").
+SHIPMENT_CANCELLABLE_STATUSES = {
     OrderStatus.PRINTREADY,
     OrderStatus.PRINTED,
     OrderStatus.PRODUCED,
+}
+
+# Statuses that do NOT allow cancellation by either QPMN API
+NON_CANCELLABLE_STATUSES = {
     OrderStatus.SHIPPED,
     OrderStatus.CANCELLED,
+    OrderStatus.RETURNING,
+    OrderStatus.RETURN_COMPLETED,
 }
 
 # Statuses that allow deletion via the platform API (soft delete): the order
@@ -500,7 +550,8 @@ class OrderService:
             _capture_cancel_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
 
-        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/cancel"
+        _, open_api_base = client_service.get_qpmn_urls(order.store_id)
+        api_url = f"{open_api_base}/orders/{order.store_order_id}/cancel"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
@@ -564,6 +615,93 @@ class OrderService:
             "data": body.get("data"),
         }
 
+    def cancel_qpmn_shipment(self, order: Order) -> Dict[str, Any]:
+        """
+        Call QPMN's shipment-cancel API (§3.4) to cancel the shipment of an
+        order that has already passed "reviewed" but not yet reached
+        "shipped" — ``cancel_qpmn_order`` (§3.3) only works before "reviewed",
+        so orders in ``SHIPMENT_CANCELLABLE_STATUSES`` must use this instead.
+
+        POST {QPMN_OPEN_API_URL}/orders/{store_order_id}/shipment/cancel
+        Authorization: Basic {store_token}
+
+        Returns the same result shape as ``cancel_qpmn_order``.
+        """
+        if not order.store_order_id:
+            logger.info("[OrderService] Order %s has no store_order_id (never pushed to QPMN), skip shipment-cancel API call", order.order_id)
+            return {"success": True, "status_code": None, "data": None, "skipped": True}
+
+        store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
+        if not store_key:
+            logger.warning("[OrderService] No store_key for order %s, cannot call QPMN shipment-cancel API", order.order_id)
+            _capture_shipment_cancel_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
+            return {"success": False, "status_code": None, "error": "No store_key configured"}
+
+        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/shipment/cancel"
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": _JSON_CONTENT_TYPE,
+        }
+
+        logger.info(
+            "[OrderService] Calling QPMN shipment-cancel API for order %s (store_order_id=%s)",
+            order.order_id,
+            order.store_order_id,
+        )
+
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                response = client.post(api_url, headers=headers)
+        except httpx.TimeoutException:
+            logger.error("[OrderService] QPMN shipment-cancel API timeout for order %s", order.order_id)
+            _capture_shipment_cancel_alert("TIMEOUT", order.order_id)
+            return {"success": False, "status_code": None, "error": "QPMN API timeout"}
+        except Exception as exc:
+            logger.error("[OrderService] QPMN shipment-cancel API request failed for order %s: %s", order.order_id, exc)
+            _capture_shipment_cancel_alert("REQUEST_FAILED", order.order_id, exc=exc)
+            return {"success": False, "status_code": None, "error": str(exc)}
+
+        # Non-200 responses are failures
+        if response.status_code != 200:
+            error_body = None
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            logger.warning(
+                "[OrderService] QPMN shipment-cancel API returned %s for order %s: %s",
+                response.status_code,
+                order.order_id,
+                error_body,
+            )
+            _capture_shipment_cancel_alert("REJECTED_HTTP", order.order_id, status_code=response.status_code, error_body=error_body)
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": error_body,
+            }
+
+        body = response.json()
+        if not body.get("success"):
+            logger.warning(
+                "[OrderService] QPMN shipment-cancel API returned success=false for order %s: %s",
+                order.order_id,
+                body,
+            )
+            _capture_shipment_cancel_alert("REJECTED_SUCCESS_FALSE", order.order_id, body=body)
+            return {
+                "success": False,
+                "status_code": 200,
+                "error": body,
+            }
+
+        logger.info("[OrderService] QPMN shipment-cancel API succeeded for order %s", order.order_id)
+        return {
+            "success": True,
+            "status_code": 200,
+            "data": body.get("data"),
+        }
+
     def cancel_order(
         self,
         session: Session,
@@ -572,7 +710,9 @@ class OrderService:
         """
         Cancel an existing order.
 
-        Calls the QPMN cancel API first. Only when QPMN returns HTTP 200 with
+        Calls the QPMN order-cancel API (§3.3) before "reviewed", or the
+        shipment-cancel API (§3.4, SHIPMENT_CANCELLABLE_STATUSES) once past
+        "reviewed" but before "shipped". Only when QPMN returns HTTP 200 with
         ``success=true`` does the local order status change to CANCELLED.
         All results (request, response, success/failure) are appended to
         ``order.logs``.
@@ -593,8 +733,11 @@ class OrderService:
                 f"Cannot cancel order with status '{order.status.value}'."
             )
 
-        # --- 1. Call QPMN cancel API ---
-        qpmn_result = self.cancel_qpmn_order(order)
+        # --- 1. Call the appropriate QPMN cancel API ---
+        if order.status in SHIPMENT_CANCELLABLE_STATUSES:
+            qpmn_result = self.cancel_qpmn_shipment(order)
+        else:
+            qpmn_result = self.cancel_qpmn_order(order)
 
         if qpmn_result.get("success"):
             # --- QPMN confirmed cancellation ---
@@ -640,11 +783,12 @@ class OrderService:
         """
         Call the QPMN return API to initiate a return on the QPMN side.
 
-        PUT {QPMN_OPEN_API_URL}/orders/{store_order_id}/return
+        POST {QPMN_OPEN_API_URL}/orders/{store_order_id}/returns
         Authorization: Basic {store_token}
 
-        The return request body (reason / isFullReturn / return tracking
-        info) is forwarded as the JSON body.
+        OMS's return request body (reason / isFullReturn / return tracking
+        info) is translated into QPMN's §3.5 body shape — see
+        ``_build_qpmn_return_payload``.
 
         Returns:
             A dict with keys:
@@ -653,13 +797,19 @@ class OrderService:
             - ``data``: Response body data (on success).
             - ``error``: Error message (on failure).
         """
+        try:
+            qpmn_payload = _build_qpmn_return_payload(return_payload or {})
+        except ValueError as exc:
+            logger.warning("[OrderService] Cannot build QPMN return payload for order %s: %s", order.order_id, exc)
+            return {"success": False, "status_code": None, "error": str(exc)}
+
         store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
         if not store_key:
             logger.warning("[OrderService] No store_key for order %s, cannot call QPMN return API", order.order_id)
             _capture_return_alert("NO_STORE_KEY", order.order_id, store_id=order.store_id)
             return {"success": False, "status_code": None, "error": "No store_key configured"}
-
-        api_url = f"{settings.QPMN_OPEN_API_URL}/orders/{order.store_order_id}/return"
+        _, open_api_base = client_service.get_qpmn_urls(order.store_id)
+        api_url = f"{open_api_base}/orders/{order.store_order_id}/returns"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
@@ -673,7 +823,7 @@ class OrderService:
 
         try:
             with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-                response = client.put(api_url, headers=headers, json=return_payload or {})
+                response = client.post(api_url, headers=headers, json=qpmn_payload)
         except httpx.TimeoutException:
             logger.error("[OrderService] QPMN return API timeout for order %s", order.order_id)
             _capture_return_alert("TIMEOUT", order.order_id)
@@ -948,8 +1098,9 @@ class OrderService:
             logger.warning("[OrderService] No store_key for order %s", order.order_id)
             return {"success": False, "error": "No store_key configured"}
 
+        _, open_api_base = client_service.get_qpmn_urls(order.store_id)
         api_url = (
-            f"{settings.QPMN_OPEN_API_URL}/orders"
+            f"{open_api_base}/orders"
             f"/{order.store_order_id}/deliveryAddress"
         )
         headers = {
@@ -1099,10 +1250,11 @@ class OrderService:
             # for them.
             designs = customize_project.get("designs", [])
             
-            # order.files keys always use the resolved internal sku_id (the
-            # publish task resolves source_sku before writing) so they match
-            # the QPMN payload ids
-            files = files_dict.get(f"{sku_id}-{item_index}", [])
+            # order.files key: items[].sourceItemId when the source platform
+            # provides one, else the resolved internal sku_id composite (the
+            # publish task resolves source_sku before writing) — both sides
+            # derive the key through the same helper.
+            files = files_dict.get(design_file_key(item, sku_id, item_index), [])
 
             # Inject uploaded file URLs into pageContentDesigns images (legacy structure)
             for index, design in enumerate(designs):
@@ -1122,24 +1274,34 @@ class OrderService:
             # Inject uploaded file URLs into effectImages imageUrls (Open API structure):
             # designData[].views[].designs[].effectImages[].imageUrl. One file per
             # view that carries effectImages, in order; views without designs
-            # (template-only materials) consume no file.
+            # (template-only materials) consume no file. When the packing-
+            # documents step produced a label for this item (order.files
+            # "label-{item_index}"), the LAST effect view is the label
+            # placeholder: it consumes no uploaded design file and its
+            # effectImages get the label URL instead.
             design_data = customize_project.get("designData", [])
-            open_file_index = 0
-            for material in design_data:
-                for view in material.get("views", []):
-                    view_designs = view.get("designs") or []
-                    if not any(d.get("effectImages") for d in view_designs) or open_file_index > len(files):
-                        continue
-                    file_obj = files[open_file_index] if open_file_index < len(files) else None
-                    if not file_obj:
-                        raise ValueError(f"SKU: [{sku_id}] design file not found")
-                    file_url = file_obj.get("url", None)
-                    if not file_url:
-                        raise ValueError(f"SKU: [{sku_id}] design file URL not found")
-                    open_file_index += 1
-                    for d in view_designs:
-                        for effect_image in d.get("effectImages", []):
-                            effect_image["imageUrl"] = file_url
+            label_files = files_dict.get(f"label-{item_index}") or []
+            label_url = label_files[0].get("url") if label_files else None
+            effect_views = [
+                view
+                for material in design_data
+                for view in material.get("views", [])
+                if any(d.get("effectImages") for d in (view.get("designs") or []))
+            ]
+            design_views = effect_views[:-1] if label_url else effect_views
+            if len(files) < len(design_views):
+                raise ValueError(f"SKU: [{sku_id}] design file not found")
+            for view, file_obj in zip(design_views, files):
+                file_url = file_obj.get("url")
+                if not file_url:
+                    raise ValueError(f"SKU: [{sku_id}] design file URL not found")
+                for d in view.get("designs") or []:
+                    for effect_image in d.get("effectImages", []):
+                        effect_image["imageUrl"] = file_url
+            if label_url and effect_views:
+                for d in effect_views[-1].get("designs") or []:
+                    for effect_image in d.get("effectImages", []):
+                        effect_image["imageUrl"] = label_url
 
             contexts.append({
                 "item": item,
@@ -1283,7 +1445,7 @@ class OrderService:
                 # description (order_data.items[].description) and falls back
                 # to the item sku; productName comes from the item's
                 # extraData (empty string when missing).
-                "metaData": {
+                "metadata": {
                     "sku": item.get("description") or item.get("sku") or "",
                     "productName": self._extract_product_name(item),
                 },
@@ -1479,7 +1641,8 @@ class OrderService:
                 _capture_shipping_alert("NO_STORE_KEY", store_id=store_id)
                 return "Standard"
 
-            api_url = f"{settings.QPMN_API_URL}/store/{store_id}/default/shippingMethod"
+            api_base, _ = client_service.get_qpmn_urls(store_id)
+            api_url = f"{api_base}/store/{store_id}/default/shippingMethod"
             headers = {
                 "Authorization": f"Basic {store_key}",
                 "Content-Type": _JSON_CONTENT_TYPE,
@@ -1524,7 +1687,8 @@ class OrderService:
             (True, "") when the store exists and the key authorizes,
             otherwise (False, human-readable reason).
         """
-        api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
+        api_base, _ = client_service.get_qpmn_urls(store_id)
+        api_url = f"{api_base}/partner/stores/{store_id}"
         headers = {
             "Authorization": f"Basic {store_key}",
             "Content-Type": _JSON_CONTENT_TYPE,
@@ -1582,7 +1746,8 @@ class OrderService:
                 _capture_currency_alert("NO_STORE_KEY", store_id=store_id)
                 return "CNY"
 
-            api_url = f"{settings.QPMN_API_URL}/partner/stores/{store_id}"
+            api_base, _ = client_service.get_qpmn_urls(store_id)
+            api_url = f"{api_base}/partner/stores/{store_id}"
             headers = {
                 "Authorization": f"Basic {store_key}",
                 "Content-Type": _JSON_CONTENT_TYPE,

@@ -8,13 +8,31 @@ usable; pattern evaluation then walks the remaining candidate rows.
 """
 import logging
 import re
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from sqlmodel import Session, select
 
 from app.models.product import Sku
 
 logger = logging.getLogger(__name__)
+
+
+def design_file_key(item: Dict[str, Any], sku_id: Optional[str], item_index: int) -> str:
+    """order.files key for one line item's uploaded design files.
+
+    New orders may carry the third-party line-item id in
+    items[].sourceItemId — when present it IS the key (stable across
+    re-submissions and SKU table edits, unique per line). Otherwise fall
+    back to the historical ``{resolved_sku_id}-{item_index}`` composite.
+
+    Writer (publish task) and readers (push payload builder, packing
+    documents) must all derive the key through this helper so both sides
+    stay in sync.
+    """
+    source_item_id = (item or {}).get("sourceItemId")
+    if source_item_id is not None and str(source_item_id).strip():
+        return str(source_item_id)
+    return f"{sku_id}-{item_index}"
 
 
 def source_sku_matches(pattern: Optional[str], sku_ref: str) -> bool:

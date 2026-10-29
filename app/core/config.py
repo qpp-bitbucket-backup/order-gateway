@@ -103,6 +103,17 @@ class Settings(BaseSettings):
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
     QPMN_ORDER_API_VERSION: str = "open"   # Order creation API version: "legacy" or "open"
 
+    # QPMN release-platform routing (stage testing only): orders whose
+    # sourceOrderId contains QPMN_RELEASE_ORDER_MARKER are created under the
+    # simulated-production client (QPMN_RELEASE_STORE_ID in the clients
+    # table — its store_key holds the release credential) and all QPMN
+    # calls for that store use the release URLs below. Leave any value
+    # empty to disable the feature entirely (production must not set it).
+    QPMN_RELEASE_ORDER_MARKER: str = ""    # e.g. "-REL"
+    QPMN_RELEASE_STORE_ID: str = ""        # store_id of the simulated-production client
+    QPMN_RELEASE_API_URL: str = ""         # release platform base API URL
+    QPMN_RELEASE_OPEN_API_URL: str = ""    # release platform open API URL
+
     # PDF Processing Configuration
     MODIFY_PDF_RESOLUTION: bool = False
     PDF_TARGET_WIDTH: float = 595.0  # A4 width in points (8.27 inches)
@@ -117,12 +128,12 @@ class Settings(BaseSettings):
     CONVERT_TO_PNG: bool = False
     PDF_TO_PNG_DPI: int = 300
 
-    # Brand label generation (order validation step): when enabled, one PDF
-    # label per order line item is generated (productName + SKU + quantity),
+    # Brand label generation (order validation step): gated per client by
+    # clients.enable_brand_label. When enabled, one PDF label per order line
+    # item is generated (productName + SKU + quantity),
     # uploaded to the QPMN file library and recorded in order.files under
     # "label-{item_index}" keys — the push payload only reads
     # "{sku_id}-{item_index}" keys, so labels never enter the design payload.
-    BRAND_LABEL_ENABLED: bool = False
     BRAND_LABEL_WIDTH_MM: float = 100.0
     BRAND_LABEL_HEIGHT_MM: float = 66.8
     # Packing slip ship-from block (one line per \n); empty leaves the

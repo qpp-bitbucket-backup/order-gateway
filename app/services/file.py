@@ -6,6 +6,7 @@ import httpx
 import logging
 from app.services.oss import oss_service
 from app.services.pdf_utils import pdf_processor
+from app.services.client import client_service
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 from app.core.config import settings
@@ -191,16 +192,26 @@ class FileService:
             logger.error(f"[FileService] Failed to convert {pdf_path} to PNG: {exc}", exc_info=True)
             return None
 
-    def upload_to_qpmn(self, file_path: str, store_key: str) -> Dict[str, Any] | None:
+    def upload_to_qpmn(
+        self, file_path: str, store_key: str, store_id: Optional[str] = None
+    ) -> Dict[str, Any] | None:
         """
         Upload a file to the QPMN API file endpoint.
+
+        Args:
+            file_path: Local file to upload.
+            store_key: Basic credential for the QPMN API.
+            store_id: Store the file belongs to — selects the platform
+                (simulated-production stores upload to the release file
+                library). None uses the global stage URL.
 
         Returns:
             Dict with file info (url, filename, etc.) on success, None on failure.
         """
         try:
             filename = os.path.basename(file_path)
-            api_url = f"{settings.QPMN_API_URL}/fileLibrary/images"
+            api_base, _ = client_service.get_qpmn_urls(store_id)
+            api_url = f"{api_base}/fileLibrary/images"
 
             logger.info(f"[FileService] Uploading {filename} to QPMN API: {api_url}")
 

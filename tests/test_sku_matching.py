@@ -1,9 +1,19 @@
 """Unit tests for source_sku regex matching (app/services/sku_matching.py)."""
 import pytest
+from pydantic import ValidationError
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.models.product import Sku
-from app.services.sku_matching import find_sku_by_ref, source_sku_matches
+from app.schemas.order import (
+    OrderData,
+    OrderSubmissionRequest,
+    OrderValidationRequest,
+)
+from app.services.sku_matching import (
+    design_file_key,
+    find_sku_by_ref,
+    source_sku_matches,
+)
 
 
 @pytest.fixture(name="session")
@@ -120,3 +130,84 @@ class TestFindSkuByRef:
         found = find_sku_by_ref(session, "X-1")
         assert found is not None
         assert found.sku_id == "s-lit2"
+
+
+class TestDesignFileKey:
+    """order.files key derivation: sourceItemId first, composite fallback."""
+
+    def test_source_item_id_preferred(self):
+        item = {"sourceItemId": "1905904", "sku": "PC-123"}
+        assert design_file_key(item, "sku-internal", 0) == "1905904"
+
+    def test_int_source_item_id_stringified(self):
+        item = {"sourceItemId": 1905904, "sku": "PC-123"}
+        assert design_file_key(item, "sku-internal", 2) == "1905904"
+
+    def test_blank_source_item_id_falls_back(self):
+        item = {"sourceItemId": "   ", "sku": "PC-123"}
+        assert design_file_key(item, "sku-internal", 3) == "sku-internal-3"
+
+    def test_missing_source_item_id_falls_back(self):
+        item = {"sku": "PC-123"}
+        assert design_file_key(item, "sku-internal", 1) == "sku-internal-1"
+
+
+class TestSourceItemIdUniqueness:
+    """OrderData validator: sourceItemId must be unique within the order."""
+
+    @staticmethod
+    def _order_data(items):
+        return {
+            "sourceOrderId": "SO-1",
+            "items": [{"sku": it["sku"], "sourceItemId": it.get("sid")}
+                      for it in items],
+        }
+
+    def test_unique_ids_pass(self):
+        data = OrderData(**self._order_data([
+            {"sku": "A", "sid": 1},
+            {"sku": "B", "sid": 2},
+        ]))
+        assert len(data.items) == 2
+
+    def test_absent_values_pass(self):
+        # None values fall back to the composite key — not duplicates
+        data = OrderData(**self._order_data([
+            {"sku": "A"}, {"sku": "B"}, {"sku": "C", "sid": "x"},
+        ]))
+        assert len(data.items) == 3
+
+    def test_duplicate_str_rejected(self):
+        with pytest.raises(ValidationError, match="sourceItemId.*unique"):
+            OrderData(**self._order_data([
+                {"sku": "A", "sid": "1905904"},
+                {"sku": "B", "sid": "1905904"},
+            ]))
+
+    def test_int_and_str_collide(self):
+        # design_file_key str()-normalises, so int 1 and "1" share a key
+        with pytest.raises(ValidationError, match="sourceItemId.*unique"):
+            OrderData(**self._order_data([
+                {"sku": "A", "sid": 1},
+                {"sku": "B", "sid": "1"},
+            ]))
+
+    def test_submission_request_enforces_rule(self):
+        payload = {
+            "destination": {"name": "qpmn"},
+            "orderData": self._order_data([
+                {"sku": "A", "sid": 9}, {"sku": "B", "sid": 9},
+            ]),
+        }
+        with pytest.raises(ValidationError, match="sourceItemId.*unique"):
+            OrderSubmissionRequest(**payload)
+
+    def test_validation_request_enforces_rule(self):
+        payload = {
+            "destination": {"name": "qpmn"},
+            "orderData": self._order_data([
+                {"sku": "A", "sid": 7}, {"sku": "B", "sid": 7},
+            ]),
+        }
+        with pytest.raises(ValidationError, match="sourceItemId.*unique"):
+            OrderValidationRequest(**payload)

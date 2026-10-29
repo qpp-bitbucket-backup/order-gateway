@@ -16,7 +16,7 @@ from app.models.client import Client
 from app.models.order import Order, OrderStatus, can_transition, is_item_event_superseded, EVENT_STATUS_MAP, OMS_STATUS_MAP
 from app.models.shipment import OrderShipment
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
-from app.schemas.webhook import QpmnOrderItemEvent, QpmnPackageShippedEvent, WebhookResponse
+from app.schemas.webhook import QpmnOrderItemEvent, QpmnPackageShippedEvent, QpmnReturnCompletedEvent, WebhookResponse
 from app.services.order_notifications import enqueue_status_change_email, record_status_change
 from app.tasks.notifications import notify_oms, notify_vfs
 
@@ -183,7 +183,8 @@ async def receive_order_status(
     3. Dedup on ``x-qpmn-event-id`` (§5.6) — a retried delivery is acknowledged
        without being reprocessed.
     4. Parse the body per ``x-qpmn-event-type``: ``package_shipped`` (§5.4.2,
-       a shipment object) or an ``order_item_*`` event (§5.4.1, an order item).
+       a shipment object), ``order_return_completed`` (§5.4.3, a return
+       order), or an ``order_item_*`` event (§5.4.1, an order item).
     5. Look up the order via the body's ``orderId`` and validate the transition.
     6. Update ``orders.status`` and append a log entry.
     7. Create outbound logs (``source=oms`` / ``source=vfs``) and enqueue
@@ -199,8 +200,11 @@ async def receive_order_status(
         raw_payload = {}
 
     is_shipped_event = x_qpmn_event_type == "package_shipped"
+    is_return_completed_event = x_qpmn_event_type == "order_return_completed"
     order_id_value: Optional[int] = raw_payload.get("orderId")
-    item_id_value: Optional[str] = None if is_shipped_event else raw_payload.get("id")
+    item_id_value: Optional[str] = (
+        None if (is_shipped_event or is_return_completed_event) else raw_payload.get("id")
+    )
 
     # Insert inbound log (raw payload, unchanged regardless of downstream outcome)
     inbound_log = WebhookLog(
@@ -272,6 +276,9 @@ async def receive_order_status(
     if is_shipped_event:
         event = QpmnPackageShippedEvent.model_validate(raw_payload)
         shipments_data = [event.model_dump()]
+    elif is_return_completed_event:
+        event = QpmnReturnCompletedEvent.model_validate(raw_payload)
+        shipments_data = None
     else:
         event = QpmnOrderItemEvent.model_validate(raw_payload)
         shipments_data = [s.model_dump() for s in event.shipments] if event.shipments else None
@@ -307,7 +314,7 @@ async def receive_order_status(
     # An order_item_* event's `id` must belong to this order; only enforced
     # when we know the order's real item ids (order.store_order_item_ids).
     known_item_ids = order.store_order_item_ids
-    if not is_shipped_event and known_item_ids and event.id not in known_item_ids:
+    if not is_shipped_event and not is_return_completed_event and known_item_ids and event.id not in known_item_ids:
         response = WebhookResponse(
             success=False,
             message=f"Item id '{event.id}' does not belong to order {order.order_id}",
@@ -324,7 +331,7 @@ async def receive_order_status(
         return response
 
     if not can_transition(order.status, new_status):
-        if not is_shipped_event and is_item_event_superseded(order.status, new_status):
+        if not is_shipped_event and not is_return_completed_event and is_item_event_superseded(order.status, new_status):
             # TI-65: a superseded order_item_produced still represents a real
             # component finishing — record it and notify OMS "printed" for
             # this component, even though the order itself already moved on
