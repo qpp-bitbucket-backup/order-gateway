@@ -8,7 +8,7 @@ usable; pattern evaluation then walks the remaining candidate rows.
 """
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlmodel import Session, select
 
@@ -33,6 +33,40 @@ def design_file_key(item: Dict[str, Any], sku_id: Optional[str], item_index: int
     if source_item_id is not None and str(source_item_id).strip():
         return str(source_item_id)
     return f"{sku_id}-{item_index}"
+
+
+def design_file_keys(
+    item: Dict[str, Any], sku_id: Optional[str], item_index: int,
+) -> List[str]:
+    """Candidate ``order.files`` keys for one line item, best match first.
+
+    Readers prefer the third-party item id (externalId / sourceItemId) and
+    only fall back to the historical ``{resolved_sku_id}-{item_index}``
+    composite when that key holds no files — e.g. orders of a store that
+    stopped sending sourceItemId, or rows uploaded before the switch.
+    Neither key is shared between two items, so the fallback stay safe.
+    """
+    primary = design_file_key(item, sku_id, item_index)
+    composite = f"{sku_id}-{item_index}"
+    return [primary] if primary == composite else [primary, composite]
+
+
+def resolve_design_files(
+    files_dict: Dict[str, Any],
+    item: Dict[str, Any],
+    sku_id: Optional[str],
+    item_index: int,
+) -> List[Dict[str, Any]]:
+    """Pick the item's uploaded design files out of ``order.files``.
+
+    Tries each key from ``design_file_keys`` in order (externalId first,
+    composite second) and returns the first non-empty list, or ``[]``.
+    """
+    for key in design_file_keys(item, sku_id, item_index):
+        files = (files_dict or {}).get(key)
+        if files:
+            return files
+    return []
 
 
 def source_sku_matches(pattern: Optional[str], sku_ref: str) -> bool:

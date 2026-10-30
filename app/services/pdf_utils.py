@@ -386,6 +386,27 @@ class PDFProcessor:
         doc.xref_set_key(doc.pdf_catalog(), "Metadata", f"{xmp_xref} 0 R")
 
         # 3. OutputIntent with embedded sRGB ICC profile
+        return PDFProcessor.apply_srgb_output_intent(doc)
+
+    @staticmethod
+    def apply_srgb_output_intent(doc: "fitz.Document") -> bool:
+        """
+        Embed the sRGB ICC profile and declare it as the document's
+        OutputIntent (``/GTS_PDFX``) without any PDF/X metadata.
+
+        Used for documents that are not design files but still need a
+        colour-managed colour space, e.g. brand labels sent to printers.
+
+        Args:
+            doc: Open PyMuPDF document (modified in place, before save).
+
+        Returns:
+            True if applied; False when the sRGB ICC asset is missing.
+        """
+        icc_bytes = _load_srgb_icc()
+        if not icc_bytes:
+            return False
+
         icc_xref = doc.get_new_xref()
         doc.update_object(icc_xref, "<<>>")
         doc.update_stream(icc_xref, icc_bytes)
