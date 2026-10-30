@@ -30,7 +30,7 @@ from typing import List, Optional, Tuple
 import fitz  # PyMuPDF
 
 from app.core.config import settings
-from app.services.pdf_utils import mm_to_points
+from app.services.pdf_utils import mm_to_points, pdf_processor
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +291,15 @@ def build_label_pdf(
                 if text:
                     x = _insert_text(page, x, y, text, size)
             y += size + _LINE_GAP
+
+        # Colour management: the label is printed, so declare the sRGB ICC
+        # profile as the document's OutputIntent. Missing ICC asset is not
+        # fatal — the label is still usable, just not colour-tagged.
+        if not pdf_processor.apply_srgb_output_intent(doc):
+            logger.warning(
+                "[Packing] sRGB ICC profile not found, label %s saved untagged",
+                os.path.basename(dest_path),
+            )
 
         doc.save(dest_path, garbage=3, deflate=True)
         doc.close()

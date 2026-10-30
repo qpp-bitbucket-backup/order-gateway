@@ -11,7 +11,9 @@ from app.schemas.order import (
 )
 from app.services.sku_matching import (
     design_file_key,
+    design_file_keys,
     find_sku_by_ref,
+    resolve_design_files,
     source_sku_matches,
 )
 
@@ -150,6 +152,41 @@ class TestDesignFileKey:
     def test_missing_source_item_id_falls_back(self):
         item = {"sku": "PC-123"}
         assert design_file_key(item, "sku-internal", 1) == "sku-internal-1"
+
+
+class TestResolveDesignFiles:
+    """order.files lookup: externalId key first, composite key as fallback."""
+
+    def test_external_id_key_preferred(self):
+        files = {
+            "1905904": [{"url": "ext-url"}],
+            "sku-internal-0": [{"url": "composite-url"}],
+        }
+        item = {"sourceItemId": 1905904}
+        assert design_file_keys(item, "sku-internal", 0) == ["1905904", "sku-internal-0"]
+        assert resolve_design_files(files, item, "sku-internal", 0) == [{"url": "ext-url"}]
+
+    def test_falls_back_to_composite_when_external_key_missing(self):
+        files = {"sku-internal-0": [{"url": "composite-url"}]}
+        item = {"sourceItemId": 1905904}
+        assert resolve_design_files(files, item, "sku-internal", 0) == [
+            {"url": "composite-url"}
+        ]
+
+    def test_falls_back_when_external_key_empty(self):
+        files = {"1905904": [], "sku-internal-0": [{"url": "composite-url"}]}
+        item = {"sourceItemId": "1905904"}
+        assert resolve_design_files(files, item, "sku-internal", 0) == [
+            {"url": "composite-url"}
+        ]
+
+    def test_single_candidate_without_source_item_id(self):
+        item = {"sku": "PC-123"}
+        assert design_file_keys(item, "sku-internal", 2) == ["sku-internal-2"]
+
+    def test_returns_empty_list_when_nothing_matches(self):
+        assert resolve_design_files({}, {"sourceItemId": 1}, "sku-internal", 3) == []
+        assert resolve_design_files(None, {"sourceItemId": 1}, "sku-internal", 3) == []
 
 
 class TestSourceItemIdUniqueness:
