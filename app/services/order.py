@@ -6,6 +6,7 @@ import tempfile
 import uuid
 import fitz  # PyMuPDF
 import base64
+import copy
 import httpx
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
@@ -18,7 +19,7 @@ from app.models.order import Order, OrderStatus, OrderType
 from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
 from app.services.file import file_service
-from app.services.sku_matching import find_sku_by_ref, design_file_key
+from app.services.sku_matching import find_sku_by_ref, resolve_design_files
 from app.services.client import client_service
 from app.services.address_mapping import get_state_code, to_iso_country_code
 from app.services.order_notifications import (
@@ -1241,20 +1242,25 @@ class OrderService:
             # dedicated Open API product_design_data, falling back to the
             # legacy customize_project for SKUs configured before the field
             # existed.
+            #
+            # Deep-copied per line item: two items resolving to the same SKU
+            # share one SQLModel instance (SQLAlchemy identity map), so
+            # writing this item's file URLs straight into
+            # sku.product_design_data would leak into the next item's payload
+            # and both cards would print the same artwork.
             if sku.product_design_data is not None:
-                customize_project = sku.product_design_data
+                customize_project = copy.deepcopy(sku.product_design_data)
             else:
-                customize_project = sku.customize_project or {}
+                customize_project = copy.deepcopy(sku.customize_project or {})
             # Legacy "designs" injection list — Open API dicts simply have no
             # "designs" key, so the legacy injection loop below is a no-op
             # for them.
             designs = customize_project.get("designs", [])
             
-            # order.files key: items[].sourceItemId when the source platform
-            # provides one, else the resolved internal sku_id composite (the
-            # publish task resolves source_sku before writing) — both sides
-            # derive the key through the same helper.
-            files = files_dict.get(design_file_key(item, sku_id, item_index), [])
+            # order.files key: items[].sourceItemId (externalId) first, then
+            # the historical {resolved_sku_id}-{item_index} composite — the
+            # writer and this reader both go through the same helper.
+            files = resolve_design_files(files_dict, item, sku_id, item_index)
 
             # Inject uploaded file URLs into pageContentDesigns images (legacy structure)
             for index, design in enumerate(designs):

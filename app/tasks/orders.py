@@ -18,7 +18,7 @@ from app.models.address import Address, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from app.services.file import file_service
-from app.services.sku_matching import find_sku_by_ref, design_file_key
+from app.services.sku_matching import find_sku_by_ref, design_file_key, resolve_design_files
 from app.services.watermark import watermark_to_png, WATERMARK_TEXT
 from app.services.client import client_service
 from app.services.oms import oms_service, OMSRetryableError
@@ -542,7 +542,8 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
                 store_id=order.store_id,
             ) if sku_ref else None
             if sku_obj:
-                item_files = files_dict.get(design_file_key(item, sku_obj.sku_id, item_index)) or []
+                # externalId (sourceItemId) key first, composite fallback
+                item_files = resolve_design_files(files_dict, item, sku_obj.sku_id, item_index)
                 file_url = item_files[0].get("url") if item_files else None
                 if file_url:
                     ok, result = file_service.download_file(file_url, docs_dir)
