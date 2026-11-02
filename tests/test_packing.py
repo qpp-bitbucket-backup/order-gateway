@@ -106,8 +106,11 @@ def test_mixed_script_line_uses_native_fonts_per_run(tmp_path):
     # the brand prefix and the latin brand name
     cjk_font = next((font for text, _, font in spans if "品牌" in text), "")
     latin_font = next((font for text, _, font in spans if "Topps" in text), "")
-    # CJK run renders in SimHei (or the built-in heiti fallback)
-    assert "SimHei" in cjk_font or "china" in cjk_font.lower()
+    # CJK run renders in SimHei (or the built-in heiti fallback — PyMuPDF
+    # reports its internal name as "Heiti" when no simhei.ttf is installed,
+    # e.g. the bare CI image)
+    cjk_lower = cjk_font.lower()
+    assert "simhei" in cjk_lower or "china" in cjk_lower or "heiti" in cjk_lower
     # Latin run renders in Arial (or the Helvetica fallback)
     assert "Arial" in latin_font or "Helvetica" in latin_font
 
