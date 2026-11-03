@@ -239,6 +239,31 @@ class MaskedAddress(BaseModel):
     company: Optional[str] = Field(None, description="Masked company name")
 
 
+class PlatformShipment(BaseModel):
+    """Shipment tracking record from the ``order_shipments`` table.
+
+    Populated by QPMN's ``package_shipped`` webhook; empty until the
+    order ships."""
+    id: Optional[int] = Field(None, description="Shipment record ID")
+    qpmnShipmentId: Optional[str] = Field(None, description="QPMN's shipment id")
+    shipmentIndex: Optional[int] = Field(None, description="Index linking this shipment to order_data.shipments / items")
+    trackingNumber: Optional[str] = Field(None, description="Carrier tracking number")
+    trackingUrl: Optional[str] = Field(None, description="Tracking URL")
+    carrier: Optional[str] = Field(None, description="Shipping carrier")
+    shipDate: Optional[str] = Field(None, description="Ship date (ISO 8601)")
+    items: Optional[List[Dict[str, Any]]] = Field(None, description="Items in this shipment: [{itemId, quantity}]")
+
+
+class ParallelCardShipment(BaseModel):
+    """Shipment info derived from a parallel-card order's sourceOrderId.
+
+    The shipping number is parsed from the ``_S`` suffix of the parallel
+    card id (``{base}_{version}_S{shippingNo}``); the tracking URL points
+    at 17TRACK with that number prefilled."""
+    trackingNumber: str = Field(..., description="Shipping number parsed from the parallel-card order number")
+    trackingUrl: str = Field(..., description="17TRACK tracking URL with the shipping number prefilled")
+
+
 class PlatformFullOrder(BaseModel):
     """Complete platform order with all fields."""
     id: str = Field(..., alias="_id", description="Internal order ID")
@@ -263,6 +288,8 @@ class PlatformFullOrder(BaseModel):
     deliveryAddress: Optional[MaskedAddress] = Field(None, description="Latest delivery address with PII masked")
     billingAddress: Optional[MaskedAddress] = Field(None, description="Latest billing address with PII masked")
     webhooks: Optional[List[Dict[str, Any]]] = Field(None, description="Webhook log records for this order, sorted by created_at ascending")
+    shipments: Optional[List[PlatformShipment]] = Field(None, description="Shipment tracking records (order_shipments table, filled on package_shipped; empty until shipped)")
+    parallelCardShipment: Optional[ParallelCardShipment] = Field(None, description="Parallel-card orders only: shipping number parsed from the order number + 17TRACK tracking URL")
 
     model_config = ConfigDict(populate_by_name=True)
 

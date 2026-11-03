@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
     QPMN_ORDER_API_VERSION: str = "open"   # Order creation API version: "legacy" or "open"
 
+    # Tracking URL prefix for parallel-card orders: the shipping number
+    # parsed from the order number is appended (URL-encoded) to this prefix
+    # to build PlatformFullOrder.parallelCardShipment.trackingUrl.
+    TRACKING_URL_PREFIX: str = "https://t.17track.net/en#nums="
+
     # QPMN release-platform routing (stage testing only): orders whose
     # sourceOrderId contains QPMN_RELEASE_ORDER_MARKER are created under the
     # simulated-production client (QPMN_RELEASE_STORE_ID in the clients
