@@ -425,9 +425,15 @@ class OrderService:
         order_data: Dict[str, Any],
         store_id: Optional[str] = None,
         order_type: OrderType = OrderType.BASE_CARD,
+        version: int = 1,
     ) -> Order:
         """
         Create a new order, persist it, and enqueue the Celery publish task.
+
+        *version* seeds ``Order.version``: recreated orders (artwork update)
+        inherit the cancelled order's version + 1 so the QPMN-facing
+        externalOrderNumber can carry a ``-vN`` suffix (QPMN keeps
+        externalOrderNumber unique even for cancelled orders).
 
         Returns the newly created Order.
         """
@@ -452,7 +458,7 @@ class OrderService:
             },
             order_data=order_data,
             status=OrderStatus.RECEIVED,
-            version=1,
+            version=version,
             store_id=store_id,
             type=order_type,
         )
@@ -1176,6 +1182,21 @@ class OrderService:
     # Order push payload builders (legacy & open API)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def qpmn_external_order_number(order: Order) -> str:
+        """Return the QPMN-facing unique order number for *order*.
+
+        QPMN enforces uniqueness on externalOrderNumber across ALL orders,
+        including cancelled ones, while the gateway reuses the same local
+        source_order_id when an artwork update cancels and recreates an
+        order. Recreated orders carry ``version > 1`` (seeded by
+        ``create_order``), so their QPMN-facing number gets a ``-vN``
+        suffix; first submissions keep the bare source_order_id.
+        """
+        if order.version and order.version > 1:
+            return f"{order.source_order_id}-v{order.version}"
+        return order.source_order_id
+
     def build_push_payload(
         self,
         session: Session,
@@ -1395,7 +1416,7 @@ class OrderService:
         )
         payload = {
             "thirdOrderId": order.order_id,
-            "thirdOrderNumber": order.source_order_id,
+            "thirdOrderNumber": self.qpmn_external_order_number(order),
             "items": line_items,
             "currency": self.fetch_currency_from_qpmn(order.store_id),
             "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
@@ -1468,7 +1489,7 @@ class OrderService:
         payload_currency = self.fetch_currency_from_qpmn(order.store_id)
         payload = {
             "externalId": order.order_id,
-            "externalOrderNumber": order.source_order_id,
+            "externalOrderNumber": self.qpmn_external_order_number(order),
             "shippingMethod": self.fetch_shipping_method_from_qpmn(order.store_id),
             "paymentMethod": settings.QPMN_PAYMENT_METHOD,
             "currency": payload_currency,
