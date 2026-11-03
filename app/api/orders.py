@@ -1078,6 +1078,9 @@ def update_order(
     HTTP **409**. On success, a new order is created with the same
     ``sourceOrderId`` but a different platform order id — the response's
     ``order`` is the new order, and ``cancelledOrderId`` is the old one's id.
+    The recreated order's version increments, so its QPMN-facing order
+    number becomes ``{sourceOrderId}-v{N}`` (QPMN keeps that number unique
+    even for cancelled orders).
     Requires both ``destination`` and ``orderData`` in the request body.
     """
     _log_request("PUT /order/{order_id}", {"order_id": order_id, **request.model_dump()})
@@ -1191,6 +1194,7 @@ def update_order(
 
             old_order_id = order.order_id
             old_source_order_id = order.source_order_id
+            old_version = order.version or 1
 
             # Cancel current order first; if it can't be cancelled, it can't be updated.
             try:
@@ -1219,7 +1223,10 @@ def update_order(
 
             # Re-create the order with the new content, same source_order_id,
             # different platform order id — mirrors the previous standalone
-            # artwork-update endpoint's contract.
+            # artwork-update endpoint's contract. The version increments so
+            # the QPMN-facing externalOrderNumber becomes
+            # "{sourceOrderId}-v{N}" (QPMN keeps it unique even for
+            # cancelled orders).
             order_data = request.orderData.model_dump()
             order_data["sourceOrderId"] = old_source_order_id
 
@@ -1232,6 +1239,7 @@ def update_order(
                 store_id=store_id,
                 # Content updates recreate the same order — keep its type
                 order_type=order.type,
+                version=old_version + 1,
             )
 
             full_order = FullOrder(
