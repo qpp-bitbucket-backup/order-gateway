@@ -101,7 +101,11 @@ class Settings(BaseSettings):
     QPMN_PUSH_RETRY_COUNTDOWN: int = 900   # Base delay in seconds for exponential backoff
     QPMN_PUSH_RETRY_MAX_COUNTDOWN: int = 7200  # Max delay cap in seconds (2 hours)
     QPMN_PAYMENT_METHOD: str = "PayPal"      # Default payment method for QPMN orders
-    QPMN_ORDER_API_VERSION: str = "open"   # Order creation API version: "legacy" or "open"
+
+    # Tracking URL prefix for parallel-card orders: the shipping number
+    # parsed from the order number is appended (URL-encoded) to this prefix
+    # to build PlatformFullOrder.parallelCardShipment.trackingUrl.
+    TRACKING_URL_PREFIX: str = "https://t.17track.net/en#nums="
 
     # QPMN release-platform routing (stage testing only): orders whose
     # sourceOrderId contains QPMN_RELEASE_ORDER_MARKER are created under the

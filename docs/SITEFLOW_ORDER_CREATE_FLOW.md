@@ -176,10 +176,10 @@ push_order（隊列 order_pushing）
    母卡尚未推送時省略該欄位。
 3. `build_push_payload()` 構建完整 payload 並持久化到 `order.creation_payload`
    （每次重試覆蓋，供審計與重放）。
-4. 呼叫 QPMN 建單 API：
-   - Open API（預設，`QPMN_ORDER_API_VERSION="open"`）：
+4. 呼叫 QPMN 建單 API（按訂單各 item 匹配到的 SKU 之 `api_version` 決定，全單必須一致）：
+   - Open（SKU 預設，`skus.api_version="open"`）：
      `POST {QPMN_OPEN_API_URL}/orders`
-   - Legacy：`POST {QPMN_API_URL}/store/orders`
+   - Legacy（`skus.api_version="legacy"`）：`POST {QPMN_API_URL}/store/orders`
    - `Authorization: Basic {store_key}`，超時 30s。
 5. 結果處理：
    - `success=true`：狀態轉 `PROCESSING`（`order_push_success` 日誌；郵件靜音——
@@ -336,7 +336,7 @@ QPMN 生產失敗（`order_item_failed`）→ `ERRORED`（需人工介入後重�
 
 | 配置 | 預設 | 說明 |
 |------|------|------|
-| `QPMN_ORDER_API_VERSION` | `open` | 建單 API 版本：`open`（/orders）或 `legacy`（/store/orders） |
+| `skus.api_version` | `open` | （SKU 欄位，非環境變量）建單 API 版本：`open`（/orders）或 `legacy`（/store/orders），按訂單各 item 的 SKU 決定 |
 | `QPMN_PUSH_RETRY_COUNT` | 5 | QPMN 建單逾時重試次數 |
 | `QPMN_PUSH_RETRY_COUNTDOWN` | 900 | 重試基礎延遲（秒） |
 | `QPMN_PUSH_RETRY_MAX_COUNTDOWN` | 7200 | 重試延遲上限（2 小時） |

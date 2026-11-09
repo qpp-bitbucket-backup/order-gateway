@@ -72,6 +72,20 @@ def test_top_level_external_id_stays_order_id():
     assert payload["externalOrderNumber"] == "SO-1"
 
 
+def test_external_order_number_versioned_for_recreated_order():
+    # Artwork-update recreations carry version > 1: QPMN keeps
+    # externalOrderNumber unique even for cancelled orders, so the
+    # QPMN-facing number gets a "-vN" suffix.
+    order = Order(
+        order_id="ord-2", source_account="qpmn", source_order_id="SO-1",
+        type=OrderType.BASE_CARD, version=3,
+    )
+    payload = _build(order=order)
+    assert payload["externalOrderNumber"] == "SO-1-v3"
+    # Local id fields are untouched
+    assert payload["externalId"] == "ord-2"
+
+
 def test_parallel_card_supplier_stock_no_unchanged():
     order = Order(
         order_id="ord-9", source_account="qpmn", source_order_id="SO-9",
@@ -118,3 +132,29 @@ def test_item_meta_data_falls_back_to_sku_and_empty_product_name():
         "sku": "PC-123",
         "productName": "",
     }
+
+
+def test_dump_payload():
+    """Debug helper: print the built payload.
+
+    Normal runs stay silent (pytest captures stdout); inspect the payload with:
+
+        python -m pytest tests/test_open_api_payload.py -k dump -s
+    """
+    import json
+    contexts = [{
+        "item": {
+            "sku": "PC-123", "sourceItemId": 1905904, "quantity": 2,
+            "description": "MALL-SKU-1",
+            "extraData": [{"productName": "Topps NOW® - Card 825"}],
+        },
+        "sku": SimpleNamespace(sku_id="sku-internal-1", unit_price=59.9),
+        "properties": {"back design mode": "same", "front design mode": "same"},
+        "attribute_values": [
+            {"code": "P_Stock", "value": "300g藍芯纸"},
+            {"code": "P_Size_of_deck", "value": 1},
+        ],
+        "customize_project": {},
+    }]
+    print("\n=== Open API payload ===")
+    print(json.dumps(_build(contexts=contexts), indent=2, ensure_ascii=False))

@@ -7,6 +7,7 @@ import json
 import logging
 import base64
 import httpx
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 from app.core.config import settings
@@ -32,6 +33,8 @@ from app.schemas.order import (
     PlatformOrderSummary,
     PlatformOrderDetailsResponse,
     PlatformFullOrder,
+    PlatformShipment,
+    ParallelCardShipment,
     MaskedAddress,
     SiteFlowErrorResponse,
     PlatformOrderRepublishResponse,
@@ -41,6 +44,7 @@ from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
 from app.core.auth_jwt import get_current_user, resolve_scoped_store_id, require_editor_or_above
 from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
+from app.models.shipment import OrderShipment
 from app.models.webhook_log import WebhookLog, WebhookDirection
 from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, DELETABLE_STATUSES, REPUBLISHABLE_STATUSES, parse_parallel_card_id
 from app.services.client import client_service
@@ -1078,6 +1082,9 @@ def update_order(
     HTTP **409**. On success, a new order is created with the same
     ``sourceOrderId`` but a different platform order id — the response's
     ``order`` is the new order, and ``cancelledOrderId`` is the old one's id.
+    The recreated order's version increments, so its QPMN-facing order
+    number becomes ``{sourceOrderId}-v{N}`` (QPMN keeps that number unique
+    even for cancelled orders).
     Requires both ``destination`` and ``orderData`` in the request body.
     """
     _log_request("PUT /order/{order_id}", {"order_id": order_id, **request.model_dump()})
@@ -1191,6 +1198,7 @@ def update_order(
 
             old_order_id = order.order_id
             old_source_order_id = order.source_order_id
+            old_version = order.version or 1
 
             # Cancel current order first; if it can't be cancelled, it can't be updated.
             try:
@@ -1219,7 +1227,10 @@ def update_order(
 
             # Re-create the order with the new content, same source_order_id,
             # different platform order id — mirrors the previous standalone
-            # artwork-update endpoint's contract.
+            # artwork-update endpoint's contract. The version increments so
+            # the QPMN-facing externalOrderNumber becomes
+            # "{sourceOrderId}-v{N}" (QPMN keeps it unique even for
+            # cancelled orders).
             order_data = request.orderData.model_dump()
             order_data["sourceOrderId"] = old_source_order_id
 
@@ -1232,6 +1243,7 @@ def update_order(
                 store_id=store_id,
                 # Content updates recreate the same order — keep its type
                 order_type=order.type,
+                version=old_version + 1,
             )
 
             full_order = FullOrder(
@@ -1523,6 +1535,41 @@ def platform_get_order(
         ] if webhook_logs else None
 
         parent_order_id, parent_source_order_id, parent_store_order_id = _parallel_parent_refs(session, order)
+
+        # Shipment tracking records — order_shipments is written by QPMN's
+        # package_shipped webhook, so this is empty until the order ships.
+        shipment_rows = session.exec(
+            select(OrderShipment)
+            .where(OrderShipment.order_id == order.order_id)
+            .order_by(OrderShipment.created_at.asc())  # type: ignore[union-attr]
+        ).all()
+        shipments = [
+            PlatformShipment(
+                id=s.id,
+                qpmnShipmentId=s.qpmn_shipment_id,
+                shipmentIndex=s.shipment_index,
+                trackingNumber=s.tracking_number,
+                trackingUrl=s.tracking_url,
+                carrier=s.carrier,
+                shipDate=s.ship_date.isoformat() if s.ship_date else None,
+                items=s.items,
+            )
+            for s in shipment_rows
+        ] if shipment_rows else []
+
+        # Parallel-card orders: derive shipment info from the order number
+        # itself — the shipping number is the "_S" suffix of the parallel
+        # card id ({base}_{version}_S{shippingNo}).
+        parallelCardShipment = None
+        if order.type == OrderType.PARALLEL_CARD:
+            parsed = parse_parallel_card_id(order.source_order_id)
+            if parsed:
+                shipping_no = parsed[2]
+                parallelCardShipment = ParallelCardShipment(
+                    trackingNumber=shipping_no,
+                    trackingUrl=f"{settings.TRACKING_URL_PREFIX}{quote(shipping_no)}",
+                )
+
         full_order = PlatformFullOrder(
             id=order.order_id,
             sourceOrderId=order.source_order_id,
@@ -1546,6 +1593,8 @@ def platform_get_order(
             deliveryAddress=masked_delivery,
             billingAddress=masked_billing,
             webhooks=webhooks,
+            shipments=shipments,
+            parallelCardShipment=parallelCardShipment,
         )
 
         return PlatformOrderDetailsResponse(success=True, order=full_order)

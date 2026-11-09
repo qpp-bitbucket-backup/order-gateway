@@ -3,6 +3,28 @@ import pytest
 from sqlalchemy import text
 
 
+def pytest_addoption(parser):
+    """Custom CLI options for debug dump tests.
+
+    --order-id selects a real order for tests/test_legacy_api_payload.py::
+    test_dump_real_order_payload (dump the legacy payload for that order).
+
+        python -m pytest tests/test_legacy_api_payload.py -k real -s --order-id=<order_id>
+    """
+    parser.addoption(
+        "--order-id",
+        action="store",
+        default=None,
+        help="Real order_id for payload dump tests (see test_dump_real_order_payload)",
+    )
+
+
+@pytest.fixture(scope="session")
+def order_id_option(request):
+    """Value of the --order-id CLI option (None when not passed)."""
+    return request.config.getoption("--order-id")
+
+
 @pytest.fixture(autouse=True)
 def _rate_limit_isolated(monkeypatch):
     """Keep the per-client rate limiter out of unrelated tests.
