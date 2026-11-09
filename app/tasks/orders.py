@@ -877,7 +877,7 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
                         f"store_order_id, skipping barcode (supplierStockNo omitted)"
                     )
 
-            payload = order_service.build_push_payload(session, order_id)
+            payload, order_api_version = order_service.build_push_payload(session, order_id)
 
             # Persist the payload actually submitted to QPMN (overwritten on
             # each retry) for auditing and replay of the last push attempt.
@@ -885,10 +885,11 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             session.add(order)
             session.commit()
 
-            # Select API URL based on configured API version. The base URLs
-            # follow the order's store — simulated-production stores push to
-            # the QPMN release platform (see client_service.get_qpmn_urls).
-            use_open_api = settings.QPMN_ORDER_API_VERSION == "open"
+            # Select API URL based on the order's SKUs' api_version (per-SKU
+            # configuration in the skus table). The base URLs follow the
+            # order's store — simulated-production stores push to the QPMN
+            # release platform (see client_service.get_qpmn_urls).
+            use_open_api = order_api_version == "open"
             api_base, open_api_base = client_service.get_qpmn_urls(order.store_id)
             if use_open_api:
                 api_url = f"{open_api_base.rstrip('/')}/orders"

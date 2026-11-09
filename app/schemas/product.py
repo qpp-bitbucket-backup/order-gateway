@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional, List, Dict, Any
+from typing import Literal, Optional, List, Dict, Any
 from datetime import datetime
 
 
@@ -43,9 +43,11 @@ class Sku(BaseModel):
     unitPrice: Optional[float] = Field(None, ge=0, description="Unit price")
     unitCost: Optional[float] = Field(None, ge=0, description="Unit cost")
     maxPackageQuantity: int = Field(50, ge=1, description="Max quantity per package")
+    apiVersion: Literal["open", "legacy"] = Field("open", description="QPMN create-order API this SKU pushes through (decided per order from its items' SKUs)")
     properties: Optional[Dict[str, Any]] = Field(None, description="SKU properties")
+    attributeValues: Optional[List[Dict[str, Any]]] = Field(None, description="Legacy API attributeValues: [{code, value}] attribute pairs sent verbatim on legacy order push")
     customizeProject: Optional[Dict[str, Any]] = Field(None, description="Customize project data")
-    productDesignData: Optional[Dict[str, Any]] = Field(None, description="Open API productDesignData (used when QPMN_ORDER_API_VERSION=open)")
+    productDesignData: Optional[Dict[str, Any]] = Field(None, description="Open API productDesignData (used by SKUs with api_version=open)")
     createdAt: Optional[datetime] = Field(None, description="Creation timestamp")
     updatedAt: Optional[datetime] = Field(None, description="Last update timestamp")
 
@@ -71,9 +73,11 @@ class SkuUpdateRequest(BaseModel):
     unitPrice: Optional[float] = Field(None, ge=0, description="Unit price")
     unitCost: Optional[float] = Field(None, ge=0, description="Unit cost")
     maxPackageQuantity: Optional[int] = Field(None, ge=1, description="Max quantity per package")
+    apiVersion: Optional[Literal["open", "legacy"]] = Field(None, description="QPMN create-order API this SKU pushes through: 'open' or 'legacy'")
     properties: Optional[Dict[str, Any]] = Field(None, description="SKU properties")
+    attributeValues: Optional[List[Dict[str, Any]]] = Field(None, description="Legacy API attributeValues: [{code, value}] attribute pairs sent verbatim on legacy order push")
     customizeProject: Optional[Dict[str, Any]] = Field(None, description="Customize project data")
-    productDesignData: Optional[Dict[str, Any]] = Field(None, description="Open API productDesignData (used when QPMN_ORDER_API_VERSION=open)")
+    productDesignData: Optional[Dict[str, Any]] = Field(None, description="Open API productDesignData (used by SKUs with api_version=open)")
 
 
 class SkuUpdateResponse(BaseModel):

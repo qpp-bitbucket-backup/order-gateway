@@ -212,6 +212,20 @@ def parse_parallel_card_id(source_order_id: str) -> Optional[Tuple[str, str, str
     return match.group(1), match.group(2), match.group(3)
 
 
+# Attribute-code substring identifying the QPMN deck-count attribute
+# (e.g. "P_Size_of_deck"): when a legacy line item carries it, the ordered
+# quantity moves into its value and the wire qty collapses to 1.
+_SIZE_OF_DECK_CODE = "Size_of_deck"
+
+
+def _find_size_of_deck_attr(attribute_values: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return the first attribute whose code contains Size_of_deck, if any."""
+    for attr in attribute_values or []:
+        if _SIZE_OF_DECK_CODE in str(attr.get("code") or ""):
+            return attr
+    return None
+
+
 class OrderService:
     """Service for handling order-related operations."""
 
@@ -1197,22 +1211,64 @@ class OrderService:
             return f"{order.source_order_id}-v{order.version}"
         return order.source_order_id
 
+    def resolve_order_api_version(
+        self,
+        session: Session,
+        order_id: str,
+    ) -> str:
+        """
+        Resolve which QPMN create-order API ("open" | "legacy") the order
+        pushes through, from its items' SKUs' ``api_version``.
+
+        All items must resolve to SKUs on the SAME api_version — a mixed
+        order could not be represented in one create-order request, so it
+        raises ValueError (the push task marks the order FAILED with the
+        message). Orders without resolvable SKUs default to "open".
+        """
+        order = session.exec(select(Order).where(Order.order_id == order_id)).first()
+        if not order:
+            raise ValueError(f"Order: [{order_id}] not found")
+
+        order_data = order.order_data or {}
+        versions: set = set()
+        for item in order_data.get("items", []):
+            sku_ref = item.get("sku")
+            if not sku_ref:
+                continue
+            sku = find_sku_by_ref(
+                session, sku_ref, active_only=False, match_internal_id=True,
+                store_id=order.store_id,
+            )
+            if sku:
+                versions.add(sku.api_version or "open")
+
+        if len(versions) > 1:
+            raise ValueError(
+                f"Order {order_id}: items resolve to mixed SKU api_versions "
+                f"({sorted(versions)}) — all items must use the same QPMN API"
+            )
+        return versions.pop() if versions else "open"
+
     def build_push_payload(
         self,
         session: Session,
         order_id: str,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], str]:
         """
-        Dispatch to the correct payload builder based on ``QPMN_ORDER_API_VERSION``.
+        Dispatch to the correct payload builder based on the order's SKUs'
+        ``api_version``.
 
         Returns:
-            The payload dict ready for the corresponding QPMN create-order API.
+            (payload, api_version) — the payload dict ready for the
+            corresponding QPMN create-order API and the version the caller
+            must use when picking the endpoint URL.
         """
-        if settings.QPMN_ORDER_API_VERSION == "open":
+        api_version = self.resolve_order_api_version(session, order_id)
+        if api_version == "open":
             logger.info("[OrderService] Building Open API payload for order %s", order_id)
-            return self._build_open_api_payload(session, order_id)
+            return self._build_open_api_payload(session, order_id), "open"
         logger.info("[OrderService] Building legacy API payload for order %s", order_id)
-        return self._build_legacy_payload(session, order_id)
+        return self._build_legacy_payload(session, order_id), "legacy"
 
     def _prepare_order_and_skus(
         self,
@@ -1257,22 +1313,31 @@ class OrderService:
             sku_id = sku.sku_id
 
             properties = sku.properties or {}
-            # The design source follows the SKU's own data, NOT
-            # QPMN_ORDER_API_VERSION (that config only picks the create-order
-            # payload builder; a store can mix both SKU shapes): prefer the
-            # dedicated Open API product_design_data, falling back to the
-            # legacy customize_project for SKUs configured before the field
-            # existed.
+            # The design source follows the SKU's own data, NOT its
+            # api_version (that field only picks the create-order payload
+            # builder; a store can mix both SKU shapes). Selection is
+            # by CONTENT, not by field nullness: a placeholder
+            # product_design_data ({} or empty designData) must not shadow a
+            # fully-populated legacy customize_project — prefer whichever
+            # structure actually carries designs, so the legacy builder
+            # finds "designs" and the open builder's converter produces a
+            # real designData.
             #
             # Deep-copied per line item: two items resolving to the same SKU
             # share one SQLModel instance (SQLAlchemy identity map), so
             # writing this item's file URLs straight into
             # sku.product_design_data would leak into the next item's payload
             # and both cards would print the same artwork.
-            if sku.product_design_data is not None:
-                customize_project = copy.deepcopy(sku.product_design_data)
+            pdd = sku.product_design_data
+            cp = sku.customize_project
+            if isinstance(pdd, dict) and pdd.get("designData"):
+                customize_project = copy.deepcopy(pdd)
+            elif isinstance(cp, dict) and cp.get("designs"):
+                customize_project = copy.deepcopy(cp)
+            elif pdd is not None:
+                customize_project = copy.deepcopy(pdd)
             else:
-                customize_project = copy.deepcopy(sku.customize_project or {})
+                customize_project = copy.deepcopy(cp or {})
             # Legacy "designs" injection list — Open API dicts simply have no
             # "designs" key, so the legacy injection loop below is a no-op
             # for them.
@@ -1335,6 +1400,10 @@ class OrderService:
                 "sku": sku,
                 "files": files,
                 "properties": properties,
+                # Deep-copied like customize_project: same identity-map
+                # sharing applies, and the legacy builder forwards it to the
+                # line item verbatim.
+                "attribute_values": copy.deepcopy(sku.attribute_values),
                 "customize_project": customize_project,
             })
 
@@ -1381,6 +1450,16 @@ class OrderService:
             properties = ctx["properties"]
             customize_project = ctx["customize_project"]
 
+            # SKUs carrying only the Open structure (product sync fills
+            # product_design_data, never customize_project) must be
+            # converted to the legacy designs shape — otherwise the line
+            # item's customizeProject degenerates to just the
+            # comparisonThumbnail. The imageUrl injection already ran in
+            # _prepare_order_and_skus, so the mapped images carry the
+            # uploaded design file URLs.
+            if "designs" not in customize_project and customize_project.get("designData"):
+                customize_project = self._convert_product_design_to_customize(customize_project)
+
             # Generate comparisonThumbnail from first file
             first_file_obj = files[0] if files else None
             if first_file_obj:
@@ -1397,6 +1476,21 @@ class OrderService:
                 "properties": properties,
                 "customizeProject": customize_project,
             }
+            # Legacy API attributeValues (SKU attribute pairs synced from
+            # QPMN sample data) — omitted when the SKU carries none, keeping
+            # the wire format unchanged for older SKUs.
+            attribute_values = ctx.get("attribute_values")
+            if attribute_values:
+                line_item["attributeValues"] = attribute_values
+                # QPMN deck products: when the SKU carries a Size_of_deck
+                # attribute (e.g. P_Size_of_deck), the ordered quantity
+                # moves into that attribute's value and the line item qty
+                # collapses to 1 — one package holding N decks. Order
+                # totals keep pricing at the ordered quantity (see below).
+                size_attr = _find_size_of_deck_attr(attribute_values)
+                if size_attr is not None:
+                    size_attr["value"] = item.get("quantity", 1)
+                    line_item["qty"] = 1
             # Parallel-card orders carry the generated barcode as the stock
             # number, suffixed with the item's 1-based position (01, 02, ...)
             if order.type == OrderType.PARALLEL_CARD and order.barcode:
@@ -1404,12 +1498,23 @@ class OrderService:
             line_items.append(line_item)
 
         # Order totals mirroring the legacy API's orderTotals block:
-        # SUBTOTAL sums unitPrice x qty of the line items above; TAX and
-        # SHIPPING have no source in the gateway and default to 0, making
-        # ORDER_TOTAL equal to SUBTOTAL.
+        # SUBTOTAL sums unitPrice x ordered quantity of the line items
+        # above — line items whose qty was folded into a Size_of_deck
+        # attribute price at the folded count (the attribute value), not
+        # the wire qty of 1. TAX and SHIPPING have no source in the
+        # gateway and default to 0, making ORDER_TOTAL equal to SUBTOTAL.
+        def _billing_qty(li: Dict[str, Any]) -> int:
+            size_attr = _find_size_of_deck_attr(li.get("attributeValues") or [])
+            if size_attr is not None:
+                try:
+                    return int(size_attr.get("value"))
+                except (TypeError, ValueError):
+                    return 0
+            return li["qty"] or 1
+
         subtotal = round(
             sum(
-                (li["unitPrice"] or 0) * (li["qty"] or 1)
+                (li["unitPrice"] or 0) * _billing_qty(li)
                 for li in line_items
             ),
             2,
@@ -1538,7 +1643,7 @@ class OrderService:
         """
         Convert legacy ``customizeProject`` to Open API ``productDesignData``.
 
-        The path is picked by the INPUT structure, not QPMN_ORDER_API_VERSION
+        The path is picked by the INPUT structure, not the SKU's api_version
         (a store can mix both SKU shapes): a dict that already carries the
         Open API ``designData`` key passes it through unchanged; a legacy
         ``designs`` dict converts to ``designData`` + ``designAttributeValues``
@@ -1597,6 +1702,68 @@ class OrderService:
             "designData": design_data,
             "designAttributeValues": design_attribute_values,
         }
+
+    @staticmethod
+    def _convert_product_design_to_customize(
+        customize_project: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Convert an Open API ``productDesignData`` structure to the legacy
+        ``customizeProject`` shape (reverse of
+        ``_convert_customize_to_product_design_data``).
+
+        Used by the legacy payload builder when the SKU only carries the
+        Open structure (the product sync populates product_design_data from
+        QPMN sample data and never fills customize_project) — without this
+        the legacy line item's customizeProject degenerates to just the
+        comparisonThumbnail. Field mapping:
+
+        - designData[].code (base64)      -> designs[].materialPath
+        - views order                     -> designs[].side: first view
+          "Card_Front", second "Card_Back" (later views keep their code)
+        - designs[].index                 -> pageContentDesigns[].pageContentIndex
+        - effectImages[].effect/imageUrl  -> pageContentDesigns[].effect/image
+
+        Mirrors the forward converter's "effect and image both present"
+        rule: effectImages without an imageUrl are skipped, and views left
+        with no pageContentDesigns produce no design entry. Expects the
+        imageUrl injection to have already run (the Open dict is shared
+        with the open builder's injection pass).
+        """
+        designs: List[Dict[str, Any]] = []
+        for material in customize_project.get("designData", []):
+            code = material.get("code") or ""
+            try:
+                material_path = base64.b64decode(code).decode() if code else ""
+            except Exception:
+                material_path = code  # not base64 — keep verbatim
+            for view_idx, view in enumerate(material.get("views", [])):
+                if view_idx == 0:
+                    side = "Card_Front"
+                elif view_idx == 1:
+                    side = "Card_Back"
+                else:
+                    side = view.get("code") or ""
+                page_content_designs: List[Dict[str, Any]] = []
+                for design in view.get("designs") or []:
+                    index = design.get("index")
+                    for effect_image in design.get("effectImages") or []:
+                        image = effect_image.get("imageUrl")
+                        if not image:
+                            continue
+                        page_content_designs.append({
+                            "pageContentIndex": index if index is not None else 0,
+                            "effect": effect_image.get("effect"),
+                            "image": image,
+                        })
+                if not page_content_designs:
+                    continue
+                designs.append({
+                    "side": side,
+                    "materialPath": material_path,
+                    "pageContentDesigns": page_content_designs,
+                })
+        return {"customizeType": "IMAGE", "designs": designs}
 
     def _address_to_legacy_payload(self, address: Address) -> Dict[str, Any]:
         """Convert Address model to legacy API payload format."""
