@@ -320,24 +320,16 @@ def sync_products_to_db(
     }
 
 
-def fetch_product_design_data_from_sample(
+def _fetch_sample_items(
     product_id: str, store_key: str, store_id: Optional[str] = None
-) -> Optional[Dict[str, Any]]:
+) -> Optional[List[Dict[str, Any]]]:
     """
-    Fetch the productDesignData from the QPMN order sample data API.
+    POST the QPMN order sample data API and return its items list.
 
     POST {QPMN_API_URL}/v2/store/products/{product_id}/order/sampleData
 
-    Args:
-        product_id: QPMN product ID
-        store_key: Store key for API authentication (from clients table)
-        store_id: Store the product belongs to — selects the platform
-            (simulated-production stores query the release API)
-
-    Returns:
-        The productDesignData dict from the first sample item carrying one,
-        or None on any failure (errors are logged, never raised, so the
-        product sync is not affected).
+    Returns None on any failure (errors are logged, never raised, so the
+    product sync is not affected).
     """
     api_base, _ = client_service.get_qpmn_urls(store_id)
     api_url = (
@@ -352,26 +344,61 @@ def fetch_product_design_data_from_sample(
             response = client.post(api_url, headers=headers)
             response.raise_for_status()
             data = response.json()
-        items = (data.get("data") or {}).get("items") or []
-        for item in items:
-            product_design_data = item.get("productDesignData")
-            if product_design_data:
-                return product_design_data
-        return None
+        return (data.get("data") or {}).get("items") or []
     except Exception as e:
         logger.error(f"Error fetching order sample data for product {product_id}: {str(e)}")
         return None
 
 
-def _apply_product_design_data_from_sample(
+def fetch_product_design_data_from_sample(
+    product_id: str, store_key: str, store_id: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch the productDesignData from the QPMN order sample data API.
+
+    Returns the productDesignData dict from the first sample item carrying
+    one, or None (best-effort: failures only log an error).
+    """
+    items = _fetch_sample_items(product_id, store_key, store_id=store_id)
+    for item in items or []:
+        product_design_data = item.get("productDesignData")
+        if product_design_data:
+            return product_design_data
+    return None
+
+
+def fetch_attribute_values_from_sample(
+    product_id: str, store_key: str, store_id: Optional[str] = None
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Fetch the attributeValues from the QPMN order sample data API.
+
+    Same endpoint as ``fetch_product_design_data_from_sample``; returns the
+    ``attributeValues`` list (``[{code, value}]`` pairs) from the first
+    sample item carrying one, or None (best-effort, same failure policy).
+    """
+    items = _fetch_sample_items(product_id, store_key, store_id=store_id)
+    for item in items or []:
+        attribute_values = item.get("attributeValues")
+        if attribute_values:
+            return attribute_values
+    return None
+
+
+def _apply_sample_fields_to_sku(
     sku: Sku,
     product_id: str,
     store_id: Optional[str],
 ) -> None:
     """
     Best-effort: fetch the QPMN order sample data for the product and store
-    its productDesignData on the SKU. Failures only log an error and never
-    block the product sync.
+    its productDesignData / attributeValues / customizeProject on the SKU
+    (single API call for all three — the sample items carry
+    ``productDesignData`` (Open shape), ``attributeValues`` and/or
+    ``customizeProject`` (legacy shape) depending on the product). Each
+    field is only backfilled when the SKU does not already carry one, so a
+    manual or previously-synced value is never overwritten. Failures only
+    log an error and never block the product sync.
     """
     if not store_id:
         return
@@ -379,10 +406,37 @@ def _apply_product_design_data_from_sample(
         store_key = client_service.get_store_key_by_id(store_id)
         if not store_key:
             return
-        product_design_data = fetch_product_design_data_from_sample(product_id, store_key, store_id=store_id)
-        if product_design_data:
-            sku.product_design_data = product_design_data
-            logger.debug(f"Stored productDesignData for SKU: {sku.code}")
+        needs = {
+            "design_data": sku.product_design_data is None,
+            "attribute_values": sku.attribute_values is None,
+            "customize_project": sku.customize_project is None,
+        }
+        if not any(needs.values()):
+            return
+        items = _fetch_sample_items(product_id, store_key, store_id=store_id)
+        if items is None:
+            return
+        if needs["design_data"]:
+            for item in items:
+                product_design_data = item.get("productDesignData")
+                if product_design_data:
+                    sku.product_design_data = product_design_data
+                    logger.debug(f"Stored productDesignData for SKU: {sku.code}")
+                    break
+        if needs["attribute_values"]:
+            for item in items:
+                attribute_values = item.get("attributeValues")
+                if attribute_values:
+                    sku.attribute_values = attribute_values
+                    logger.debug(f"Stored attributeValues for SKU: {sku.code}")
+                    break
+        if needs["customize_project"]:
+            for item in items:
+                customize_project = item.get("customizeProject")
+                if customize_project:
+                    sku.customize_project = customize_project
+                    logger.debug(f"Stored customizeProject for SKU: {sku.code}")
+                    break
     except Exception as sample_err:
         logger.error(
             f"Error fetching order sample data for product {product_id}: {sample_err}"
@@ -529,10 +583,15 @@ def sync_sku_to_db(
                         existing_sku.updated_at = qpmn_modified_dt
             if store_id:
                 existing_sku.store_id = store_id
-            # Backfill productDesignData for existing SKUs that don't have
-            # one yet (e.g. synced before this field existed)
-            if existing_sku.product_design_data is None:
-                _apply_product_design_data_from_sample(existing_sku, product_id, store_id)
+            # Backfill productDesignData / attributeValues / customizeProject
+            # for existing SKUs missing them (e.g. synced before these fields
+            # existed)
+            if (
+                existing_sku.product_design_data is None
+                or existing_sku.attribute_values is None
+                or existing_sku.customize_project is None
+            ):
+                _apply_sample_fields_to_sku(existing_sku, product_id, store_id)
             # Refresh the retail price from the resale price config API
             _apply_retail_price(existing_sku, product_id, store_id)
             logger.debug(f"Updated SKU: {sku_code}")
@@ -549,9 +608,9 @@ def sync_sku_to_db(
                 store_id=store_id,
             )
             # For new SKUs, fetch the QPMN order sample data and persist its
-            # productDesignData (best-effort: failures only log an error and
-            # never block the product sync)
-            _apply_product_design_data_from_sample(new_sku, product_id, store_id)
+            # productDesignData / attributeValues (best-effort: failures only
+            # log an error and never block the product sync)
+            _apply_sample_fields_to_sku(new_sku, product_id, store_id)
             # Store the retail price from the resale price config API
             _apply_retail_price(new_sku, product_id, store_id)
             session.add(new_sku)

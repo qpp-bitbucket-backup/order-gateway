@@ -150,6 +150,7 @@ def get_skus(
                 unitPrice=sku.unit_price,
                 unitCost=sku.unit_cost,
                 maxPackageQuantity=sku.max_package_quantity,
+                apiVersion=sku.api_version or "open",
             )
             for sku in skus
         ]
@@ -294,6 +295,7 @@ def jwt_get_skus(
                 unitPrice=sku.unit_price,
                 unitCost=sku.unit_cost,
                 maxPackageQuantity=sku.max_package_quantity,
+                apiVersion=sku.api_version or "open",
                 createdAt=sku.created_at,
                 updatedAt=sku.updated_at,
             )
@@ -359,7 +361,9 @@ def jwt_get_sku_by_id(
             unitPrice=sku.unit_price,
             unitCost=sku.unit_cost,
             maxPackageQuantity=sku.max_package_quantity,
+            apiVersion=sku.api_version or "open",
             properties=sku.properties,
+            attributeValues=sku.attribute_values,
             customizeProject=sku.customize_project,
             productDesignData=sku.product_design_data,
             createdAt=sku.created_at,
@@ -442,9 +446,15 @@ def jwt_update_sku(
         if request.maxPackageQuantity is not None:
             sku.max_package_quantity = request.maxPackageQuantity
             changes.append("maxPackageQuantity")
+        if request.apiVersion is not None:
+            sku.api_version = request.apiVersion
+            changes.append("apiVersion")
         if request.properties is not None:
             sku.properties = request.properties
             changes.append("properties")
+        if request.attributeValues is not None:
+            sku.attribute_values = request.attributeValues
+            changes.append("attributeValues")
         if request.customizeProject is not None:
             sku.customize_project = request.customizeProject
             changes.append("customizeProject")
@@ -472,7 +482,9 @@ def jwt_update_sku(
             unitPrice=sku.unit_price,
             unitCost=sku.unit_cost,
             maxPackageQuantity=sku.max_package_quantity,
+            apiVersion=sku.api_version or "open",
             properties=sku.properties,
+            attributeValues=sku.attribute_values,
             customizeProject=sku.customize_project,
             productDesignData=sku.product_design_data,
             createdAt=sku.created_at,
@@ -563,9 +575,17 @@ def update_sku(
             sku.max_package_quantity = request.maxPackageQuantity
             changes.append("maxPackageQuantity")
 
+        if request.apiVersion is not None:
+            sku.api_version = request.apiVersion
+            changes.append("apiVersion")
+
         if request.properties is not None:
             sku.properties = request.properties
             changes.append("properties")
+
+        if request.attributeValues is not None:
+            sku.attribute_values = request.attributeValues
+            changes.append("attributeValues")
 
         if request.customizeProject is not None:
             sku.customize_project = request.customizeProject
@@ -595,7 +615,9 @@ def update_sku(
             unitPrice=sku.unit_price,
             unitCost=sku.unit_cost,
             maxPackageQuantity=sku.max_package_quantity,
+            apiVersion=sku.api_version or "open",
             properties=sku.properties,
+            attributeValues=sku.attribute_values,
             customizeProject=sku.customize_project,
             productDesignData=sku.product_design_data,
             createdAt=sku.created_at,
