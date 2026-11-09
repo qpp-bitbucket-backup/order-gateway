@@ -80,13 +80,20 @@ def _seed(
     barcode=None,
     version=1,
     open_design_data=None,
+    strip_source_item_id=False,
 ):
     item = {"sku": "PC-1", "sourceItemId": 1905904}
     if quantity is not None:
         item["quantity"] = quantity
+    files = FILES
+    if strip_source_item_id:
+        item.pop("sourceItemId")
+        # without sourceItemId the design files fall back to the
+        # {resolved_sku_id}-{item_index} composite key
+        files = {"sku-1-0": FILES["1905904"]}
     session.add(Order(
         order_id="ord-1", source_account="qpmn", source_order_id="SO-1",
-        store_id="store-1", order_data={"items": [item]}, files=FILES,
+        store_id="store-1", order_data={"items": [item]}, files=files,
         type=order_type, barcode=barcode, version=version,
     ))
     session.add(Sku(
@@ -156,8 +163,9 @@ class TestLineItems:
         _seed(session, attribute_values=ATTRIBUTE_VALUES)
         payload = _build(session, monkeypatch)
         item = payload["items"][0]
-        # both id fields carry the internal sku_id
-        assert item["thirdOrderItemId"] == "sku-1"
+        # thirdOrderItemId carries the VFS order item's sourceItemId; only
+        # storeProductId keeps the internal sku_id
+        assert item["thirdOrderItemId"] == 1905904
         assert item["storeProductId"] == "sku-1"
         assert item["qty"] == 2
         assert item["unitPrice"] == 9.5
@@ -169,6 +177,14 @@ class TestLineItems:
         # comparisonThumbnail derives from the first file (QPMN preview URL)
         assert item["customizeProject"]["comparisonThumbnail"] == \
             "https://oss/file-0.png/320/320/png"
+
+    def test_third_order_item_id_falls_back_to_sku_id(self, session, monkeypatch):
+        # item without sourceItemId — pre-change wire format (internal sku_id)
+        _seed(session, strip_source_item_id=True)
+        payload = _build(session, monkeypatch)
+        item = payload["items"][0]
+        assert item["thirdOrderItemId"] == "sku-1"
+        assert item["storeProductId"] == "sku-1"
 
     def test_qty_defaults_to_one_and_unit_price_to_zero(self, session, monkeypatch):
         # quantity omitted on the item, unit_price unset on the SKU
