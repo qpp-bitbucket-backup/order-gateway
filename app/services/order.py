@@ -1469,7 +1469,11 @@ class OrderService:
                     customize_project["comparisonThumbnail"] = thumbnail_url
 
             line_item = {
-                "thirdOrderItemId": sku.sku_id,
+                # Third-party order-item id (VFS orderData.items[].sourceItemId)
+                # — mirrors the Open API builder's externalId contract; falls
+                # back to the internal sku_id for orders submitted without
+                # sourceItemId (pre-change wire format).
+                "thirdOrderItemId": item.get("sourceItemId") or sku.sku_id,
                 "qty": item.get("quantity", 1),
                 "unitPrice": sku.unit_price or 0,
                 "storeProductId": sku.sku_id,
