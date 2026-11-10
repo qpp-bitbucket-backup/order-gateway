@@ -242,9 +242,13 @@ class TestLineItems:
         # views whose effectImages carry no imageUrl (e.g. an unfilled label
         # placeholder) produce no design entry — tested directly on the
         # converter (the payload builder's file-count guard rejects such
-        # under-filled orders earlier).
+        # under-filled orders earlier). OPEN_PDD ships with imageUrl=None
+        # placeholders, so view[0] is filled first to mimic the
+        # post-injection state.
         pdd = copy.deepcopy(OPEN_PDD)
-        pdd["designData"][0]["views"][1]["designs"][0]["effectImages"][0]["imageUrl"] = None
+        pdd["designData"][0]["views"][0]["designs"][0]["effectImages"][0]["imageUrl"] = \
+            "https://oss/file-0.png"
+        # views 1 and the appended label view stay unfilled -> filtered out
         pdd["designData"][0]["views"].append(
             {"code": "12345678", "designs": [
                 {"index": None, "effectImages": [{"effect": "CMYK", "imageUrl": None}]},
@@ -252,7 +256,7 @@ class TestLineItems:
         )
         cp = order_service._convert_product_design_to_customize(pdd)
         assert [d["side"] for d in cp["designs"]] == ["Card_Front"]
-        assert cp["designs"][0]["pageContentDesigns"][0]["image"] is not None
+        assert cp["designs"][0]["pageContentDesigns"][0]["image"] == "https://oss/file-0.png"
 
 
 class TestAddresses:
