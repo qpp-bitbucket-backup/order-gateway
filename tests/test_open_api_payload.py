@@ -98,7 +98,8 @@ def test_parallel_card_supplier_stock_no_unchanged():
         for n in (1, 2)
     ]
     payload = _build(order=order, contexts=contexts)
-    assert [li["supplierStockNo"] for li in payload["items"]] == ["BC01", "BC02"]
+    assert [li["supplierStockNo"] for li in payload["items"]] == [
+        "BC0000000000001", "BC0000000000002"]
     assert [li["externalId"] for li in payload["items"]] == ["PC-1", "PC-2"]
 
 

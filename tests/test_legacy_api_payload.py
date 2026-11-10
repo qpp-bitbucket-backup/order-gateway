@@ -208,8 +208,8 @@ class TestLineItems:
     def test_supplier_stock_no_only_on_parallel_card(self, session, monkeypatch):
         _seed(session, order_type=OrderType.PARALLEL_CARD, barcode="4935768626")
         payload = _build(session, monkeypatch)
-        # barcode + two-digit 1-based item index
-        assert payload["items"][0]["supplierStockNo"] == "493576862601"
+        # barcode + zero padding + 1-based item index, fixed 15 digits
+        assert payload["items"][0]["supplierStockNo"] == "493576862600001"
 
     def test_base_card_has_no_supplier_stock_no(self, session, monkeypatch):
         _seed(session, order_type=OrderType.BASE_CARD, barcode="BC")

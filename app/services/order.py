@@ -226,6 +226,15 @@ def _find_size_of_deck_attr(attribute_values: List[Dict[str, Any]]) -> Optional[
     return None
 
 
+def parallel_card_item_barcode(order_barcode: str, idx: int, total_digits: int = 15) -> str:
+    """Item-level barcode for parallel-card orders: the parent order's QPMN
+    store_order_id zero-padded with the 1-based item index so the total is
+    fixed at 15 digits (e.g. '4935768626' + '000' + '01' -> '493576862600001').
+    Barcodes longer than total_digits - 2 keep a 2-digit index."""
+    idx_width = max(total_digits - len(order_barcode), 2)
+    return f"{order_barcode}{idx:0{idx_width}d}"
+
+
 class OrderService:
     """Service for handling order-related operations."""
 
@@ -1496,9 +1505,9 @@ class OrderService:
                     size_attr["value"] = item.get("quantity", 1)
                     line_item["qty"] = 1
             # Parallel-card orders carry the generated barcode as the stock
-            # number, suffixed with the item's 1-based position (01, 02, ...)
+            # number: barcode + zero padding + item index, fixed 15 digits
             if order.type == OrderType.PARALLEL_CARD and order.barcode:
-                line_item["supplierStockNo"] = f"{order.barcode}{idx:02d}"
+                line_item["supplierStockNo"] = parallel_card_item_barcode(order.barcode, idx)
             line_items.append(line_item)
 
         # Order totals mirroring the legacy API's orderTotals block:
@@ -1588,9 +1597,9 @@ class OrderService:
                 "productDesignData": product_design_data,
             }
             # Parallel-card orders carry the generated barcode as the stock
-            # number, suffixed with the item's 1-based position (01, 02, ...)
+            # number: barcode + zero padding + item index, fixed 15 digits
             if order.type == OrderType.PARALLEL_CARD and order.barcode:
-                line_item["supplierStockNo"] = f"{order.barcode}{idx:02d}"
+                line_item["supplierStockNo"] = parallel_card_item_barcode(order.barcode, idx)
             line_items.append(line_item)
 
         # Fetched once and shared by the top-level currency field and

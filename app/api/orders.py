@@ -46,7 +46,7 @@ from app.models.user import User
 from app.models.address import Address as AddressModel, AddressType
 from app.models.shipment import OrderShipment
 from app.models.webhook_log import WebhookLog, WebhookDirection
-from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, DELETABLE_STATUSES, REPUBLISHABLE_STATUSES, parse_parallel_card_id
+from app.services.order import order_service, OrderNotCancellableError, QPMNCancelError, UPDATABLE_STATUSES, DELETABLE_STATUSES, REPUBLISHABLE_STATUSES, parse_parallel_card_id, parallel_card_item_barcode
 from app.services.client import client_service
 from app.services.order_notifications import enqueue_status_change_email, record_status_change
 from app.services.sku_matching import find_sku_by_ref
@@ -122,10 +122,10 @@ def _enrich_order_data_with_status(order_data: Optional[dict], status: OrderStat
 def _with_parallel_card_barcodes(order_data: Optional[dict], barcode: Optional[str]) -> Optional[dict]:
     """Return a copy of *order_data* with item barcodes injected.
 
-    Parallel-card orders submit ``supplierStockNo = barcode + two-digit item
-    index`` (e.g. ``"4935768626" + "01"``) to QPMN; the status response
-    exposes the same value as ``items[].barcode``. Items are copied so the
-    DB-backed ``order_data`` object stays untouched.
+    Parallel-card orders submit ``supplierStockNo = barcode + zero padding +
+    item index, fixed 15 digits`` (e.g. ``"4935768626" -> "493576862600001"``)
+    to QPMN; the status response exposes the same value as ``items[].barcode``.
+    Items are copied so the DB-backed ``order_data`` object stays untouched.
     """
     if not barcode or not isinstance(order_data, dict):
         return order_data
@@ -134,7 +134,7 @@ def _with_parallel_card_barcodes(order_data: Optional[dict], barcode: Optional[s
         return order_data
     enriched = dict(order_data)
     enriched["items"] = [
-        {**item, "barcode": f"{barcode}{idx:02d}"} if isinstance(item, dict) else item
+        {**item, "barcode": parallel_card_item_barcode(barcode, idx)} if isinstance(item, dict) else item
         for idx, item in enumerate(items, start=1)
     ]
     return enriched
@@ -1020,7 +1020,7 @@ def get_order_status(
         # Build order object with enriched status
         order_data = _enrich_order_data_with_status(order.order_data, order.status)
         # Parallel-card orders expose each item's QPMN supplierStockNo
-        # (order barcode + two-digit item index) as orderData.items[].barcode.
+        # (order barcode + zero padding + item index, fixed 15 digits) as orderData.items[].barcode.
         if order.type == OrderType.PARALLEL_CARD:
             order_data = _with_parallel_card_barcodes(order_data, order.barcode)
         full_order = FullOrder(
