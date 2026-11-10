@@ -255,7 +255,6 @@ def sync_products_to_db(
                     logger.debug(f"Created new product: {product_code}")
                 
                 products_synced += 1
-
                 # for qpmn_sku in skus:
                 sku_result = sync_sku_to_db(session, qpmn_product, product_id, store_id)
                 if sku_result:
