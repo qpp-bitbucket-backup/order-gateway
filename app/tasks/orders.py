@@ -855,9 +855,10 @@ def push_order(self, order_data: Dict[str, Any]) -> bool:
             # store_order_id as the barcode, persisted once before building
             # the payload — retries (503 backoff) reuse the same value, and
             # the payload builders echo it into each item's supplierStockNo
-            # with the item's 1-based position as a two-digit suffix (01, 02,
-            # ...). Without a parent store_order_id (base not pushed yet)
-            # barcode stays empty and supplierStockNo is omitted.
+            # zero-padded with the item's 1-based index to a fixed 15 digits
+            # (e.g. 4935768626 -> 493576862600001). Without a parent
+            # store_order_id (base not pushed yet) barcode stays empty and
+            # supplierStockNo is omitted.
             if order.type == OrderType.PARALLEL_CARD and not order.barcode:
                 parent = order_service.find_parallel_card_parent(
                     session, order.source_order_id, store_id=order.store_id

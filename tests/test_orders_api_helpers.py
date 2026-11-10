@@ -82,8 +82,8 @@ class TestWithParallelCardBarcodes:
             ]
         }
         result = _with_parallel_card_barcodes(order_data, "4935768626")
-        assert result["items"][0]["barcode"] == "493576862601"
-        assert result["items"][1]["barcode"] == "493576862602"
+        assert result["items"][0]["barcode"] == "493576862600001"
+        assert result["items"][1]["barcode"] == "493576862600002"
 
     def test_does_not_mutate_original(self):
         order_data = {"items": [{"sku": "A"}]}
