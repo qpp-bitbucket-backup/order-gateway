@@ -74,8 +74,8 @@ class Settings(BaseSettings):
     OMS_APP_SECRET: str = ""
     OMS_SOURCE_APP: str = ""
     OMS_INTERFACE_TYPE: str = "1"
-    OMS_STATUS_METHOD_NAME: str = "shipment_order_notify"
-
+    OMS_STATUS_METHOD_NAME: str = "fc_qp_status_feedback"
+    OMS_ADDRESS_METHOD_NAME: str = "fc_qp_getDeliveryInfo"
     # CORS
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
 
