@@ -100,7 +100,7 @@ class OMSService:
             )
 
             params = hub4.build_query_params(
-                method_name=settings.OMS_STATUS_METHOD_NAME,
+                method_name=settings.OMS_ADDRESS_METHOD_NAME,
                 source_app=settings.OMS_SOURCE_APP,
                 interface_type=settings.OMS_INTERFACE_TYPE,
             )
@@ -118,10 +118,13 @@ class OMSService:
             try:
                 with httpx.Client(timeout=30.0, follow_redirects=True) as client:
                     response = client.post(
-                        f"{self.base_url}/api/logistics",
+                        self.base_url,
                         params=url_params,
                         content=body_ciphertext,
-                        headers={"Content-Type": "text/plain"},
+                        headers={
+                            "Content-Type": "application/json;charset=UTF-8",
+                            "Accept": "application/json",
+                        },
                     )
             except httpx.TimeoutException:
                 logger.warning("[OMS] API-001 timeout for order %s", order_id)
@@ -222,7 +225,7 @@ class OMSService:
                 interface_type=settings.OMS_INTERFACE_TYPE,
             )
             mock_headers = {
-                "Content-Type": "text/plain",
+                "Content-Type": "application/json;charset=UTF-8",
                 **{"Version" if k == "version" else k: v for k, v in mock_params.items()},
                 "sign": "mock-signature",
             }
@@ -249,13 +252,17 @@ class OMSService:
 
         logger.info("[OMS] POST API-002 status=%s orderNo=%s", event_status, order.order_id)
 
-        request_headers = {"Content-Type": "text/plain", **url_params}
+        request_headers = {
+            "Content-Type": "application/json;charset=UTF-8",
+            "Accept": "application/json",
+            **url_params,
+        }
 
         # DEBUG: dump the full request (URL, signed params, plaintext business
         # payload and the AES ciphertext actually sent) before the call.
         if settings.DEBUG:
             logger.info(
-                "[OMS][DEBUG] API-002 request\nURL: %s/api/order/status\n"
+                "[OMS][DEBUG] API-002 request\nURL: %s\n"
                 "params: %s\npayload: %s",
                 self.base_url,
                 json.dumps(url_params, ensure_ascii=False),
@@ -264,10 +271,13 @@ class OMSService:
 
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = client.post(
-                f"{self.base_url}/api/order/status",
+                self.base_url,
                 params=url_params,
                 content=body_ciphertext,
-                headers={"Content-Type": "text/plain"},
+                headers={
+                    "Content-Type": "application/json;charset=UTF-8",
+                    "Accept": "application/json",
+                },
             )
 
         # DEBUG: dump the raw response alongside the request above.
