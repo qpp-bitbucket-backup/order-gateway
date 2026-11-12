@@ -129,3 +129,40 @@ def find_sku_by_ref(
         if source_sku_matches(sku.source_sku, sku_ref):
             return sku
     return None
+
+
+PARALLEL_CARD_SKU_SUFFIX = "-PARALLEL"
+
+
+def find_parallel_card_sku(
+    session: Session,
+    sku_ref: str,
+    *,
+    store_id: Optional[str] = None,
+) -> Optional[Sku]:
+    """Resolve a SKU for a parallel-card line item.
+
+    Parallel-card items carry the same ``items[].sku`` as the base card. A
+    store can route them to a parallel-specific product by configuring a
+    ``source_sku`` equal to the base ref + ``-PARALLEL`` (literal or regex
+    pattern). The suffixed ref is tried first (same resolution order as
+    ``find_sku_by_ref``: internal sku_id -> literal -> regex); when it
+    matches nothing the plain ref is resolved as usual, so stores without
+    a parallel-specific SKU keep getting the base-card product.
+    """
+    return (
+        find_sku_by_ref(
+            session,
+            f"{sku_ref}{PARALLEL_CARD_SKU_SUFFIX}",
+            active_only=False,
+            match_internal_id=True,
+            store_id=store_id,
+        )
+        or find_sku_by_ref(
+            session,
+            sku_ref,
+            active_only=False,
+            match_internal_id=True,
+            store_id=store_id,
+        )
+    )

@@ -171,6 +171,10 @@ class TestLineItems:
         assert item["unitPrice"] == 9.5
         assert item["properties"] == {"back design mode": "same"}
         assert item["attributeValues"] == ATTRIBUTE_VALUES
+        # metadata mirrors the Open API builder: sku prefers the item
+        # description (absent here -> item sku), productName from extraData
+        # (absent -> empty string)
+        assert item["metadata"] == {"sku": "PC-1", "productName": ""}
         # the uploaded design file was injected into pageContentDesigns.image
         pcd = item["customizeProject"]["designs"][0]["pageContentDesigns"][0]
         assert pcd["image"] == "https://oss/file-0.png"

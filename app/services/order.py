@@ -19,7 +19,7 @@ from app.models.order import Order, OrderStatus, OrderType
 from app.models.address import Address, AddressType
 from app.tasks.orders import publish_order
 from app.services.file import file_service
-from app.services.sku_matching import find_sku_by_ref, resolve_design_files
+from app.services.sku_matching import find_sku_by_ref, resolve_design_files, find_parallel_card_sku
 from app.services.client import client_service
 from app.services.address_mapping import get_state_code, to_iso_country_code
 from app.services.order_notifications import (
@@ -1244,10 +1244,16 @@ class OrderService:
             sku_ref = item.get("sku")
             if not sku_ref:
                 continue
-            sku = find_sku_by_ref(
-                session, sku_ref, active_only=False, match_internal_id=True,
-                store_id=order.store_id,
-            )
+            # Mirror _prepare_order_and_skus: parallel-card items resolve
+            # via the "-PARALLEL"-suffixed ref first so the api_version
+            # check sees the SKU the payload builder will actually use.
+            if order.type == OrderType.PARALLEL_CARD:
+                sku = find_parallel_card_sku(session, sku_ref, store_id=order.store_id)
+            else:
+                sku = find_sku_by_ref(
+                    session, sku_ref, active_only=False, match_internal_id=True,
+                    store_id=order.store_id,
+                )
             if sku:
                 versions.add(sku.api_version or "open")
 
@@ -1313,10 +1319,16 @@ class OrderService:
             # the resolved sku.sku_id. Scoped to the order's store so a
             # catch-all pattern (e.g. ".*") on another store's SKU can
             # never capture this order's items.
-            sku = find_sku_by_ref(
-                session, sku_ref, active_only=False, match_internal_id=True,
-                store_id=order.store_id,
-            )
+            # Parallel-card items first try the "-PARALLEL"-suffixed ref so
+            # stores can route them to a dedicated product, falling back to
+            # the plain ref (find_parallel_card_sku).
+            if order.type == OrderType.PARALLEL_CARD:
+                sku = find_parallel_card_sku(session, sku_ref, store_id=order.store_id)
+            else:
+                sku = find_sku_by_ref(
+                    session, sku_ref, active_only=False, match_internal_id=True,
+                    store_id=order.store_id,
+                )
             if not sku:
                 raise ValueError(f"SKU: [{sku_ref}] not found")
             sku_id = sku.sku_id
@@ -1486,6 +1498,14 @@ class OrderService:
                 "qty": item.get("quantity", 1),
                 "unitPrice": sku.unit_price or 0,
                 "storeProductId": sku.sku_id,
+                # Same JSON metafield the Open API builder carries: sku
+                # prefers the item description and falls back to the item
+                # sku; productName comes from the item's extraData (empty
+                # string when missing).
+                "metadata": {
+                    "sku": item.get("description") or item.get("sku") or "",
+                    "productName": self._extract_product_name(item),
+                },
                 "properties": properties,
                 "customizeProject": customize_project,
             }
