@@ -11,6 +11,7 @@ from app.schemas.order import (
 )
 from app.services.sku_matching import (
     design_file_key,
+    find_parallel_card_sku,
     find_sku_by_ref,
     source_sku_matches,
 )
@@ -65,6 +66,54 @@ class TestSourceSkuMatches:
 
     def test_invalid_regex_never_matches(self):
         assert source_sku_matches("[unclosed", "X") is False
+
+
+class TestFindParallelCardSku:
+    """Parallel-card resolution: "-PARALLEL"-suffixed ref first, plain-ref
+    fallback (app/services/sku_matching.find_parallel_card_sku)."""
+
+    def test_suffixed_literal_wins(self, session):
+        session.add(_make_sku("base-1", "CODE-B", source_sku="TOPPS-CARD"))
+        session.add(_make_sku("par-1", "CODE-P", source_sku="TOPPS-CARD-PARALLEL"))
+        session.commit()
+        found = find_parallel_card_sku(session, "TOPPS-CARD")
+        assert found is not None
+        assert found.sku_id == "par-1"
+
+    def test_suffixed_regex_rule_wins(self, session):
+        session.add(_make_sku("base-2", "CODE-B", source_sku="TOPPS-CARD"))
+        session.add(
+            _make_sku("par-2", "CODE-P", source_sku=r"^TOPPS-CARD.*-PARALLEL$")
+        )
+        session.commit()
+        found = find_parallel_card_sku(session, "TOPPS-CARD")
+        assert found is not None
+        assert found.sku_id == "par-2"
+
+    def test_falls_back_to_plain_ref(self, session):
+        # No "-PARALLEL" rule configured — the base-card SKU resolves.
+        session.add(_make_sku("base-3", "CODE-B", source_sku="TOPPS-CARD"))
+        session.commit()
+        found = find_parallel_card_sku(session, "TOPPS-CARD")
+        assert found is not None
+        assert found.sku_id == "base-3"
+
+    def test_suffixed_rule_scoped_to_store(self, session):
+        # The -PARALLEL rule belongs to another store — must not capture
+        # this store's parallel-card item; plain ref still resolves.
+        session.add(_make_sku("other-par", "CODE-OP",
+                              source_sku="TOPPS-CARD-PARALLEL", store_id="store-B"))
+        session.add(_make_sku("own-base", "CODE-OB",
+                              source_sku="TOPPS-CARD", store_id="store-A"))
+        session.commit()
+        found = find_parallel_card_sku(session, "TOPPS-CARD", store_id="store-A")
+        assert found is not None
+        assert found.sku_id == "own-base"
+
+    def test_no_match_returns_none(self, session):
+        session.add(_make_sku("unrelated", "CODE-U", source_sku="OTHER-SKU"))
+        session.commit()
+        assert find_parallel_card_sku(session, "TOPPS-CARD") is None
 
 
 class TestFindSkuByRef:

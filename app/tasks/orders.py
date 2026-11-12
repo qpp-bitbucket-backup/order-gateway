@@ -18,7 +18,7 @@ from app.models.address import Address, AddressType
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
 from app.services.file import file_service
-from app.services.sku_matching import find_sku_by_ref, design_file_key
+from app.services.sku_matching import find_sku_by_ref, design_file_key, find_parallel_card_sku
 from app.services.watermark import watermark_to_png, WATERMARK_TEXT
 from app.services.client import client_service
 from app.services.oms import oms_service, OMSRetryableError
@@ -284,10 +284,16 @@ def publish_order(self, order_data: Dict[str, Any]) -> bool:
                     # order.files keys always use the original QPMN id.
                     # Scoped to the order's store so a catch-all pattern on
                     # another store's SKU can never capture this order.
+                    # Parallel cards try the "-PARALLEL"-suffixed ref first
+                    # (dedicated product) with plain-ref fallback.
                     if sku:
-                        sku_row = find_sku_by_ref(
-                            session, sku, active_only=False,
-                            match_internal_id=True, store_id=store_id,
+                        sku_row = (
+                            find_parallel_card_sku(session, sku, store_id=store_id)
+                            if is_parallel_card
+                            else find_sku_by_ref(
+                                session, sku, active_only=False,
+                                match_internal_id=True, store_id=store_id,
+                            )
                         )
                         if sku_row:
                             sku = sku_row.sku_id
@@ -537,9 +543,15 @@ def _generate_packing_documents(session: Session, order: Order) -> None:
 
             image_path = None
             sku_ref = item.get("sku")
-            sku_obj = find_sku_by_ref(
-                session, sku_ref, active_only=False, match_internal_id=True,
-                store_id=order.store_id,
+            sku_obj = (
+                # Same "-PARALLEL"-first resolution as the payload builder
+                # so the slip's design-file key matches the pushed payload's.
+                find_parallel_card_sku(session, sku_ref, store_id=order.store_id)
+                if order.type == OrderType.PARALLEL_CARD
+                else find_sku_by_ref(
+                    session, sku_ref, active_only=False, match_internal_id=True,
+                    store_id=order.store_id,
+                )
             ) if sku_ref else None
             if sku_obj:
                 item_files = files_dict.get(design_file_key(item, sku_obj.sku_id, item_index)) or []

@@ -100,7 +100,7 @@ class OMSService:
             )
 
             params = hub4.build_query_params(
-                method_name=settings.OMS_STATUS_METHOD_NAME,
+                method_name=settings.OMS_ADDRESS_METHOD_NAME,
                 source_app=settings.OMS_SOURCE_APP,
                 interface_type=settings.OMS_INTERFACE_TYPE,
             )
@@ -118,10 +118,13 @@ class OMSService:
             try:
                 with httpx.Client(timeout=30.0, follow_redirects=True) as client:
                     response = client.post(
-                        f"{self.base_url}/api/logistics",
+                        self.base_url,
                         params=url_params,
                         content=body_ciphertext,
-                        headers={"Content-Type": "text/plain"},
+                        headers={
+                            "Content-Type": "application/json;charset=UTF-8",
+                            "Accept": "application/json",
+                        },
                     )
             except httpx.TimeoutException:
                 logger.warning("[OMS] API-001 timeout for order %s", order_id)
@@ -188,7 +191,9 @@ class OMSService:
         OMS endpoint and decrypts the response.
 
         Args:
-            order: The order model instance (uses ``order.order_id`` as orderNo;
+            order: The order model instance (uses the VFS ``source_order_id``
+                as orderNo — for parallel cards the base-card prefix, the
+                same convention as ``fetch_order_addresses``;
                 ``order.order_data["items"]`` is echoed as ``orderItems``).
             event_status: External status code (e.g. ``printed``, ``shipped``).
             status_desc: Human-readable status description (defaults to event_status).
@@ -203,8 +208,18 @@ class OMSService:
             logger.warning("[OMS] OMS_API_URL is not configured – skipping status update.")
             return {"success": False, "message": "OMS_API_URL not configured"}
 
+        # OMS keys orders by the VFS sourceOrderId (the same orderNo the
+        # address API queries), not our internal order_id. Parallel-card
+        # sourceOrderIds carry the "-N_S<shipping>" suffix — strip it to the
+        # base-card prefix so OMS can correlate the status with its order.
+        # Lazy import: services.order imports this module at load time.
+        from app.services.order import parse_parallel_card_id
+
+        parsed = parse_parallel_card_id(order.source_order_id)
+        order_no = parsed[0] if parsed else order.source_order_id
+
         payload = {
-            "orderNo": order.order_id,
+            "orderNo": order_no,
             "status": event_status,
             "statusDesc": status_desc or event_status,
             "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -222,7 +237,7 @@ class OMSService:
                 interface_type=settings.OMS_INTERFACE_TYPE,
             )
             mock_headers = {
-                "Content-Type": "text/plain",
+                "Content-Type": "application/json;charset=UTF-8",
                 **{"Version" if k == "version" else k: v for k, v in mock_params.items()},
                 "sign": "mock-signature",
             }
@@ -249,13 +264,17 @@ class OMSService:
 
         logger.info("[OMS] POST API-002 status=%s orderNo=%s", event_status, order.order_id)
 
-        request_headers = {"Content-Type": "text/plain", **url_params}
+        request_headers = {
+            "Content-Type": "application/json;charset=UTF-8",
+            "Accept": "application/json",
+            **url_params,
+        }
 
         # DEBUG: dump the full request (URL, signed params, plaintext business
         # payload and the AES ciphertext actually sent) before the call.
         if settings.DEBUG:
             logger.info(
-                "[OMS][DEBUG] API-002 request\nURL: %s/api/order/status\n"
+                "[OMS][DEBUG] API-002 request\nURL: %s\n"
                 "params: %s\npayload: %s",
                 self.base_url,
                 json.dumps(url_params, ensure_ascii=False),
@@ -264,10 +283,13 @@ class OMSService:
 
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = client.post(
-                f"{self.base_url}/api/order/status",
+                self.base_url,
                 params=url_params,
                 content=body_ciphertext,
-                headers={"Content-Type": "text/plain"},
+                headers={
+                    "Content-Type": "application/json;charset=UTF-8",
+                    "Accept": "application/json",
+                },
             )
 
         # DEBUG: dump the raw response alongside the request above.
@@ -321,6 +343,7 @@ class OMSService:
         logger.info("[OMS] Status update acknowledged for order %s -> %s", order.order_id, event_status)
         return {
             "success": True,
+            "status_code": response.status_code,
             "response": body,
             "request_headers": request_headers,
             "request_payload": payload,

@@ -1380,6 +1380,7 @@ def platform_get_orders(
     store_id: Optional[str] = Query(None, description="Filter by store ID"),
     storeId_alias: Optional[str] = Query(None, alias="storeId", include_in_schema=False, description="(alias of store_id)"),
     source_order_id: Optional[str] = Query(None, alias="sourceOrderId", description="Fuzzy search by source order ID"),
+    sourceOrderIdContains_alias: Optional[str] = Query(None, alias="sourceOrderId__contains", include_in_schema=False, description="(alias of sourceOrderId, fuzzy search)"),
     created_at_gte: Optional[datetime] = Query(None, alias="createdAt__gte", description="Created-at lower bound (inclusive, ISO 8601 datetime or date)"),
     created_at_lte: Optional[datetime] = Query(None, alias="createdAt__lte", description="Created-at upper bound (inclusive, ISO 8601 datetime or date)"),
     sort_by: Optional[str] = Query(None, description="Sort column: createdAt, updatedAt, sourceOrderId, status (default: createdAt)"),
@@ -1413,13 +1414,17 @@ def platform_get_orders(
         # are present the snake_case form takes precedence.
         effective_sort_by = sort_by or sortBy_alias
         effective_sort_order = sort_order or sortOrder_alias or "desc"
+        # Dual-named fuzzy-search param — accept both sourceOrderId and
+        # sourceOrderId__contains (same LIKE %text% semantics; snake_case
+        # form wins when both are supplied).
+        effective_source_order_id = source_order_id or sourceOrderIdContains_alias
         orders, total_count, total_pages = order_service.get_all_orders(
             session,
             store_id=effective_store_id,
             page=page,
             pagesize=pagesize,
             statuses=status_filter,
-            source_order_id=source_order_id,
+            source_order_id=effective_source_order_id,
             created_at_gte=created_at_gte,
             created_at_lte=created_at_lte,
             sort_by=effective_sort_by,
