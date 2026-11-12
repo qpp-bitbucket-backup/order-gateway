@@ -220,47 +220,33 @@ class TestLineItems:
         payload = _build(session, monkeypatch)
         assert "supplierStockNo" not in payload["items"][0]
 
-    def test_open_structure_converted_to_legacy_customize_project(self, session, monkeypatch):
+    def test_open_structure_not_converted_for_legacy(self, session, monkeypatch):
         # SKU carries ONLY product_design_data (Open structure) — customize_project
         # stays NULL, exactly what the product sync produces. The legacy payload
-        # must still emit a full customizeProject, not a lone comparisonThumbnail.
+        # must NOT fabricate designs from the open structure: customizeProject
+        # keeps the SKU's empty structure as-is (QPMN produces from the product
+        # template); only comparisonThumbnail derives from the first file.
         _seed(session, open_design_data=OPEN_PDD)
         payload = _build(session, monkeypatch)
         cp = payload["items"][0]["customizeProject"]
-        assert cp["customizeType"] == "IMAGE"
-        assert [d["side"] for d in cp["designs"]] == ["Card_Front", "Card_Back"]
-        assert all(
-            d["materialPath"] == "58578097,58578094,58608514" for d in cp["designs"]
-        )
-        # the injected design file URLs land on pageContentDesigns.image
-        assert cp["designs"][0]["pageContentDesigns"] == [
-            {"pageContentIndex": 0, "effect": "CMYK", "image": "https://oss/file-0.png"},
-        ]
-        assert cp["designs"][1]["pageContentDesigns"] == [
-            {"pageContentIndex": 0, "effect": "CMYK", "image": "https://oss/file-1.png"},
-        ]
-        # comparisonThumbnail keeps coming from the first file
+        assert not cp.get("designs")
+        assert set(cp.keys()) == {"comparisonThumbnail"}
         assert cp["comparisonThumbnail"] == "https://oss/file-0.png/320/320/png"
 
-    def test_open_structure_skips_views_without_image(self):
-        # views whose effectImages carry no imageUrl (e.g. an unfilled label
-        # placeholder) produce no design entry — tested directly on the
-        # converter (the payload builder's file-count guard rejects such
-        # under-filled orders earlier). OPEN_PDD ships with imageUrl=None
-        # placeholders, so view[0] is filled first to mimic the
-        # post-injection state.
-        pdd = copy.deepcopy(OPEN_PDD)
-        pdd["designData"][0]["views"][0]["designs"][0]["effectImages"][0]["imageUrl"] = \
-            "https://oss/file-0.png"
-        # views 1 and the appended label view stay unfilled -> filtered out
-        pdd["designData"][0]["views"].append(
-            {"code": "12345678", "designs": [
-                {"index": None, "effectImages": [{"effect": "CMYK", "imageUrl": None}]},
-            ]},
-        )
-        cp = order_service._convert_product_design_to_customize(pdd)
-        assert [d["side"] for d in cp["designs"]] == ["Card_Front"]
-        assert cp["designs"][0]["pageContentDesigns"][0]["image"] == "https://oss/file-0.png"
+    def test_empty_legacy_designs_stay_empty(self, session, monkeypatch):
+        # SKU's customize_project exists with designs=[] (empty placeholder)
+        # and product_design_data carries the Open structure — the payload
+        # keeps the empty designs verbatim, no conversion/injection.
+        _seed(session, open_design_data=OPEN_PDD)
+        sku = session.exec(select(Sku).where(Sku.sku_id == "sku-1")).first()
+        sku.customize_project = {"customizeType": "IMAGE", "designs": []}
+        session.add(sku)
+        session.commit()
+        payload = _build(session, monkeypatch)
+        cp = payload["items"][0]["customizeProject"]
+        assert cp["customizeType"] == "IMAGE"
+        assert cp["designs"] == []
+        assert cp["comparisonThumbnail"] == "https://oss/file-0.png/320/320/png"
 
 
 class TestAddresses:
