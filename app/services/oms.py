@@ -191,7 +191,9 @@ class OMSService:
         OMS endpoint and decrypts the response.
 
         Args:
-            order: The order model instance (uses ``order.order_id`` as orderNo;
+            order: The order model instance (uses the VFS ``source_order_id``
+                as orderNo — for parallel cards the base-card prefix, the
+                same convention as ``fetch_order_addresses``;
                 ``order.order_data["items"]`` is echoed as ``orderItems``).
             event_status: External status code (e.g. ``printed``, ``shipped``).
             status_desc: Human-readable status description (defaults to event_status).
@@ -206,8 +208,18 @@ class OMSService:
             logger.warning("[OMS] OMS_API_URL is not configured – skipping status update.")
             return {"success": False, "message": "OMS_API_URL not configured"}
 
+        # OMS keys orders by the VFS sourceOrderId (the same orderNo the
+        # address API queries), not our internal order_id. Parallel-card
+        # sourceOrderIds carry the "-N_S<shipping>" suffix — strip it to the
+        # base-card prefix so OMS can correlate the status with its order.
+        # Lazy import: services.order imports this module at load time.
+        from app.services.order import parse_parallel_card_id
+
+        parsed = parse_parallel_card_id(order.source_order_id)
+        order_no = parsed[0] if parsed else order.source_order_id
+
         payload = {
-            "orderNo": order.order_id,
+            "orderNo": order_no,
             "status": event_status,
             "statusDesc": status_desc or event_status,
             "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
@@ -331,6 +343,7 @@ class OMSService:
         logger.info("[OMS] Status update acknowledged for order %s -> %s", order.order_id, event_status)
         return {
             "success": True,
+            "status_code": response.status_code,
             "response": body,
             "request_headers": request_headers,
             "request_payload": payload,
