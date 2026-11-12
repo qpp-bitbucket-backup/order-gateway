@@ -1471,15 +1471,15 @@ class OrderService:
             properties = ctx["properties"]
             customize_project = ctx["customize_project"]
 
-            # SKUs carrying only the Open structure (product sync fills
-            # product_design_data, never customize_project) must be
-            # converted to the legacy designs shape — otherwise the line
-            # item's customizeProject degenerates to just the
-            # comparisonThumbnail. The imageUrl injection already ran in
-            # _prepare_order_and_skus, so the mapped images carry the
-            # uploaded design file URLs.
-            if "designs" not in customize_project and customize_project.get("designData"):
-                customize_project = self._convert_product_design_to_customize(customize_project)
+            # The legacy payload carries only the SKU's own legacy
+            # customize_project — the Open structure (product_design_data)
+            # is never converted into legacy designs. When the SKU carries
+            # no legacy designs (empty list or NULL customize_project),
+            # customizeProject ships with the empty designs as-is: QPMN
+            # produces from the product's own template and no fabricated
+            # designs are added to the payload.
+            if "designs" not in customize_project:
+                customize_project = copy.deepcopy(sku.customize_project or {})
 
             # Generate comparisonThumbnail from first file
             first_file_obj = files[0] if files else None
@@ -1735,68 +1735,6 @@ class OrderService:
             "designData": design_data,
             "designAttributeValues": design_attribute_values,
         }
-
-    @staticmethod
-    def _convert_product_design_to_customize(
-        customize_project: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """
-        Convert an Open API ``productDesignData`` structure to the legacy
-        ``customizeProject`` shape (reverse of
-        ``_convert_customize_to_product_design_data``).
-
-        Used by the legacy payload builder when the SKU only carries the
-        Open structure (the product sync populates product_design_data from
-        QPMN sample data and never fills customize_project) — without this
-        the legacy line item's customizeProject degenerates to just the
-        comparisonThumbnail. Field mapping:
-
-        - designData[].code (base64)      -> designs[].materialPath
-        - views order                     -> designs[].side: first view
-          "Card_Front", second "Card_Back" (later views keep their code)
-        - designs[].index                 -> pageContentDesigns[].pageContentIndex
-        - effectImages[].effect/imageUrl  -> pageContentDesigns[].effect/image
-
-        Mirrors the forward converter's "effect and image both present"
-        rule: effectImages without an imageUrl are skipped, and views left
-        with no pageContentDesigns produce no design entry. Expects the
-        imageUrl injection to have already run (the Open dict is shared
-        with the open builder's injection pass).
-        """
-        designs: List[Dict[str, Any]] = []
-        for material in customize_project.get("designData", []):
-            code = material.get("code") or ""
-            try:
-                material_path = base64.b64decode(code).decode() if code else ""
-            except Exception:
-                material_path = code  # not base64 — keep verbatim
-            for view_idx, view in enumerate(material.get("views", [])):
-                if view_idx == 0:
-                    side = "Card_Front"
-                elif view_idx == 1:
-                    side = "Card_Back"
-                else:
-                    side = view.get("code") or ""
-                page_content_designs: List[Dict[str, Any]] = []
-                for design in view.get("designs") or []:
-                    index = design.get("index")
-                    for effect_image in design.get("effectImages") or []:
-                        image = effect_image.get("imageUrl")
-                        if not image:
-                            continue
-                        page_content_designs.append({
-                            "pageContentIndex": index if index is not None else 0,
-                            "effect": effect_image.get("effect"),
-                            "image": image,
-                        })
-                if not page_content_designs:
-                    continue
-                designs.append({
-                    "side": side,
-                    "materialPath": material_path,
-                    "pageContentDesigns": page_content_designs,
-                })
-        return {"customizeType": "IMAGE", "designs": designs}
 
     def _address_to_legacy_payload(self, address: Address) -> Dict[str, Any]:
         """Convert Address model to legacy API payload format."""
