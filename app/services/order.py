@@ -17,7 +17,7 @@ from sqlalchemy.orm import attributes
 from app.models.notification import NotificationLevel
 from app.models.order import Order, OrderStatus, OrderType
 from app.models.address import Address, AddressType
-from app.tasks.orders import publish_order
+from app.tasks.orders import publish_order, _attach_addresses_to_order
 from app.services.file import file_service
 from app.services.sku_matching import find_sku_by_ref, resolve_design_files, find_parallel_card_sku
 from app.services.client import client_service
@@ -1015,16 +1015,36 @@ class OrderService:
             "qpmn_result": None,
         }
 
-        # 1. Fetch latest addresses from OMS (persists to DB as side-effect)
+        # 0. Snapshot the order's CURRENT delivery address (the UUID-keyed
+        #    row the payload builders and QPMN last saw) before anything
+        #    below mutates address rows — used by the DEBUG before/after log.
+        before_delivery = None
+        if settings.DEBUG:
+            before_delivery = session.exec(
+                select(Address).where(
+                    (Address.order_id == order.order_id)
+                    & (Address.type == AddressType.DELIVERY)
+                ).order_by(Address.id.desc())  # type: ignore[union-attr]
+            ).first()
+
+        # 1. Fetch latest addresses from OMS. Rows land under the orderNo
+        #    (source_order_id) key — NOT the order's internal order_id — so
+        #    the payload builders cannot see them yet.
         oms_result = oms_service.fetch_order_addresses(
             order.source_order_id, session, store_id=order.store_id
         )
         new_delivery = oms_result.get("delivery")
 
-        # 2. Get the previously stored delivery address (before OMS overwrote it)
-        #    oms_service already deleted old rows and inserted new ones,
-        #    so we need to compare what we *just* got with what was there before.
-        #    Re-query the latest delivery address.
+        # 1b. Attach the OMS result onto the order (internal-id-keyed rows),
+        #     replacing whatever was attached before — same convention as the
+        #     validate-time fetch (tasks.orders._attach_addresses_to_order).
+        #     Without this the QPMN update below would echo the OLD address.
+        if new_delivery:
+            attached = _attach_addresses_to_order(session, order, oms_result)
+            new_delivery = attached.get("delivery") or new_delivery
+
+        # 2. The order's now-current delivery address — equals new_delivery
+        #    whenever the attach above ran.
         latest_delivery = session.exec(
             select(Address).where(
                 (Address.order_id == order.order_id)
@@ -1037,6 +1057,32 @@ class OrderService:
         # the order_data shipments address (the original submitted address).
         # If OMS returned something and it differs from order_data, it changed.
         old_delivery = self._get_order_data_delivery_address(order)
+
+        # DEBUG-only before/after comparison: before = the address the order
+        # carried on entry (DB snapshot taken above), after = what OMS just
+        # returned. The actual change detection below uses _address_signature
+        # against the order_data shipments address; this log only makes the
+        # field-level diff visible while debugging.
+        if settings.DEBUG:
+            old_map = {
+                f: (getattr(before_delivery, f, None) or None)
+                for f in self._ADDRESS_COMPARE_FIELDS
+            } if before_delivery else None
+            new_map = {
+                f: (getattr(new_delivery, f, None) or None)
+                for f in self._ADDRESS_COMPARE_FIELDS
+            } if new_delivery else None
+            diff = {
+                f: {"before": old_map[f], "after": new_map[f]}
+                for f in self._ADDRESS_COMPARE_FIELDS
+                if (old_map or {}).get(f) != (new_map or {}).get(f)
+            } if old_map or new_map else {}
+            logger.info(
+                "[OrderService][DEBUG] Address before/after for order %s "
+                "(before = stored DB address, after = OMS):\n"
+                "  before: %s\n  after:  %s\n  changed fields: %s",
+                order.order_id, old_map, new_map, diff or "none",
+            )
 
         if new_delivery and self._address_signature(new_delivery) != self._address_signature(old_delivery):
             result["address_changed"] = True
