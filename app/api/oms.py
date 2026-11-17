@@ -231,8 +231,8 @@ def oms_cancel_order(
 
     | HTTP Code | Error Name         | Scenario                                        |
     |-----------|--------------------|-------------------------------------------------|
+    | 404       | NotFound           | QPMN cancel API call failed                    |
     | 409       | Conflict           | Ambiguous sourceOrderId / status not cancellable |
-    | 502       | BadGateway         | QPMN cancel API call failed                    |
     | 500       | InternalServerError| Unexpected internal error                      |
     """
     endpoint = "POST /api/oms/order/cancel"
@@ -302,8 +302,8 @@ def oms_cancel_order(
         except QPMNCancelError as qpmn_err:
             raise _siteflow_error(
                 str(qpmn_err),
-                "BadGateway",
-                502,
+                "NotFound",
+                404,
             )
 
         resp = OMSOrderActionResponse(

@@ -161,7 +161,7 @@ class TestOMSCancelOrder:
         assert resp.status_code == 409
         assert resp.json()["error"]["name"] == "Conflict"
 
-    def test_qpmn_failure_maps_to_502(self, client_session):
+    def test_qpmn_failure_maps_to_404(self, client_session):
         client, session = client_session
         _add_order(session, order_id="ord-y", source_order_id="QPMN-FAIL-1",
                    status=OrderStatus.PENDING)
@@ -170,8 +170,8 @@ class TestOMSCancelOrder:
             side_effect=QPMNCancelError("QPMN cancel API failed (HTTP 500): boom"),
         ):
             resp = client.post("/api/oms/order/QPMN-FAIL-1/cancel")
-        assert resp.status_code == 502
-        assert resp.json()["error"]["name"] == "BadGateway"
+        assert resp.status_code == 404
+        assert resp.json()["error"]["name"] == "NotFound"
 
     def test_happy_path_cancels_and_audits(self, client_session):
         client, session = client_session

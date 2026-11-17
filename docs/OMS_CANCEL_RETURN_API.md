@@ -109,7 +109,7 @@ def build_headers(api_key: str, api_secret: str, method: str, path: str) -> dict
 
 1. 已是 `cancelled` → **冪等返回 200**（`message: "Order already cancelled"`，OMS 重試安全）
 2. `shipped` → 409 Conflict（已進入生產/出貨流程，不可取消）
-3. 其他狀態 → 調用 QPMN cancel API，成功後訂單轉 `cancelled` 併發送狀態變更通知郵件；QPMN 失敗 → 502 BadGateway
+3. 其他狀態 → 調用 QPMN cancel API，成功後訂單轉 `cancelled` 併發送狀態變更通知郵件；QPMN 失敗 → 404 NotFound
 
 #### 延遲取消（order_cancel_list）
 
@@ -156,8 +156,8 @@ OMS 的取消請求可能先於 VFS 的建單請求到達（顧客在 OMS 下單
 
 | HTTP | Error Name | 場景 |
 | --- | --- | --- |
+| 404 | NotFound | QPMN cancel API 調用失敗 |
 | 409 | Conflict | sourceOrderId 歧義（附 candidates）/ 狀態不可取消 |
-| 502 | BadGateway | QPMN cancel API 調用失敗 |
 | 500 | InternalServerError | 內部異常 |
 
 ---

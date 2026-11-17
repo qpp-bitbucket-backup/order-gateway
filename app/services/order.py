@@ -167,7 +167,7 @@ class OrderNotCancellableError(ValueError):
 
 
 class QPMNCancelError(ValueError):
-    """Raised when the QPMN cancel API call fails (HTTP 502)."""
+    """Raised when the QPMN cancel API call fails (HTTP 404)."""
     def __init__(self, message: str, status_code: Optional[int] = None, error: Any = None):
         super().__init__(message)
         self.qpmn_status_code = status_code
