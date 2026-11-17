@@ -167,7 +167,7 @@ class OrderNotCancellableError(ValueError):
 
 
 class QPMNCancelError(ValueError):
-    """Raised when the QPMN cancel API call fails (HTTP 502)."""
+    """Raised when the QPMN cancel API call fails (HTTP 404)."""
     def __init__(self, message: str, status_code: Optional[int] = None, error: Any = None):
         super().__init__(message)
         self.qpmn_status_code = status_code
@@ -182,7 +182,7 @@ class OrderNotReturnableError(ValueError):
 
 
 class QPMNReturnError(ValueError):
-    """Raised when the QPMN return API call fails (HTTP 502)."""
+    """Raised when the QPMN return API call fails (HTTP 404)."""
     def __init__(self, message: str, status_code: Optional[int] = None, error: Any = None):
         super().__init__(message)
         self.qpmn_status_code = status_code
@@ -921,7 +921,7 @@ class OrderService:
         Raises:
             OrderNotReturnableError: If the order is not in SHIPPED status
                 (HTTP 409).
-            QPMNReturnError: If the QPMN return API call fails (HTTP 502).
+            QPMNReturnError: If the QPMN return API call fails (HTTP 404).
         """
         if order.status != OrderStatus.SHIPPED:
             self.append_log(
