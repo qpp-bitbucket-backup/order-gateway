@@ -353,9 +353,9 @@ def oms_return_order(
 
     | HTTP Code | Error Name         | Scenario                                         |
     |-----------|--------------------|--------------------------------------------------|
-    | 404       | NotFound           | No active order with the sourceOrderId           |
+    | 404       | NotFound           | No active order with the sourceOrderId,          |
+    |           |                    | or the QPMN return API call failed               |
     | 409       | Conflict           | Ambiguous sourceOrderId / order not shipped      |
-    | 502       | BadGateway         | QPMN return API call failed                      |
     | 500       | InternalServerError| Unexpected internal error                        |
     """
     endpoint = "POST /api/oms/order/return"
@@ -407,8 +407,8 @@ def oms_return_order(
         except QPMNReturnError as qpmn_err:
             raise _siteflow_error(
                 str(qpmn_err),
-                "BadGateway",
-                502,
+                "NotFound",
+                404,
             )
 
         resp = OMSOrderActionResponse(

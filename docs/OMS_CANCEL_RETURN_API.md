@@ -212,7 +212,7 @@ OMS 的取消請求可能先於 VFS 的建單請求到達（顧客在 OMS 下單
 2. 已是 `returning` / `returncompleted` → **冪等返回 200**（`message: "Order return already requested"`）
 3. 調用 QPMN return API（`PUT {QPMN_OPEN_API_URL}/orders/{store_order_id}/return`，Basic store_token 認證；**endpoint 待 QPMN 確認**），OMS 請求體原樣轉發
 4. QPMN 成功 → 訂單轉 `returning`，記錄 `order_return_requested` 日誌（含完整退貨 payload）併發 warning 級通知郵件
-5. QPMN 失敗 → 訂單保持 `shipped`，記錄 `qpmn_return_failed` 日誌，向 OMS 返回 502 BadGateway
+5. QPMN 失敗 → 訂單保持 `shipped`，記錄 `qpmn_return_failed` 日誌，向 OMS 返回 404 NotFound
 
 #### 成功響應
 
@@ -230,10 +230,9 @@ OMS 的取消請求可能先於 VFS 的建單請求到達（顧客在 OMS 下單
 
 | HTTP | Error Name | 場景 |
 | --- | --- | --- |
-| 404 | NotFound | 找不到 active 訂單 |
+| 404 | NotFound | 找不到 active 訂單，或 QPMN return API 調用失敗 |
 | 409 | Conflict | sourceOrderId 歧義 / 訂單非 shipped 狀態 |
 | 422 | Unprocessable Entity | 請求體校驗失敗（如 `reason` 缺失、`isFullReturn=false` 未提供 `items`）|
-| 502 | BadGateway | QPMN return API 調用失敗 |
 | 500 | InternalServerError | 內部異常 |
 
 ---

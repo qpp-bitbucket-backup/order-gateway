@@ -253,7 +253,7 @@ class TestOMSReturnOrder:
         assert resp.status_code == 409
         assert "Only shipped orders can be returned" in resp.json()["error"]["message"]
 
-    def test_qpmn_failure_maps_to_502_and_audits_failure(self, client_session):
+    def test_qpmn_failure_maps_to_404_and_audits_failure(self, client_session):
         client, session = client_session
         _add_order(session, order_id="ord-q", source_order_id="QPMN-RET-FAIL",
                    status=OrderStatus.SHIPPED)
@@ -262,8 +262,8 @@ class TestOMSReturnOrder:
             side_effect=QPMNReturnError("QPMN return API failed (HTTP 500): boom"),
         ):
             resp = client.post("/api/oms/order/QPMN-RET-FAIL/return", json=RETURN_BODY)
-        assert resp.status_code == 502
-        assert resp.json()["error"]["name"] == "BadGateway"
+        assert resp.status_code == 404
+        assert resp.json()["error"]["name"] == "NotFound"
         logs = _oms_audit_logs(session)
         assert logs[0].process_status == WebhookProcessStatus.FAILED
 
