@@ -269,6 +269,39 @@ class TestLineItems:
         attrs = {a["code"]: a["value"] for a in payload["items"][0]["attributeValues"]}
         assert attrs["Topps_Packaging"] == ["Small Slider Box", "Medium Slider Box"]
 
+    def test_label_design_gets_label_url(self, session, monkeypatch):
+        # Slide product: 3 designs, the LAST ("Sleeve Label") is the label
+        # placeholder — the two uploaded files map to the content designs
+        # and the label URL from order.files "label-0" fills the last one
+        # instead of consuming an uploaded-file slot.
+        _seed(session)
+        sku = session.exec(select(Sku).where(Sku.sku_id == "sku-1")).first()
+        sku.customize_project = {
+            "customizeType": "IMAGE",
+            "designs": [
+                {"side": "Topps Card Front", "materialPath": "m1", "pageContentDesigns": [
+                    {"pageContentIndex": 0, "effect": "CMYK", "image": None}]},
+                {"side": "Topps Card Back", "materialPath": "m2", "pageContentDesigns": [
+                    {"pageContentIndex": 0, "effect": "CMYK", "image": None}]},
+                {"side": "Sleeve Label", "materialPath": "m3", "pageContentDesigns": [
+                    {"pageContentIndex": 0, "effect": "CMYK", "image": None}]},
+            ],
+        }
+        order = session.exec(select(Order).where(Order.order_id == "ord-1")).first()
+        order.files = {
+            "1905904": [{"url": "https://oss/file-0.png"}, {"url": "https://oss/file-1.png"}],
+            "label-0": [{"url": "https://oss/label-0.pdf"}],
+        }
+        session.add(sku)
+        session.add(order)
+        session.commit()
+
+        payload = _build(session, monkeypatch)
+        designs = payload["items"][0]["customizeProject"]["designs"]
+        assert designs[0]["pageContentDesigns"][0]["image"] == "https://oss/file-0.png"
+        assert designs[1]["pageContentDesigns"][0]["image"] == "https://oss/file-1.png"
+        assert designs[2]["pageContentDesigns"][0]["image"] == "https://oss/label-0.pdf"
+
     def test_supplier_stock_no_only_on_parallel_card(self, session, monkeypatch):
         _seed(session, order_type=OrderType.PARALLEL_CARD, barcode="4935768626")
         payload = _build(session, monkeypatch)

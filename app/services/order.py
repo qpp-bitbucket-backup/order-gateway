@@ -1436,10 +1436,24 @@ class OrderService:
             # writer and this reader both go through the same helper.
             files = resolve_design_files(files_dict, item, sku_id, item_index)
 
-            # Inject uploaded file URLs into pageContentDesigns images (legacy structure)
-            for index, design in enumerate(designs):
+            # Brand label produced by the packing-documents step for this
+            # item (order.files "label-{item_index}"), if any. Labelled
+            # products (e.g. Topps slide SKUs) carry the label as the LAST
+            # design/view: it consumes the label URL instead of an uploaded
+            # design file — mirrored for both structures below.
+            label_files = files_dict.get(f"label-{item_index}") or []
+            label_url = label_files[0].get("url") if label_files else None
+
+            # Inject uploaded file URLs into pageContentDesigns images (legacy structure).
+            # One uploaded file per content design in order; when a label
+            # exists the LAST design is the label placeholder and takes the
+            # label URL without consuming an uploaded-file slot.
+            content_designs: List[Dict[str, Any]] = designs
+            label_design: Optional[Dict[str, Any]] = None
+            if label_url and designs:
+                content_designs, label_design = designs[:-1], designs[-1]
+            for index, design in enumerate(content_designs):
                 file_obj = files[index] if index < len(files) else None
-                
                 if not file_obj:
                     raise ValueError(f"SKU: [{sku_id}] design file not found")
                 file_url = file_obj.get("url", None)
@@ -1450,6 +1464,12 @@ class OrderService:
                     if "image" in pcd:
                         pcd["image"] = file_url
                 design["pageContentDesigns"] = page_content_designs
+            if label_design is not None:
+                page_content_designs = label_design.get("pageContentDesigns", [])
+                for pcd in page_content_designs:
+                    if "image" in pcd:
+                        pcd["image"] = label_url
+                label_design["pageContentDesigns"] = page_content_designs
 
             # Inject uploaded file URLs into effectImages imageUrls (Open API structure):
             # designData[].views[].designs[].effectImages[].imageUrl. One file per
@@ -1460,8 +1480,6 @@ class OrderService:
             # placeholder: it consumes no uploaded design file and its
             # effectImages get the label URL instead.
             design_data = customize_project.get("designData", [])
-            label_files = files_dict.get(f"label-{item_index}") or []
-            label_url = label_files[0].get("url") if label_files else None
             effect_views = [
                 view
                 for material in design_data

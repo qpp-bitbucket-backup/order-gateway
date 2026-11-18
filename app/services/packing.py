@@ -250,7 +250,7 @@ def build_label_pdf(
     try:
         width = mm_to_points(settings.BRAND_LABEL_WIDTH_MM)
         height = mm_to_points(settings.BRAND_LABEL_HEIGHT_MM)
-        margin_top = 14.0
+        margin_top = 18.0
         margin_right = 18.0
         margin_bottom = 4.0
         margin_left = 18.0
