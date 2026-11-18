@@ -177,6 +177,39 @@ class OMSService:
 
         return result
 
+    @staticmethod
+    def _return_shipment_from_logs(order: Order) -> Optional[Dict[str, Any]]:
+        """Build the return shipment (QPMN-webhook shape: company + epoch-ms
+        shipDate) from the order's ``order_return_requested`` log entry —
+        the return request OMS originally submitted. trackingNumber /
+        carrierName / trackingUrl come from the stored ``return_request``,
+        shipDate is the log entry's timestamp. Returns None when no entry
+        carries a tracking number."""
+        for entry in reversed(order.logs or []):
+            if entry.get("action") != "order_return_requested":
+                continue
+            rr = entry.get("return_request") or {}
+            tracking = rr.get("trackingNumber")
+            if not tracking:
+                return None
+            ship_date_ms = None
+            try:
+                ts = datetime.fromisoformat(
+                    str(entry.get("timestamp")).replace("Z", "+00:00")
+                )
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                ship_date_ms = int(ts.timestamp() * 1000)
+            except (ValueError, TypeError):
+                ship_date_ms = None
+            return {
+                "trackingNumber": tracking,
+                "company": rr.get("carrierName"),
+                "trackingUrl": rr.get("trackingUrl"),
+                "shipDate": ship_date_ms,
+            }
+        return None
+
     def update_order_status(
         self,
         order: Order,
@@ -217,6 +250,18 @@ class OMSService:
 
         parsed = parse_parallel_card_id(order.source_order_id)
         order_no = parsed[0] if parsed else order.source_order_id
+
+        # Return-completion pushes carry the return shipment OMS originally
+        # submitted with its return request (order log entry
+        # "order_return_requested"): trackingNumber / carrierName /
+        # trackingUrl from the stored request, shipDate = that log entry's
+        # timestamp. Prepend unless the caller already passed a shipment
+        # with the same tracking number.
+        if event_status == "returncompleted":
+            return_shipment = self._return_shipment_from_logs(order)
+            existing_tracking = {s.get("trackingNumber") for s in (shipments or [])}
+            if return_shipment and return_shipment["trackingNumber"] not in existing_tracking:
+                shipments = [return_shipment] + list(shipments or [])
 
         payload = {
             "orderNo": order_no,

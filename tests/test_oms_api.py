@@ -386,3 +386,46 @@ class TestOMSAuthWiring:
         finally:
             app.dependency_overrides[verify_oms_auth] = lambda: "test-oms-key"
         assert resp.status_code == 401
+
+
+class TestReturnShipmentFromLogs:
+    """returncompleted pushes derive the return shipment from the order's
+    order_return_requested log entry (app/services/oms.py)."""
+
+    def _order_with_logs(self, logs):
+        return Order(order_id="ord-r", source_account="qpmn",
+                     source_order_id="SO-R", logs=logs)
+
+    def test_builds_shipment_from_latest_return_request(self):
+        order = self._order_with_logs([
+            {"timestamp": "2026-11-01T10:00:00+00:00", "action": "order_shipped",
+             "message": "shipped", "level": "info"},
+            {"timestamp": "2026-11-05T08:30:00.500000+00:00",
+             "action": "order_return_requested",
+             "message": "Order return requested by OMS", "level": "warning",
+             "return_request": {"reason": "damaged", "isFullReturn": True,
+                                "trackingNumber": "SF213123212",
+                                "carrierName": "SF",
+                                "trackingUrl": "https://hk.sf-express.com/hk/tc/waybill/waybill-detail/SF213123212"}},
+        ])
+        from app.services.oms import oms_service
+        assert oms_service._return_shipment_from_logs(order) == {
+            "trackingNumber": "SF213123212",
+            "company": "SF",
+            "trackingUrl": "https://hk.sf-express.com/hk/tc/waybill/waybill-detail/SF213123212",
+            # epoch ms of the log entry's timestamp
+            "shipDate": 1793867400500,
+        }
+
+    def test_no_tracking_number_returns_none(self):
+        order = self._order_with_logs([
+            {"timestamp": "2026-11-05T08:30:00+00:00",
+             "action": "order_return_requested", "message": "x", "level": "warning",
+             "return_request": {"reason": "damaged"}},
+        ])
+        from app.services.oms import oms_service
+        assert oms_service._return_shipment_from_logs(order) is None
+
+    def test_no_log_entries_returns_none(self):
+        from app.services.oms import oms_service
+        assert oms_service._return_shipment_from_logs(self._order_with_logs([])) is None
