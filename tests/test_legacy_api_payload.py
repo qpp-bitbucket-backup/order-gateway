@@ -260,6 +260,22 @@ class TestLineItems:
         attrs = {a["code"]: a["value"] for a in payload["items"][0]["attributeValues"]}
         assert attrs["Topps_Packaging"] == ["Small Slider Box"]
 
+    def test_packaging_topps_lowercase_deck_attr_no_folding(self, session, monkeypatch):
+        # Topps deck product: code "Topps_size_of_deck" (lowercase 's') does
+        # NOT trigger qty folding — qty stays 1 and the synced per-deck value
+        # (26) stays on the wire — but the packaging calc still resolves it
+        # case-insensitively: 1 x 26 = 26 cards = 1 medium + 1 small.
+        _seed(session, quantity=1, attribute_values=[
+            {"code": "Topps_size_of_deck", "value": 26},
+            {"code": "Topps_Packaging", "value": ""},
+        ])
+        payload = _build(session, monkeypatch)
+        item = payload["items"][0]
+        attrs = {a["code"]: a["value"] for a in item["attributeValues"]}
+        assert attrs["Topps_Packaging"] == ["Small Slider Box", "Medium Slider Box"]
+        assert attrs["Topps_size_of_deck"] == 26
+        assert item["qty"] == 1
+
     def test_packaging_mixed_boxes_list_value(self, session, monkeypatch):
         # 30 cards = 1 medium (25) + 1 small (5) -> both types as a list
         _seed(session, quantity=30, attribute_values=[
