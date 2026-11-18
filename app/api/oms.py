@@ -341,10 +341,10 @@ def oms_return_order(
     """
     Return Order (OMS) - Initiates a return on a SHIPPED order.
 
-    Calls the QPMN return API first (PUT /orders/{store_order_id}/return,
-    endpoint path pending QPMN confirmation); only when
-    QPMN accepts does the order move to ``returning`` — otherwise it stays
-    ``shipped`` and the failure is reported to OMS. The completion
+    Calls the QPMN return API first (PUT /orders/{store_order_id}/return —
+    the /returns plural route returns 404 NOT_EXISTS, fixed 2026-11-17);
+    only when QPMN accepts does the order move to ``returning`` — otherwise
+    it stays ``shipped`` and the failure is reported to OMS. The completion
     transition (``returning`` -> ``returncompleted``) will be wired to
     QPMN's return feedback once that event is defined.
 

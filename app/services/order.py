@@ -226,6 +226,27 @@ def _find_size_of_deck_attr(attribute_values: List[Dict[str, Any]]) -> Optional[
     return None
 
 
+# Topps packaging attribute (legacy payload): the slider-box selection is
+# derived from the order's total card count (quantity x Size_of_deck for
+# deck products, plain quantity otherwise). Small Slider Box holds up to
+# 10 cards, Medium Slider Box 11-25; packing is greedy — mediums first
+# (up to 25 each), a 1-10 card remainder gets a small box, an 11-24
+# remainder one more medium. The value is always an ARRAY of the box
+# types used: ["Small Slider Box"], ["Medium Slider Box"] or
+# ["Small Slider Box", "Medium Slider Box"].
+_TOPPS_PACKAGING_CODE = "Topps_Packaging"
+_PACKAGING_SMALL = "Small Slider Box"
+_PACKAGING_MEDIUM = "Medium Slider Box"
+
+
+def _find_packaging_attr(attribute_values: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return the attribute whose code equals Topps_Packaging, if any."""
+    for attr in attribute_values or []:
+        if str(attr.get("code") or "") == _TOPPS_PACKAGING_CODE:
+            return attr
+    return None
+
+
 def parallel_card_item_barcode(order_barcode: str, idx: int, total_digits: int = 15) -> str:
     """Item-level barcode for parallel-card orders: the parent order's QPMN
     store_order_id zero-padded with the 1-based item index so the total is
@@ -958,7 +979,7 @@ class OrderService:
         qpmn_status_code = qpmn_result.get("status_code")
         self.append_log(
             order, "qpmn_return_failed",
-            f"QPMN return API failed (HTTP {qpmn_status_code}): {error_detail}.",
+            f" (HTTP {qpmn_status_code}): {error_detail}.",
             extra={
                 "status_code": qpmn_status_code,
                 "error": error_detail,
@@ -1567,9 +1588,33 @@ class OrderService:
                 # collapses to 1 — one package holding N decks. Order
                 # totals keep pricing at the ordered quantity (see below).
                 size_attr = _find_size_of_deck_attr(attribute_values)
+                # Capture the per-deck card count BEFORE the Size_of_deck
+                # handling below overwrites the value with the ordered deck
+                # count — the packaging calc needs the total card count.
+                deck_size: Optional[int] = None
                 if size_attr is not None:
+                    try:
+                        deck_size = int(str(size_attr.get("value") or 0))
+                    except (TypeError, ValueError):
+                        deck_size = None
                     size_attr["value"] = item.get("quantity", 1)
                     line_item["qty"] = 1
+                # Topps packaging: assign the slider-box selection from the
+                # TOTAL card count — quantity x per-deck size for deck
+                # products (Size_of_deck), plain quantity otherwise. Greedy
+                # packing: full mediums (25 each), an 11-24 remainder adds
+                # one more medium, a 1-10 remainder adds a small box. The
+                # value lists the box types used (see _find_packaging_attr).
+                packaging_attr = _find_packaging_attr(attribute_values)
+                if packaging_attr is not None:
+                    total_cards = item.get("quantity", 1) * (deck_size or 1)
+                    _, remainder = divmod(total_cards, 25)
+                    boxes: List[str] = []
+                    if 1 <= remainder <= 10:
+                        boxes.append(_PACKAGING_SMALL)
+                    if total_cards >= 11:
+                        boxes.append(_PACKAGING_MEDIUM)
+                    packaging_attr["value"] = boxes
             # Parallel-card orders carry the generated barcode as the stock
             # number: barcode + zero padding + item index, fixed 15 digits
             if order.type == OrderType.PARALLEL_CARD and order.barcode:
