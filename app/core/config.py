@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     # "label-{item_index}" keys — the push payload only reads
     # "{sku_id}-{item_index}" keys, so labels never enter the design payload.
     BRAND_LABEL_WIDTH_MM: float = 100.0
-    BRAND_LABEL_HEIGHT_MM: float = 66.8
+    BRAND_LABEL_HEIGHT_MM: float = 69.96
     # Packing slip ship-from block (one line per \n); empty leaves the
     # ship-from cell blank until configured per environment.
     BRAND_LABEL_SHIP_FROM: str = ""
