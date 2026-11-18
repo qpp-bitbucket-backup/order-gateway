@@ -218,10 +218,21 @@ def parse_parallel_card_id(source_order_id: str) -> Optional[Tuple[str, str, str
 _SIZE_OF_DECK_CODE = "Size_of_deck"
 
 
-def _find_size_of_deck_attr(attribute_values: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Return the first attribute whose code contains Size_of_deck, if any."""
+def _find_size_of_deck_attr(
+    attribute_values: List[Dict[str, Any]],
+    case_insensitive: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Return the first attribute whose code contains Size_of_deck, if any.
+
+    ``case_insensitive=True`` also matches lowercase variants such as
+    ``Topps_size_of_deck`` — used by the packaging calc to read the
+    per-deck card count on products the qty-folding does not apply to.
+    """
     for attr in attribute_values or []:
-        if _SIZE_OF_DECK_CODE in str(attr.get("code") or ""):
+        code = str(attr.get("code") or "")
+        if (_SIZE_OF_DECK_CODE.lower() in code.lower()) if case_insensitive else (
+            _SIZE_OF_DECK_CODE in code
+        ):
             return attr
     return None
 
@@ -1606,15 +1617,20 @@ class OrderService:
                 # collapses to 1 — one package holding N decks. Order
                 # totals keep pricing at the ordered quantity (see below).
                 size_attr = _find_size_of_deck_attr(attribute_values)
-                # Capture the per-deck card count BEFORE the Size_of_deck
-                # handling below overwrites the value with the ordered deck
-                # count — the packaging calc needs the total card count.
+                # Per-deck card count for the packaging calc: case-insensitive
+                # lookup so Topps_size_of_deck (lowercase 's') also resolves,
+                # read BEFORE the folding overwrite below. Independent of
+                # size_attr — Topps deck products keep the synced per-deck
+                # value on the wire (no folding) while P_Size_of_deck
+                # products fold qty into the attribute.
+                deck_attr = _find_size_of_deck_attr(attribute_values, case_insensitive=True)
                 deck_size: Optional[int] = None
-                if size_attr is not None:
+                if deck_attr is not None:
                     try:
-                        deck_size = int(str(size_attr.get("value") or 0))
+                        deck_size = int(str(deck_attr.get("value") or 0))
                     except (TypeError, ValueError):
                         deck_size = None
+                if size_attr is not None:
                     size_attr["value"] = item.get("quantity", 1)
                     line_item["qty"] = 1
                 # Topps packaging: assign the slider-box selection from the
