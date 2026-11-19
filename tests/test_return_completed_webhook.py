@@ -1,7 +1,8 @@
 """TI-73: the ``order_return_completed`` webhook (§5.4.3/§6.7) should move a
-RETURNING order to RETURN_COMPLETED and notify OMS/VFS of the "returncompleted"
+RETURNING order to RETURN_COMPLETED and notify OMS of the "returncompleted"
 status — completing the return loop that was previously left unwired pending
-QPMN defining this event.
+QPMN defining this event. VFS is never notified of RETURNING/RETURN_COMPLETED
+— it isn't part of the return flow (see app/api/webhooks.py).
 """
 import hashlib
 import hmac
@@ -99,8 +100,8 @@ class TestReturnCompletedWebhook:
 
         mock_oms.delay.assert_called_once()
         assert mock_oms.delay.call_args.kwargs["event_status"] == "returncompleted"
-        mock_vfs.delay.assert_called_once()
-        assert mock_vfs.delay.call_args.kwargs["event_status"] == "returncompleted"
+        # VFS isn't part of the return flow — never notified for this status.
+        mock_vfs.delay.assert_not_called()
 
         inbound = session.exec(
             select(WebhookLog).where(
