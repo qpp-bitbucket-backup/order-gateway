@@ -440,32 +440,36 @@ async def receive_order_status(
         shipments=shipments_data,
     )
 
-    # Outbound log (source=vfs) + enqueue notify_vfs (SiteFlow-style postback)
-    vfs_outbound_log = WebhookLog(
-        direction=WebhookDirection.OUTBOUND,
-        source="VFS",
-        order_id=order.order_id,
-        source_order_id=order.source_order_id,
-        store_order_id=order.store_order_id,
-        store_order_item_id=str(item_id_value) if item_id_value is not None else None,
-        event_id=x_qpmn_event_id,
-        event_status=effective_status,
-        payload={
-            "sourceOrderId": order.source_order_id,
-            "status": new_status.value,
-            "shipments": shipments_data or [],
-        },
-        process_status=WebhookProcessStatus.RECEIVED,
-    )
-    session.add(vfs_outbound_log)
-    session.commit()
-    session.refresh(vfs_outbound_log)
+    # Outbound log (source=vfs) + enqueue notify_vfs (SiteFlow-style postback) —
+    # VFS isn't part of the return flow, so RETURNING/RETURN_COMPLETED are
+    # never pushed to it (it still sees the pre-return "shipped" state if it
+    # queries, via _EXTERNAL_STATUS_MAP).
+    if new_status not in (OrderStatus.RETURNING, OrderStatus.RETURN_COMPLETED):
+        vfs_outbound_log = WebhookLog(
+            direction=WebhookDirection.OUTBOUND,
+            source="VFS",
+            order_id=order.order_id,
+            source_order_id=order.source_order_id,
+            store_order_id=order.store_order_id,
+            store_order_item_id=str(item_id_value) if item_id_value is not None else None,
+            event_id=x_qpmn_event_id,
+            event_status=effective_status,
+            payload={
+                "sourceOrderId": order.source_order_id,
+                "status": new_status.value,
+                "shipments": shipments_data or [],
+            },
+            process_status=WebhookProcessStatus.RECEIVED,
+        )
+        session.add(vfs_outbound_log)
+        session.commit()
+        session.refresh(vfs_outbound_log)
 
-    notify_vfs.delay(
-        webhook_log_id=vfs_outbound_log.id,
-        order_id=order.order_id,
-        event_status=new_status.value,
-        shipments=shipments_data,
-    )
+        notify_vfs.delay(
+            webhook_log_id=vfs_outbound_log.id,
+            order_id=order.order_id,
+            event_status=new_status.value,
+            shipments=shipments_data,
+        )
 
     return response
