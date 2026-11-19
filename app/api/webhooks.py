@@ -29,6 +29,12 @@ router = APIRouter(
 
 _WEBHOOK_INBOUND_ALERTS = ALERTS["webhook_inbound"]
 
+# For a single-item order, the "printed" and "produced" pushes are both
+# triggered by the same order_item_produced event — this delays the
+# "produced" OMS push so it never lands before (or indistinguishably close
+# to) "printed", without relying on queue ordering.
+PRODUCED_NOTIFY_DELAY_SECONDS = 3
+
 
 def _capture_qpmn_alert(alert_key: str, order_id: Optional[str] = None, **format_args) -> None:
     """Capture an inbound QPMN webhook processing failure to Sentry.
@@ -157,8 +163,14 @@ def _record_produced_item_and_maybe_complete(
     session.add(oms_log)
     session.commit()
     session.refresh(oms_log)
-    notify_oms.delay(webhook_log_id=oms_log.id, order_id=order.order_id, event_status=produced_oms_status, shipments=None)
-    # OMS only — VFS is not notified of the aggregate "produced" status.
+    # Delayed (see PRODUCED_NOTIFY_DELAY_SECONDS) so it never lands before
+    # the "printed" push this same event also triggers. OMS only — VFS is
+    # not notified of the aggregate "produced" status.
+    notify_oms.apply_async(
+        kwargs={"webhook_log_id": oms_log.id, "order_id": order.order_id,
+                "event_status": produced_oms_status, "shipments": None},
+        countdown=PRODUCED_NOTIFY_DELAY_SECONDS,
+    )
 
 
 @router.post("/order-status", response_model=WebhookResponse)
@@ -377,13 +389,6 @@ async def receive_order_status(
     session.commit()
     enqueue_status_change_email(session, order, from_status, new_status, level, webhook_msg)
 
-    # TI-65: record this (first) produced item too, and complete straight to
-    # PRODUCED if the order only ever had one item — the generic notify block
-    # below already sends the per-component "printed" notification for it,
-    # so we don't call _notify_component_printed here (would double-send).
-    if effective_status == "order_item_produced":
-        _record_produced_item_and_maybe_complete(session, order, event.id, x_qpmn_event_id)
-
     # Persist shipment tracking info for package_shipped events — a real,
     # queryable record instead of leaving it only inside webhook_logs.payload.
     if is_shipped_event:
@@ -471,5 +476,13 @@ async def receive_order_status(
             event_status=new_status.value,
             shipments=shipments_data,
         )
+
+    # TI-65: record this (first) produced item too, and complete straight to
+    # PRODUCED if the order only ever had one item. Done last (after the
+    # "printed" notifications above) and with its own notify delay, so a
+    # single-item order's OMS/VFS "printed" push always lands — and is seen
+    # as printed — before OMS's "produced" push for the same event.
+    if effective_status == "order_item_produced":
+        _record_produced_item_and_maybe_complete(session, order, event.id, x_qpmn_event_id)
 
     return response
