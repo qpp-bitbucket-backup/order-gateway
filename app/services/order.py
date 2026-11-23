@@ -213,26 +213,21 @@ def parse_parallel_card_id(source_order_id: str) -> Optional[Tuple[str, str, str
 
 
 # Attribute-code substring identifying the QPMN deck-count attribute
-# (e.g. "P_Size_of_deck"): when a legacy line item carries it, the ordered
-# quantity moves into its value and the wire qty collapses to 1.
-_SIZE_OF_DECK_CODE = "Size_of_deck"
+# (e.g. "P_Size_of_deck", "Topps_size_of_deck"): when a legacy line item
+# carries it, the ordered quantity moves into its value and the wire qty
+# collapses to 1.
+_SIZE_OF_DECK_CODE = "size_of_deck"
 
 
 def _find_size_of_deck_attr(
     attribute_values: List[Dict[str, Any]],
-    case_insensitive: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """Return the first attribute whose code contains Size_of_deck, if any.
-
-    ``case_insensitive=True`` also matches lowercase variants such as
-    ``Topps_size_of_deck`` — used by the packaging calc to read the
-    per-deck card count on products the qty-folding does not apply to.
-    """
+    """Return the first attribute whose code contains size_of_deck
+    (case-insensitive, so the lowercase ``Topps_size_of_deck`` variant
+    matches too), if any."""
     for attr in attribute_values or []:
-        code = str(attr.get("code") or "")
-        if (_SIZE_OF_DECK_CODE.lower() in code.lower()) if case_insensitive else (
-            _SIZE_OF_DECK_CODE in code
-        ):
+        code = str(attr.get("code") or "").lower()
+        if _SIZE_OF_DECK_CODE in code:
             return attr
     return None
 
@@ -1618,25 +1613,21 @@ class OrderService:
             if attribute_values:
                 line_item["attributeValues"] = attribute_values
                 # QPMN deck products: when the SKU carries a Size_of_deck
-                # attribute (e.g. P_Size_of_deck), the ordered quantity
-                # moves into that attribute's value and the line item qty
-                # collapses to 1 — one package holding N decks. Order
-                # totals keep pricing at the ordered quantity (see below).
+                # attribute (P_Size_of_deck or the lowercase Topps_size_of_deck
+                # variant), the ordered quantity moves into that attribute's
+                # value and the line item qty collapses to 1 — one package
+                # holding N decks. Order totals keep pricing at the ordered
+                # quantity (see below).
                 size_attr = _find_size_of_deck_attr(attribute_values)
-                # Per-deck card count for the packaging calc: case-insensitive
-                # lookup so Topps_size_of_deck (lowercase 's') also resolves,
-                # read BEFORE the folding overwrite below. Independent of
-                # size_attr — Topps deck products keep the synced per-deck
-                # value on the wire (no folding) while P_Size_of_deck
-                # products fold qty into the attribute.
-                deck_attr = _find_size_of_deck_attr(attribute_values, case_insensitive=True)
+                # Per-deck card count for the packaging calc, read BEFORE
+                # the folding overwrite below replaces the synced per-deck
+                # value (e.g. 26) with the ordered deck count.
                 deck_size: Optional[int] = None
-                if deck_attr is not None:
+                if size_attr is not None:
                     try:
-                        deck_size = int(str(deck_attr.get("value") or 0))
+                        deck_size = int(str(size_attr.get("value") or 0))
                     except (TypeError, ValueError):
                         deck_size = None
-                if size_attr is not None:
                     size_attr["value"] = item.get("quantity", 1)
                     line_item["qty"] = 1
                 # Topps packaging: assign the slider-box selection from the

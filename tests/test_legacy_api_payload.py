@@ -260,21 +260,25 @@ class TestLineItems:
         attrs = {a["code"]: a["value"] for a in payload["items"][0]["attributeValues"]}
         assert attrs["Topps_Packaging"] == ["Small Slider Box"]
 
-    def test_packaging_topps_lowercase_deck_attr_no_folding(self, session, monkeypatch):
-        # Topps deck product: code "Topps_size_of_deck" (lowercase 's') does
-        # NOT trigger qty folding — qty stays 1 and the synced per-deck value
-        # (26) stays on the wire — but the packaging calc still resolves it
-        # case-insensitively: 1 x 26 = 26 cards = 1 medium + 1 small.
-        _seed(session, quantity=1, attribute_values=[
+    def test_packaging_topps_lowercase_deck_attr_folds_qty(self, session, monkeypatch):
+        # Topps deck product: code "Topps_size_of_deck" (lowercase 's') now
+        # folds exactly like P_Size_of_deck — wire qty collapses to 1 and the
+        # attribute carries the ordered deck count (12). The packaging calc
+        # still uses the synced per-deck value read BEFORE the overwrite:
+        # 12 x 26 = 312 cards = 12 full mediums + one more for the 12-card
+        # remainder -> mediums only. Subtotal prices at the folded count.
+        _seed(session, quantity=12, attribute_values=[
             {"code": "Topps_size_of_deck", "value": 26},
             {"code": "Topps_Packaging", "value": "Small Slider Box"},
         ])
         payload = _build(session, monkeypatch)
         item = payload["items"][0]
         attrs = {a["code"]: a["value"] for a in item["attributeValues"]}
-        assert attrs["Topps_Packaging"] == ["Small Slider Box", "Medium Slider Box"]
-        assert attrs["Topps_size_of_deck"] == 26
+        assert attrs["Topps_Packaging"] == ["Medium Slider Box"]
+        assert attrs["Topps_size_of_deck"] == 12
         assert item["qty"] == 1
+        totals = {t["name"]: t["value"] for t in payload["orderTotals"]}
+        assert totals["SUBTOTAL"] == 9.5 * 12
 
     def test_packaging_mixed_boxes_list_value(self, session, monkeypatch):
         # 30 cards = 1 medium (25) + 1 small (5) -> both types as a list
