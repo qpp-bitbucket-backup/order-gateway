@@ -213,7 +213,7 @@ class TestLineItems:
         # quantity=2 (seed default) <= 10 -> one Small Slider Box suffices
         _seed(session, attribute_values=[
             {"code": "P_Stock", "value": "300g藍芯纸"},
-            {"code": "Topps_Packaging", "value": ""},
+            {"code": "Topps_Packaging", "value": "Small Slider Box"},
         ])
         payload = _build(session, monkeypatch)
         attrs = {a["code"]: a["value"] for a in payload["items"][0]["attributeValues"]}
@@ -223,7 +223,7 @@ class TestLineItems:
         # quantity=120: mediums first (25x4 + 20 -> one more medium), any
         # quantity >= 11 implies a medium box -> single-choice Medium
         _seed(session, quantity=120, attribute_values=[
-            {"code": "Topps_Packaging", "value": ""},
+            {"code": "Topps_Packaging", "value": "Small Slider Box"},
         ])
         payload = _build(session, monkeypatch)
         attrs = {a["code"]: a["value"] for a in payload["items"][0]["attributeValues"]}
@@ -241,7 +241,7 @@ class TestLineItems:
         # wire qty stays folded to 1.
         _seed(session, quantity=2, attribute_values=[
             {"code": "P_Size_of_deck", "value": "60"},
-            {"code": "Topps_Packaging", "value": ""},
+            {"code": "Topps_Packaging", "value": "Small Slider Box"},
         ])
         payload = _build(session, monkeypatch)
         item = payload["items"][0]
@@ -254,7 +254,7 @@ class TestLineItems:
         # 1 deck x 5 cards/deck = 5 total -> Small Slider Box
         _seed(session, quantity=1, attribute_values=[
             {"code": "P_Size_of_deck", "value": 5},
-            {"code": "Topps_Packaging", "value": ""},
+            {"code": "Topps_Packaging", "value": "Small Slider Box"},
         ])
         payload = _build(session, monkeypatch)
         attrs = {a["code"]: a["value"] for a in payload["items"][0]["attributeValues"]}
@@ -267,7 +267,7 @@ class TestLineItems:
         # case-insensitively: 1 x 26 = 26 cards = 1 medium + 1 small.
         _seed(session, quantity=1, attribute_values=[
             {"code": "Topps_size_of_deck", "value": 26},
-            {"code": "Topps_Packaging", "value": ""},
+            {"code": "Topps_Packaging", "value": "Small Slider Box"},
         ])
         payload = _build(session, monkeypatch)
         item = payload["items"][0]
@@ -279,11 +279,22 @@ class TestLineItems:
     def test_packaging_mixed_boxes_list_value(self, session, monkeypatch):
         # 30 cards = 1 medium (25) + 1 small (5) -> both types as a list
         _seed(session, quantity=30, attribute_values=[
-            {"code": "Topps_Packaging", "value": ""},
+            {"code": "Topps_Packaging", "value": "Small Slider Box"},
         ])
         payload = _build(session, monkeypatch)
         attrs = {a["code"]: a["value"] for a in payload["items"][0]["attributeValues"]}
         assert attrs["Topps_Packaging"] == ["Small Slider Box", "Medium Slider Box"]
+
+    def test_packaging_non_slider_value_left_untouched(self, session, monkeypatch):
+        # Topps_Packaging present but the synced value names no Slider Box
+        # (e.g. a different packaging option) -> the greedy packing calc
+        # skips it and the original value passes through verbatim
+        _seed(session, quantity=120, attribute_values=[
+            {"code": "Topps_Packaging", "value": "Gift Wrap"},
+        ])
+        payload = _build(session, monkeypatch)
+        attrs = {a["code"]: a["value"] for a in payload["items"][0]["attributeValues"]}
+        assert attrs["Topps_Packaging"] == "Gift Wrap"
 
     def test_label_design_gets_label_url(self, session, monkeypatch):
         # Slide product: 3 designs, the LAST ("Sleeve Label") is the label
