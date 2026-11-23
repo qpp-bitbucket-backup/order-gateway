@@ -248,12 +248,18 @@ def _find_size_of_deck_attr(
 _TOPPS_PACKAGING_CODE = "Topps_Packaging"
 _PACKAGING_SMALL = "Small Slider Box"
 _PACKAGING_MEDIUM = "Medium Slider Box"
+_PACKAGING_KEYWORD = "Slider Box"
 
 
 def _find_packaging_attr(attribute_values: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Return the attribute whose code equals Topps_Packaging, if any."""
+    """Return the Topps_Packaging attribute, but only when its current value
+    already names a Slider Box selection (string or list form, e.g.
+    "Small Slider Box" or ["Medium Slider Box"]) — any other value is left
+    untouched for QPMN to handle."""
     for attr in attribute_values or []:
-        if str(attr.get("code") or "") == _TOPPS_PACKAGING_CODE:
+        if str(attr.get("code") or "") != _TOPPS_PACKAGING_CODE:
+            continue
+        if _PACKAGING_KEYWORD in str(attr.get("value") or ""):
             return attr
     return None
 
