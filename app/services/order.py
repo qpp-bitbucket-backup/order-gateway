@@ -1947,13 +1947,16 @@ class OrderService:
     @staticmethod
     def _extract_product_name(item: Dict[str, Any]) -> str:
         """
-        Extract ``productName`` from an order item's ``extraData`` list.
+        Extract ``productName`` from an order item's ``extraData``.
 
-        ``extraData`` is a list of arbitrary entries; the first dict entry
-        carrying a ``productName`` key wins. Returns an empty string when
-        the key is missing from every entry.
+        ``extraData`` arrives in either shape (VFS sends both): a list of
+        arbitrary entries, or a single object (treated as a one-entry
+        list). The first dict entry carrying a ``productName`` key wins;
+        returns an empty string when the key is missing from every entry.
         """
-        for entry in item.get("extraData") or []:
+        extra = item.get("extraData")
+        entries = [extra] if isinstance(extra, dict) else (extra or [])
+        for entry in entries:
             if isinstance(entry, dict) and entry.get("productName") is not None:
                 return str(entry["productName"])
         return ""

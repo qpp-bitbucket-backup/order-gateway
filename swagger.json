@@ -3,7 +3,7 @@
   "info": {
     "title": "HP PrintOS Site Flow API",
     "description": "API for managing print orders, including validation, submission, and status tracking.",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "contact": {
       "name": "HP Developer Portal",
       "url": "https://developers.hp.com/"
