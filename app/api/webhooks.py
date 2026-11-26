@@ -17,6 +17,7 @@ from app.models.order import Order, OrderStatus, can_transition, is_item_event_s
 from app.models.shipment import OrderShipment
 from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
 from app.schemas.webhook import QpmnOrderItemEvent, QpmnPackageShippedEvent, QpmnReturnCompletedEvent, WebhookResponse
+from app.services.order import order_service
 from app.services.order_notifications import enqueue_status_change_email, record_status_change
 from app.tasks.notifications import notify_oms, notify_vfs
 
@@ -322,6 +323,33 @@ async def receive_order_status(
 
     inbound_log.order_id = order.order_id
     inbound_log.source_order_id = order.source_order_id
+
+    # Capture the partner order number once: on an order_item_received
+    # event for an order whose partner_order_id is still empty, query
+    # QPMN's store order detail and persist data.logisticsInfo.orderNumber
+    # (see query_qpmn_order). Best-effort — a failure never affects the
+    # webhook ack or the status update below; once captured (or on orders
+    # already carrying a value) the extra API call is skipped.
+    if x_qpmn_event_type == "order_item_received" and not order.partner_order_id:
+        try:
+            query_result = order_service.query_qpmn_order(order)
+            if query_result.get("success"):
+                partner_order_number = query_result.get("partner_order_number")
+                if partner_order_number:
+                    order.partner_order_id = partner_order_number
+                    session.add(order)
+                    session.commit()
+                    logger.info(
+                        "[Webhook] Captured partner_order_id '%s' for order %s from QPMN store order detail",
+                        partner_order_number,
+                        order.order_id,
+                    )
+        except Exception as exc:
+            logger.error(
+                "[Webhook] Failed to capture partner_order_id for order %s: %s",
+                order.order_id,
+                exc,
+            )
 
     # An order_item_* event's `id` must belong to this order; only enforced
     # when we know the order's real item ids (order.store_order_item_ids).

@@ -316,6 +316,10 @@ class Order(BaseModel, table=True):
     version: int = Field(default=1, description="Document version (__v)")
     store_id: Optional[str] = Field(None, index=True, description="Store identifier")
     store_order_id: Optional[str] = Field(None, max_length=255, index=True, description="Store order ID for external reference")
+    partner_order_id: Optional[str] = Field(
+        None, max_length=255,
+        description="QPMN partner order number (data.logisticsInfo.orderNumber from the store order detail), captured by the platform order-query endpoint",
+    )
     store_order_item_ids: Optional[List[str]] = Field(
         None, sa_column=Column(JSON),
         description="QPMN-assigned ids of every order item pushed for this order (captured from the create-order response), used to detect when all items have been produced",

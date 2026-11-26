@@ -39,6 +39,7 @@ from app.schemas.order import (
     SiteFlowErrorResponse,
     PlatformOrderRepublishResponse,
     PlatformOrderDeleteResponse,
+    PlatformOrderQueryResponse,
 )
 from app.core.auth_oneflow import verify_oneflow_auth, get_client_store_id
 from app.core.auth_jwt import get_current_user, resolve_scoped_store_id, require_editor_or_above
@@ -1381,6 +1382,10 @@ def platform_get_orders(
     storeId_alias: Optional[str] = Query(None, alias="storeId", include_in_schema=False, description="(alias of store_id)"),
     source_order_id: Optional[str] = Query(None, alias="sourceOrderId", description="Fuzzy search by source order ID"),
     sourceOrderIdContains_alias: Optional[str] = Query(None, alias="sourceOrderId__contains", include_in_schema=False, description="(alias of sourceOrderId, fuzzy search)"),
+    store_order_id: Optional[str] = Query(None, alias="storeOrderId", description="Fuzzy search by store order ID (QPMN store order id)"),
+    storeOrderIdContains_alias: Optional[str] = Query(None, alias="storeOrderId__contains", include_in_schema=False, description="(alias of storeOrderId, fuzzy search)"),
+    partner_order_id: Optional[str] = Query(None, alias="partnerOrderId", description="Fuzzy search by partner order ID (QPMN logisticsInfo.orderNumber)"),
+    partnerOrderIdContains_alias: Optional[str] = Query(None, alias="partnerOrderId__contains", include_in_schema=False, description="(alias of partnerOrderId, fuzzy search)"),
     created_at_gte: Optional[datetime] = Query(None, alias="createdAt__gte", description="Created-at lower bound (inclusive, ISO 8601 datetime or date)"),
     created_at_lte: Optional[datetime] = Query(None, alias="createdAt__lte", description="Created-at upper bound (inclusive, ISO 8601 datetime or date)"),
     sort_by: Optional[str] = Query(None, description="Sort column: createdAt, updatedAt, sourceOrderId, status (default: createdAt)"),
@@ -1398,6 +1403,8 @@ def platform_get_orders(
     Admin users can optionally filter by store_id query parameter.
     Supports filtering by multiple statuses: ?status[]=failed&status[]=errored
     Supports fuzzy search on sourceOrderId: ?sourceOrderId=ORD-12
+    Supports fuzzy search on storeOrderId: ?storeOrderId=634087147
+    Supports fuzzy search on partnerOrderId: ?partnerOrderId=602611250029
     Supports created-at range: ?createdAt__gte=2026-10-01&createdAt__lte=2026-10-31
     Supports sorting: ?sortBy=createdAt&sortOrder=desc
     Returns additional fields: sourceOrderId, logs, files, version, storeId.
@@ -1418,6 +1425,9 @@ def platform_get_orders(
         # sourceOrderId__contains (same LIKE %text% semantics; snake_case
         # form wins when both are supplied).
         effective_source_order_id = source_order_id or sourceOrderIdContains_alias
+        # Same dual-naming for the store order id search.
+        effective_store_order_id = store_order_id or storeOrderIdContains_alias
+        effective_partner_order_id = partner_order_id or partnerOrderIdContains_alias
         orders, total_count, total_pages = order_service.get_all_orders(
             session,
             store_id=effective_store_id,
@@ -1425,6 +1435,8 @@ def platform_get_orders(
             pagesize=pagesize,
             statuses=status_filter,
             source_order_id=effective_source_order_id,
+            store_order_id=effective_store_order_id,
+            partner_order_id=effective_partner_order_id,
             created_at_gte=created_at_gte,
             created_at_lte=created_at_lte,
             sort_by=effective_sort_by,
@@ -1446,6 +1458,7 @@ def platform_get_orders(
                 version=order.version,
                 storeId=order.store_id,
                 storeOrderId=order.store_order_id,
+                partnerOrderId=order.partner_order_id,
                 type=order.type.value,
                 coolingOffSeconds=order.cooling_off_seconds,
                 creationPayload=order.creation_payload,
@@ -1587,6 +1600,7 @@ def platform_get_order(
             version=order.version,
             storeId=order.store_id,
             storeOrderId=order.store_order_id,
+            partnerOrderId=order.partner_order_id,
             type=order.type.value,
             coolingOffSeconds=order.cooling_off_seconds,
             creationPayload=order.creation_payload,
@@ -1732,6 +1746,82 @@ def platform_republish_order(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to republish order: {str(e)}",
+        )
+
+
+@jwt_router.post("/orders/{order_id}/query", response_model=PlatformOrderQueryResponse)
+def platform_query_order(
+    order_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_editor_or_above),
+):
+    """
+    Query QPMN Order (JWT) — fetch the live order details from QPMN.
+
+    Requires JWT Bearer token with editor or admin role. EDITOR users can
+    only query orders belonging to their own store; ADMIN is unrestricted.
+
+    Calls GET {QPMN_API_URL}/store/{store_id}/orders filtered by
+    orderNumber = the order's sourceOrderId (sorted datePurchased DESC)
+    and returns the newest matching QPMN order detail verbatim. When the
+    detail carries data.logisticsInfo.orderNumber, it is persisted on the
+    order row as partner_order_id. Works for orders regardless of
+    whether they were accepted by QPMN (404 when QPMN has no match).
+    """
+    # Outside the try block so the 403 for out-of-scope stores is not
+    # swallowed into a 500 by the generic exception handler below.
+    scoped_store_id = resolve_scoped_store_id(current_user)
+    try:
+        order = order_service.get_order_by_id(session, order_id, store_id=scoped_store_id)
+        if not order:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Order with ID '{order_id}' not found",
+            )
+
+        result = order_service.query_qpmn_order(order)
+        if not result.get("success"):
+            if result.get("not_found"):
+                # QPMN answered but has no order with that orderNumber.
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=str(result.get("error")),
+                )
+            # QPMN-side failure: surface its status code and error body.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "message": "QPMN order query failed",
+                    "qpmn_status_code": result.get("status_code"),
+                    "qpmn_error": result.get("error"),
+                },
+            )
+
+        # Persist QPMN's partner order number when the detail payload
+        # carries one (data.logisticsInfo.orderNumber) — best-effort: a
+        # missing or unchanged value leaves the order row untouched.
+        logistics_order_number = result.get("partner_order_number")
+        if logistics_order_number and logistics_order_number != order.partner_order_id:
+            order.partner_order_id = logistics_order_number
+            session.add(order)
+            session.commit()
+
+        return PlatformOrderQueryResponse(
+            success=True,
+            orderId=order.order_id,
+            storeOrderId=order.store_order_id,
+            partnerOrderId=order.partner_order_id,
+            status=order.status.value,
+            data=result.get("data"),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[API] Query QPMN order failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to query QPMN order: {str(e)}",
         )
 
 

@@ -481,21 +481,30 @@ def fetch_product_retail_price(
             response.raise_for_status()
             data = response.json()
         config = data.get("data") or {}
-        retail_price_string = config.get("retailPriceString")
-        if retail_price_string:
-            # "CNY 35.4" -> 35.4 (take the trailing numeric part)
-            numbers = re.findall(r"[\d.]+", str(retail_price_string))
-            if numbers:
-                return float(numbers[-1])
-        # Some environments omit retailPriceString — the same price lives
-        # in strategy.setting.price (e.g. SinglePricingSetting 48.1).
-        setting = (config.get("strategy") or {}).get("setting") or {}
-        setting_price = setting.get("price")
-        if setting_price is not None:
-            return float(setting_price)
+        # The wrapper is normally a single config object; tolerate a list of
+        # configs too and take the first one that carries a price.
+        configs = [config] if isinstance(config, dict) else (
+            config if isinstance(config, list) else []
+        )
+        for config in configs:
+            if not isinstance(config, dict):
+                continue
+            retail_price_string = config.get("retailPriceString")
+            if retail_price_string:
+                # "CNY 35.4" -> 35.4 (take the trailing numeric part)
+                numbers = re.findall(r"[\d.]+", str(retail_price_string))
+                if numbers:
+                    return float(numbers[-1])
+            # Some environments omit retailPriceString — the same price lives
+            # in strategy.setting.price (e.g. SinglePricingSetting 48.1).
+            setting = (config.get("strategy") or {}).get("setting") or {}
+            setting_price = setting.get("price")
+            if setting_price is not None:
+                return float(setting_price)
         logger.warning(
             f"No retail price found for product {product_id}: "
-            f"retailPriceString and strategy.setting.price both absent"
+            f"retailPriceString and strategy.setting.price both absent; "
+            f"raw response: {str(data)[:500]}"
         )
         return None
     except Exception as e:
@@ -565,7 +574,14 @@ def sync_sku_to_db(
             existing_sku.description = format_html_desc(qpmn_sku.get("description"))
             existing_sku.product_id = product_id
             existing_sku.active = qpmn_sku.get("active", True)
-            existing_sku.unit_price = qpmn_sku.get("unitPrice") or qpmn_sku.get("price")
+            # Only overwrite unit_price when the list payload actually
+            # carries one — the products list API usually omits price
+            # fields, and blindly assigning would wipe the retail price
+            # synced earlier (refreshed again by _apply_retail_price below)
+            # whenever the resale price API fails.
+            list_unit_price = qpmn_sku.get("unitPrice") or qpmn_sku.get("price")
+            if list_unit_price is not None:
+                existing_sku.unit_price = list_unit_price
             existing_sku.unit_cost = qpmn_sku.get("unitCost") or qpmn_sku.get("cost")
             # Update updated_at with modifiedDate from QPMN if it's newer
             qpmn_modified = qpmn_sku.get("modifiedDate")
