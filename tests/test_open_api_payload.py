@@ -121,6 +121,26 @@ def test_item_meta_data_prefers_description_and_extra_data_product_name():
     }
 
 
+def test_item_meta_data_extra_data_object_form_product_name():
+    # VFS also sends extraData as a single object (not wrapped in an array)
+    # — same productName extraction as the array form.
+    contexts = [{
+        "item": {
+            "sku": "PC-123",
+            "quantity": 1,
+            "description": "MALL-SKU-1",
+            "extraData": {"productName": "Topps NOW® - Card 825"},
+        },
+        "sku": SimpleNamespace(sku_id="sku-internal-1", unit_price=9.5),
+        "properties": {}, "customize_project": {},
+    }]
+    payload = _build(contexts=contexts)
+    assert payload["items"][0]["metadata"] == {
+        "sku": "MALL-SKU-1",
+        "productName": "Topps NOW® - Card 825",
+    }
+
+
 def test_item_meta_data_falls_back_to_sku_and_empty_product_name():
     contexts = [{
         # No description and no extraData productName
