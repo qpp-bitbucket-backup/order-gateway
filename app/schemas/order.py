@@ -202,6 +202,7 @@ class PlatformOrderSummary(BaseModel):
     version: int = Field(0, description="Document version")
     storeId: Optional[str] = Field(None, description="Store identifier")
     storeOrderId: Optional[str] = Field(None, description="Store order ID")
+    partnerOrderId: Optional[str] = Field(None, description="QPMN partner order number (data.logisticsInfo.orderNumber), captured by the platform order-query endpoint")
     type: str = Field("base_card", description="Order type (base_card or parallel_card)")
     coolingOffSeconds: Optional[int] = Field(None, description="Cooling-off period (seconds) applied to this order; with the order_cooling_off log timestamp the frontend can render the countdown (NULL = no cooling-off)")
     creationPayload: Optional[Dict[str, Any]] = Field(None, description="QPMN create-order payload submitted by the last push attempt")
@@ -277,6 +278,7 @@ class PlatformFullOrder(BaseModel):
     version: int = Field(0, description="Document version")
     storeId: Optional[str] = Field(None, description="Store identifier")
     storeOrderId: Optional[str] = Field(None, description="Store order ID")
+    partnerOrderId: Optional[str] = Field(None, description="QPMN partner order number (data.logisticsInfo.orderNumber), captured by the platform order-query endpoint")
     type: str = Field("base_card", description="Order type (base_card or parallel_card)")
     coolingOffSeconds: Optional[int] = Field(None, description="Cooling-off period (seconds) applied to this order; with the order_cooling_off log timestamp the frontend can render the countdown (NULL = no cooling-off)")
     creationPayload: Optional[Dict[str, Any]] = Field(None, description="QPMN create-order payload submitted by the last push attempt")
@@ -313,6 +315,16 @@ class PlatformOrderDeleteResponse(BaseModel):
     success: bool = Field(True, description="Request success status")
     message: str = Field(..., description="Deletion result message")
     orderId: Optional[str] = Field(None, description="Internal order ID of the deleted order")
+
+
+class PlatformOrderQueryResponse(BaseModel):
+    """Schema for platform order QPMN query response."""
+    success: bool = Field(True, description="Request success status")
+    orderId: Optional[str] = Field(None, description="Internal order ID")
+    storeOrderId: Optional[str] = Field(None, description="QPMN store order ID that was queried")
+    partnerOrderId: Optional[str] = Field(None, description="QPMN partner order number captured from data.logisticsInfo.orderNumber (set after this query)")
+    status: Optional[str] = Field(None, description="Current gateway status of the order")
+    data: Optional[Dict[str, Any]] = Field(None, description="QPMN order detail (newest entry matching the order's orderNumber from GET /store/{store_id}/orders)")
 
 
 class OrdersListResponse(BaseModel):
