@@ -48,3 +48,4 @@ Thumbs.db
 *.bat
 *.exe
 app/tmp
+tmp/

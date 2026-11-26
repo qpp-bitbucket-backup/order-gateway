@@ -1,5 +1,6 @@
 """Order service for managing order-related operations."""
 import logging
+import json
 import os
 import re
 import tempfile
@@ -268,6 +269,18 @@ def parallel_card_item_barcode(order_barcode: str, idx: int, total_digits: int =
     return f"{order_barcode}{idx:0{idx_width}d}"
 
 
+def _extract_logistics_order_number(detail: Any) -> Optional[str]:
+    """Extract ``data.logisticsInfo.orderNumber`` from a QPMN store order
+    detail payload, as a string; None when the path is absent/empty."""
+    if not isinstance(detail, dict):
+        return None
+    logistics_info = detail.get("logisticsInfo")
+    if not isinstance(logistics_info, dict):
+        return None
+    order_number = logistics_info.get("orderNumber")
+    return str(order_number) if order_number else None
+
+
 class OrderService:
     """Service for handling order-related operations."""
 
@@ -296,6 +309,8 @@ class OrderService:
         pagesize: int = 10,
         statuses: Optional[List[OrderStatus]] = None,
         source_order_id: Optional[str] = None,
+        store_order_id: Optional[str] = None,
+        partner_order_id: Optional[str] = None,
         created_at_gte: Optional[datetime] = None,
         created_at_lte: Optional[datetime] = None,
         sort_by: Optional[str] = None,
@@ -307,6 +322,10 @@ class OrderService:
         Args:
             statuses: Optional list of order statuses to filter by (IN clause).
             source_order_id: Optional fuzzy match on source_order_id (LIKE %text%).
+            store_order_id: Optional fuzzy match on store_order_id (LIKE %text%);
+                orders never accepted by QPMN (NULL) never match.
+            partner_order_id: Optional fuzzy match on partner_order_id
+                (LIKE %text%); orders never queried (NULL) never match.
             created_at_gte: Optional inclusive lower bound on created_at.
             created_at_lte: Optional inclusive upper bound on created_at. Both
                 bounds are interpreted as UTC — naive values get tzinfo
@@ -328,6 +347,10 @@ class OrderService:
             query = query.where(Order.status.in_(statuses))
         if source_order_id:
             query = query.where(Order.source_order_id.like(f"%{source_order_id}%"))
+        if store_order_id:
+            query = query.where(Order.store_order_id.like(f"%{store_order_id}%"))
+        if partner_order_id:
+            query = query.where(Order.partner_order_id.like(f"%{partner_order_id}%"))
         if created_at_gte is not None:
             gte = created_at_gte if created_at_gte.tzinfo else created_at_gte.replace(tzinfo=timezone.utc)
             query = query.where(Order.created_at >= gte)
@@ -676,6 +699,151 @@ class OrderService:
             "success": True,
             "status_code": 200,
             "data": body.get("data"),
+        }
+
+    def query_qpmn_order(self, order: Order) -> Dict[str, Any]:
+        """
+        Fetch the live order state from QPMN's store order list API.
+
+        GET {QPMN_API_URL}/store/{store_id}/orders
+            ?page=1&limit=20
+            &filter=[{"name":"orderNumber","type":"string","value":"<source_order_id>"}]
+            &sort=[{"property":"datePurchased","direction":"DESC"}]
+        Authorization: Basic {store_token}
+
+        The response is a paginated list; the first entry (newest first,
+        datePurchased DESC) is returned as the order detail.
+
+        Returns the same result shape as ``cancel_qpmn_order``:
+        - ``success``: True only when a matching QPMN order was found.
+        - ``status_code``: HTTP status code from QPMN.
+        - ``data``: The QPMN order detail (on success).
+        - ``partner_order_number``: ``data.logisticsInfo.orderNumber``
+          extracted from the detail (on success, None when absent) — the
+          callers persist it as ``Order.partner_order_id``.
+        - ``error``: Error message/body (on failure). ``not_found`` is True
+          when QPMN returned no order with that orderNumber.
+        """
+        store_key = client_service.get_store_key_by_id(order.store_id) if order.store_id else None
+        if not store_key:
+            logger.warning(
+                "[OrderService] No store_key for order %s, cannot call QPMN order query API",
+                order.order_id,
+            )
+            return {"success": False, "status_code": None, "error": "No store_key configured"}
+
+        api_base, _ = client_service.get_qpmn_urls(order.store_id)
+        api_url = f"{api_base.rstrip('/')}/store/orders"
+        # Filter/sort are JSON arrays carried as query params (URL-encoded
+        # by httpx, matching QPMN's store console requests).
+        params = {
+            "page": 1,
+            "limit": 20,
+            "filter": json.dumps(
+                [{"name": "orderNumber", "type": "string", "value": order.source_order_id}],
+                separators=(",", ":"),
+            ),
+            "sort": json.dumps(
+                [{"property": "datePurchased", "direction": "DESC"}],
+                separators=(",", ":"),
+            ),
+        }
+        headers = {
+            "Authorization": f"Basic {store_key}",
+            "Content-Type": _JSON_CONTENT_TYPE,
+        }
+
+        logger.info(
+            "[OrderService] Calling QPMN store orders API for order %s "
+            "(orderNumber=%s, store_id=%s)",
+            order.order_id,
+            order.source_order_id,
+            order.store_id,
+        )
+
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                response = client.get(api_url, headers=headers, params=params)
+        except httpx.TimeoutException:
+            logger.error("[OrderService] QPMN order query API timeout for order %s", order.order_id)
+            return {"success": False, "status_code": None, "error": "QPMN API timeout"}
+        except Exception as exc:
+            logger.error(
+                "[OrderService] QPMN order query API request failed for order %s: %s",
+                order.order_id,
+                exc,
+            )
+            return {"success": False, "status_code": None, "error": str(exc)}
+
+        # Non-200 responses are failures
+        if response.status_code != 200:
+            error_body = None
+            try:
+                error_body = response.json()
+            except Exception:
+                error_body = response.text
+            logger.warning(
+                "[OrderService] QPMN order query API returned %s for order %s: %s",
+                response.status_code,
+                order.order_id,
+                error_body,
+            )
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": error_body,
+            }
+
+        try:
+            body = response.json()
+        except Exception:
+            logger.warning(
+                "[OrderService] QPMN order query API returned non-JSON body for order %s: %s",
+                order.order_id,
+                response.text[:500],
+            )
+            return {"success": False, "status_code": 200, "error": response.text[:500]}
+
+        # Unwrap the standard QPMN {"success": ..., "data": ...} wrapper when
+        # present; the payload itself is a paginated list with "content".
+        payload = body
+        if isinstance(body, dict) and isinstance(body.get("data"), (dict, list)):
+            if body.get("success") is False:
+                logger.warning(
+                    "[OrderService] QPMN order query API returned success=false for order %s: %s",
+                    order.order_id,
+                    body,
+                )
+                return {"success": False, "status_code": 200, "error": body}
+            payload = body["data"]
+        if isinstance(payload, dict):
+            content = payload.get("content")
+        elif isinstance(payload, list):
+            content = payload
+        else:
+            content = None
+        if not content:
+            logger.info(
+                "[OrderService] QPMN returned no order with orderNumber '%s' for order %s",
+                order.source_order_id,
+                order.order_id,
+            )
+            return {
+                "success": False,
+                "status_code": 200,
+                "not_found": True,
+                "error": (
+                    f"No QPMN order found with orderNumber '{order.source_order_id}' "
+                    f"in store '{order.store_id}'"
+                ),
+            }
+        # datePurchased DESC: the first entry is the newest match.
+        detail = content[0]
+        return {
+            "success": True,
+            "status_code": 200,
+            "data": detail,
+            "partner_order_number": _extract_logistics_order_number(detail),
         }
 
     def cancel_qpmn_shipment(self, order: Order) -> Dict[str, Any]:

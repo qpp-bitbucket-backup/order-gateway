@@ -11,6 +11,7 @@ unconfigured levels simply mark the log ``skipped``, so clients without
 a config keep today's behaviour exactly.
 """
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlmodel import Session
@@ -37,7 +38,8 @@ def record_status_change(
     extra: Optional[Dict[str, Any]] = None,
 ) -> Tuple[OrderStatus, NotificationLevel]:
     """
-    Set ``order.status`` and append a level-tagged entry to ``order.logs``.
+    Set ``order.status``, refresh ``order.updated_at`` and append a
+    level-tagged entry to ``order.logs``.
 
     Returns ``(previous_status, notification_level)``. Does NOT commit —
     callers keep their existing add/commit flow; once committed they should
@@ -55,6 +57,10 @@ def record_status_change(
 
     from_status = order.status
     order.status = new_status
+    # A status transition is a real update: refresh updated_at alongside it
+    # (the column has no onupdate hook, so a plain UPDATE would otherwise
+    # leave it at the row's last explicit write).
+    order.updated_at = datetime.now(timezone.utc)
     level = status_notification_level(new_status)
     order_service.append_log(
         order, action, message, level=level.value, worker=worker, extra=extra
