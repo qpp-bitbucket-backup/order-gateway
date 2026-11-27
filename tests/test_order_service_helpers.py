@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from app.core.config import settings
 from app.models.order import ORDER_STATE_TRANSITIONS, Order, OrderStatus, can_transition
 from app.services.order import (
     DELETABLE_STATUSES,
@@ -159,6 +160,51 @@ class TestShipmentCancellableStatuses:
         mock_order.assert_called_once_with(order)
         mock_shipment.assert_not_called()
         assert order.status == OrderStatus.CANCELLED
+
+
+class TestCancelOrderVfsNotification:
+    """Whether an OMS-initiated cancellation also pushes a "cancelled"
+    postback to VFS is configurable via OMS_CANCEL_NOTIFY_VFS — off by
+    default, since OMS already knows it cancelled the order (see
+    app/services/order.py's cancel_order())."""
+
+    @staticmethod
+    def _sqlite_session():
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        SQLModel.metadata.create_all(engine)
+        return Session(engine)
+
+    def test_vfs_not_notified_by_default(self):
+        session = self._sqlite_session()
+        order = Order(order_id="o3", source_account="a", source_order_id="s3", status=OrderStatus.RECEIVED, store_id="store-1")
+        session.add(order)
+        session.commit()
+
+        with patch.object(order_service, "cancel_qpmn_order", return_value={"success": True}), \
+             patch("app.tasks.notifications.notify_order_status_email"), \
+             patch("app.services.order.notify_vfs") as mock_vfs:
+            order_service.cancel_order(session, order)
+
+        assert order.status == OrderStatus.CANCELLED
+        mock_vfs.delay.assert_not_called()
+
+    def test_vfs_notified_when_enabled(self):
+        session = self._sqlite_session()
+        order = Order(order_id="o4", source_account="a", source_order_id="s4", status=OrderStatus.RECEIVED, store_id="store-1")
+        session.add(order)
+        session.commit()
+
+        with patch.object(settings, "OMS_CANCEL_NOTIFY_VFS", True), \
+             patch.object(order_service, "cancel_qpmn_order", return_value={"success": True}), \
+             patch("app.tasks.notifications.notify_order_status_email"), \
+             patch("app.services.order.notify_vfs") as mock_vfs:
+            order_service.cancel_order(session, order)
+
+        assert order.status == OrderStatus.CANCELLED
+        mock_vfs.delay.assert_called_once()
+        kwargs = mock_vfs.delay.call_args.kwargs
+        assert kwargs["order_id"] == "o4"
+        assert kwargs["event_status"] == "cancelled"
 
 
 class TestBuildQpmnReturnPayload:

@@ -370,6 +370,20 @@ async def receive_order_status(
         )
         return response
 
+    # OMS-initiated cancel already set this to CANCELLED; QPMN's echo
+    # confirming it is a harmless duplicate, not an invalid transition.
+    if order.status == OrderStatus.CANCELLED and new_status == OrderStatus.CANCELLED:
+        response = WebhookResponse(
+            success=True,
+            message="Order already cancelled; order_item_canceled echo ignored",
+        )
+        inbound_log.process_status = WebhookProcessStatus.SKIPPED
+        inbound_log.details = json.dumps(response.model_dump())
+        inbound_log.updated_at = datetime.now(timezone.utc)
+        session.add(inbound_log)
+        session.commit()
+        return response
+
     if not can_transition(order.status, new_status):
         if not is_shipped_event and not is_return_completed_event and is_item_event_superseded(order.status, new_status):
             # TI-65: a superseded order_item_produced still represents a real
