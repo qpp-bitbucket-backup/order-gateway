@@ -30,6 +30,8 @@ from app.services.order_notifications import (
 )
 from app.core.config import settings
 from app.core.sentry_alerts import ALERTS, capture_integration_alert
+from app.models.webhook_log import WebhookLog, WebhookDirection, WebhookProcessStatus
+from app.tasks.notifications import notify_vfs
 
 logger = logging.getLogger(__name__)
 
@@ -980,6 +982,33 @@ class OrderService:
             session.commit()
             session.refresh(order)
             enqueue_status_change_email(session, order, from_status, OrderStatus.CANCELLED, level, cancel_msg)
+
+            # Optional VFS postback, see OMS_CANCEL_NOTIFY_VFS.
+            if settings.OMS_CANCEL_NOTIFY_VFS:
+                vfs_outbound_log = WebhookLog(
+                    direction=WebhookDirection.OUTBOUND,
+                    source="VFS",
+                    order_id=order.order_id,
+                    source_order_id=order.source_order_id,
+                    store_order_id=order.store_order_id,
+                    event_status="order_cancelled",
+                    payload={
+                        "sourceOrderId": order.source_order_id,
+                        "status": OrderStatus.CANCELLED.value,
+                        "shipments": [],
+                    },
+                    process_status=WebhookProcessStatus.RECEIVED,
+                )
+                session.add(vfs_outbound_log)
+                session.commit()
+                session.refresh(vfs_outbound_log)
+
+                notify_vfs.delay(
+                    webhook_log_id=vfs_outbound_log.id,
+                    order_id=order.order_id,
+                    event_status=OrderStatus.CANCELLED.value,
+                    shipments=None,
+                )
 
             logger.info("[OrderService] Cancelled order %s", order.order_id)
             return order
