@@ -242,6 +242,10 @@ eventTypes=order_item_received&eventTypes=order_item_audited
       "storeProductId": "266931519",
       "quantity": 1,
       "supplierStockNo":"xxxx",
+      "metaData": {
+        "sku": "266931519",
+        "productName": "Parallel Card"
+      },
       "productDesignData": {
         "designData": [
           {

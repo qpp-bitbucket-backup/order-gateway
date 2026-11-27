@@ -85,7 +85,7 @@ class OrderItem(BaseModel):
     totalPages: Optional[int] = Field(None, ge=0, description="Total pages")
     shipmentIndex: Optional[int] = Field(None, description="Index linking this item to a shipment")
     components: Optional[List[Component]] = Field(None, description="Item components")
-    extraData: Optional[List[Any]] = Field(None, description="Extra item data")
+    extraData: Optional[Union[List[Any], Dict[str, Any]]] = Field(None, description="Extra item data (array of entries or a single object; productName is extracted from either shape)")
 
 
 class StockItem(BaseModel):

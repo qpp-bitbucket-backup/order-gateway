@@ -1,6 +1,6 @@
 [project]
 name = "order-gateway"
-version = "1.0.0"
+version = "1.0.1"
 description = "QPMN Order Gateway API - Manages print orders, including validation, submission, and status tracking."
 requires-python = ">=3.12"
 
