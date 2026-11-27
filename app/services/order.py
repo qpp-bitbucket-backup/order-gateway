@@ -2032,7 +2032,7 @@ class OrderService:
     def _address_to_legacy_payload(self, address: Address) -> Dict[str, Any]:
         """Convert Address model to legacy API payload format."""
         return {
-            "country": address.country,
+            "country": to_iso_country_code(address.country),
             "state": address.state,
             "city": address.city,
             "address_1": address.address1,
